@@ -1,0 +1,42 @@
+# Alfred MVP Progress
+
+## Phase Map
+
+- Phase 0: Bootstrap and governance
+- Phase 1: Gateway + sessions + run lifecycle
+- Phase 2: ReAct loop orchestration
+- Phase 3: Search provider manager (SearXNG + Brave fallback)
+- Phase 4: Lead extraction pipeline (Cheerio-first, Playwright-enrichment)
+- Phase 5: Web UI + debug export
+- Phase 6: Policy modes (dev trusted / prod balanced)
+- Phase 7: Hardening and documentation
+
+## Current Status
+
+- **Phase 0**: Completed
+  - Project scaffold created with TypeScript scripts and `.env.example`.
+  - Test script wrappers now map to real `npm run test:*` commands.
+- **Phase 1**: Completed
+  - Hono gateway, session APIs, run persistence and JSONL timeline logging implemented.
+- **Phase 2**: Completed
+  - `runReActLoop(sessionId, message, options)` implemented and wired to `/v1/chat/turn`.
+- **Phase 3**: Completed
+  - SearXNG provider with healthcheck + auto-start command + Brave fallback implemented.
+  - Search results capped at max 15 in manager-level enforcement.
+- **Phase 4**: Completed
+  - Cheerio-based first pass on top results implemented.
+  - Optional Playwright enrichment pass implemented as dynamic/optional dependency path.
+- **Phase 5**: Completed
+  - Simple web UI added with sessions list/create, chat turn execution, run timeline, and debug export.
+- **Phase 6**: Completed
+  - `ALFRED_ENV=dev|prod` policy behavior wired through approval decision logic.
+- **Phase 7**: In progress
+  - Core tests added (unit/integration/smoke/security).
+  - Lead quality iteration completed: multi-query search fan-out and list-page company extraction are now implemented with regression coverage.
+  - Additional resiliency and production hardening tasks remain for later iterations.
+
+## Remaining Follow-ups
+
+- Add robust lead parsing quality heuristics and optional provider-based verification.
+- Enable robots-aware scraping mode for production profile.
+- Add structured retry/backoff metrics and deeper async supervision dashboards.

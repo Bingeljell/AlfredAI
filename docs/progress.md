@@ -33,6 +33,9 @@
 - **Phase 7**: In progress
   - Core tests added (unit/integration/smoke/security).
   - Lead quality iteration completed: multi-query search fan-out and list-page company extraction are now implemented with regression coverage.
+  - Sub-ReAct lead pipeline migration completed: strict lead schema, `sub_react_step` timeline events, batched structured extraction, and persistent Playwright browser pool.
+  - Playwright setup is now mandatory for the lead pipeline path with one-time browser bootstrap support.
+  - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Additional resiliency and production hardening tasks remain for later iterations.
 
 ## Remaining Follow-ups

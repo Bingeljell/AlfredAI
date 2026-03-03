@@ -1,13 +1,12 @@
 import type { PolicyMode, RunOutcome, ToolCallRecord } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
-import { buildLeadCandidates } from "../tools/lead/leadPipeline.js";
 import { writeLeadsCsv } from "../tools/csv/writeCsv.js";
 import { evaluateApprovalNeed } from "./approvalPolicy.js";
 import { runOpenAiChat } from "../services/openAiClient.js";
 import { appendDailyNote } from "../memory/dailyNotes.js";
 import { redactValue } from "../utils/redact.js";
-import type { SearchResult } from "../types.js";
+import { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
 
 interface RunReActLoopOptions {
   runStore: RunStore;
@@ -19,71 +18,16 @@ interface RunReActLoopOptions {
   enablePlaywright: boolean;
   maxSteps: number;
   openAiApiKey?: string;
+  subReactMaxPages: number;
+  subReactBrowseConcurrency: number;
+  subReactBatchSize: number;
+  subReactLlmMaxCalls: number;
+  subReactMinConfidence: number;
+  leadPipelineExecutor?: typeof executeLeadSubReactPipeline;
 }
 
 function nowIso(): string {
   return new Date().toISOString();
-}
-
-function normalizeQuery(input: string): string {
-  return input
-    .replace(/^(alfred[,\s-]*)?/i, "")
-    .replace(/find\s+\d+\s+leads?/i, "find leads")
-    .trim();
-}
-
-function parseRequestedLeadCount(message: string): number {
-  const match = message.match(/\b(?:find|generate|get)\s+(\d{1,3})\s+.*?\bleads?\b/i);
-  if (!match) {
-    return 50;
-  }
-  const parsed = Number(match[1]);
-  if (!Number.isFinite(parsed)) {
-    return 50;
-  }
-  return Math.min(100, Math.max(10, parsed));
-}
-
-function parseLocationHint(message: string): string | undefined {
-  const match = message.match(/\bin\s+([A-Za-z][A-Za-z\s]{1,40})$/i);
-  return match?.[1]?.trim();
-}
-
-function buildSearchQueries(message: string): string[] {
-  const normalized = normalizeQuery(message) || "find B2B startup leads";
-  const location = parseLocationHint(message) ?? "USA";
-  const lower = normalized.toLowerCase();
-
-  const querySet = new Set<string>();
-  querySet.add(normalized);
-  querySet.add(`top managed service providers in ${location}`);
-
-  if (/\bsi\b|system integrator/i.test(lower)) {
-    querySet.add(`system integrator companies in ${location}`);
-  }
-  if (/\bmsp\b|managed service provider/i.test(lower)) {
-    querySet.add(`managed service provider directory ${location}`);
-  }
-  if (querySet.size < 3) {
-    querySet.add(`it services companies list ${location}`);
-  }
-
-  return Array.from(querySet).slice(0, 3);
-}
-
-function mergeUniqueSearchResults(results: SearchResult[][]): SearchResult[] {
-  const unique = new Map<string, SearchResult>();
-  for (const batch of results) {
-    for (const result of batch) {
-      if (!unique.has(result.url)) {
-        unique.set(result.url, {
-          ...result,
-          rank: unique.size + 1
-        });
-      }
-    }
-  }
-  return Array.from(unique.values());
 }
 
 async function recordToolCall(
@@ -139,66 +83,57 @@ export async function runReActLoop(
     sessionId,
     phase: "thought",
     eventType: "intent_identified",
-    payload: { intent: "lead_generation" },
+    payload: { intent: "lead_generation_sub_react" },
     timestamp: nowIso()
   });
 
-  const query = normalizeQuery(message) || "find B2B startup leads";
-  const searchQueries = buildSearchQueries(message);
-  const requestedLeadCount = parseRequestedLeadCount(message);
-  const searchStart = Date.now();
-  const searchResponses = [];
-  for (const currentQuery of searchQueries) {
-    searchResponses.push(await options.searchManager.search(currentQuery, options.searchMaxResults));
-  }
-  const mergedResults = mergeUniqueSearchResults(searchResponses.map((item) => item.results));
-  const primaryProvider = searchResponses[0]?.provider ?? "searxng";
-  const anyFallbackUsed = searchResponses.some((item) => item.fallbackUsed);
-
-  await recordToolCall(runStore, runId, {
-    toolName: "search",
-    inputRedacted: { queries: searchQueries, maxResultsPerQuery: options.searchMaxResults },
-    outputRedacted: { provider: primaryProvider, count: mergedResults.length, queryCount: searchQueries.length },
-    durationMs: Date.now() - searchStart,
-    status: "ok"
-  });
-
-  await runStore.appendEvent({
+  const pipelineStart = Date.now();
+  const leadPipelineExecutor = options.leadPipelineExecutor ?? executeLeadSubReactPipeline;
+  const subReactResult = await leadPipelineExecutor({
     runId,
     sessionId,
-    phase: "tool",
-    eventType: "search_completed",
-    payload: {
-      provider: primaryProvider,
-      fallbackUsed: anyFallbackUsed,
-      resultCount: mergedResults.length,
-      queryCount: searchQueries.length
-    },
-    timestamp: nowIso()
-  });
-
-  const scrapeStart = Date.now();
-  const candidates = await buildLeadCandidates(mergedResults, {
-    fastScrapeCount: options.fastScrapeCount,
-    enablePlaywright: options.enablePlaywright,
-    targetLeadCount: requestedLeadCount,
-    requestMessage: message
+    message,
+    runStore,
+    searchManager: options.searchManager,
+    openAiApiKey: options.openAiApiKey,
+    searchMaxResults: options.searchMaxResults,
+    maxPages: options.subReactMaxPages,
+    browseConcurrency: options.subReactBrowseConcurrency,
+    extractionBatchSize: options.subReactBatchSize,
+    llmMaxCalls: options.subReactLlmMaxCalls,
+    minConfidence: options.subReactMinConfidence
   });
 
   await recordToolCall(runStore, runId, {
     toolName: "lead_pipeline",
-    inputRedacted: { resultCount: mergedResults.length, requestedLeadCount },
-    outputRedacted: { candidateCount: candidates.length },
-    durationMs: Date.now() - scrapeStart,
+    inputRedacted: {
+      message,
+      maxPages: options.subReactMaxPages,
+      browseConcurrency: options.subReactBrowseConcurrency,
+      extractionBatchSize: options.subReactBatchSize,
+      llmMaxCalls: options.subReactLlmMaxCalls,
+      minConfidence: options.subReactMinConfidence
+    },
+    outputRedacted: {
+      queryCount: subReactResult.queryCount,
+      pagesVisited: subReactResult.pagesVisited,
+      rawCandidateCount: subReactResult.rawCandidateCount,
+      validatedCandidateCount: subReactResult.validatedCandidateCount,
+      finalCandidateCount: subReactResult.finalCandidateCount,
+      llmCallsUsed: subReactResult.llmCallsUsed,
+      llmCallsRemaining: subReactResult.llmCallsRemaining,
+      deficitCount: subReactResult.deficitCount
+    },
+    durationMs: Date.now() - pipelineStart,
     status: "ok"
   });
 
   const csvStart = Date.now();
-  const csvPath = await writeLeadsCsv(options.workspaceDir, runId, candidates);
+  const csvPath = await writeLeadsCsv(options.workspaceDir, runId, subReactResult.leads);
 
   await recordToolCall(runStore, runId, {
     toolName: "write_csv",
-    inputRedacted: { candidateCount: candidates.length },
+    inputRedacted: { candidateCount: subReactResult.leads.length },
     outputRedacted: { csvPath },
     durationMs: Date.now() - csvStart,
     status: "ok"
@@ -209,38 +144,57 @@ export async function runReActLoop(
     sessionId,
     phase: "persist",
     eventType: "artifact_written",
-    payload: { csvPath, candidateCount: candidates.length },
+    payload: {
+      csvPath,
+      candidateCount: subReactResult.leads.length,
+      llmCallsUsed: subReactResult.llmCallsUsed,
+      llmCallsRemaining: subReactResult.llmCallsRemaining
+    },
     timestamp: nowIso()
   });
 
-  const llmSummary = await runOpenAiChat({
-    apiKey: options.openAiApiKey,
-    messages: [
-      {
-        role: "system",
-        content:
-          "You are Alfred. Summarize lead-candidate output in 3 concise bullet points and include quality caveat."
-      },
-      {
-        role: "user",
-        content: JSON.stringify(
-          redactValue({
-            query,
-            provider: primaryProvider,
-            fallbackUsed: anyFallbackUsed,
-            candidatePreview: candidates.slice(0, 5)
-          })
-        )
-      }
-    ]
-  });
+  let llmSummary: string | undefined;
+  if (options.openAiApiKey && subReactResult.llmCallsRemaining > 0) {
+    llmSummary = await runOpenAiChat({
+      apiKey: options.openAiApiKey,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are Alfred. Summarize lead extraction outcome in 4 concise bullets with quality notes and explicit deficit if present."
+        },
+        {
+          role: "user",
+          content: JSON.stringify(
+            redactValue({
+              requestMessage: message,
+              requestedLeadCount: subReactResult.requestedLeadCount,
+              queryCount: subReactResult.queryCount,
+              pagesVisited: subReactResult.pagesVisited,
+              rawCandidateCount: subReactResult.rawCandidateCount,
+              validatedCandidateCount: subReactResult.validatedCandidateCount,
+              finalCandidateCount: subReactResult.finalCandidateCount,
+              deficitCount: subReactResult.deficitCount,
+              candidatePreview: subReactResult.leads.slice(0, 5)
+            })
+          )
+        }
+      ]
+    });
+  }
+
+  const deficitMessage =
+    subReactResult.deficitCount > 0
+      ? `Requested ${subReactResult.requestedLeadCount}, returned ${subReactResult.finalCandidateCount} validated leads (deficit ${subReactResult.deficitCount}).`
+      : `Returned ${subReactResult.finalCandidateCount} validated leads.`;
 
   const assistantText =
     llmSummary ??
     [
-      `Lead candidate run completed with ${candidates.length} candidates.`,
-      `Search provider: ${primaryProvider}${anyFallbackUsed ? " (fallback used)" : ""}.`,
-      "Quality is candidate-grade for now; verify before outreach."
+      `Lead sub-ReAct completed with ${subReactResult.finalCandidateCount} validated leads.`,
+      `Visited ${subReactResult.pagesVisited} pages across ${subReactResult.queryCount} queries.`,
+      `LLM calls used: ${subReactResult.llmCallsUsed}/${options.subReactLlmMaxCalls}.`,
+      deficitMessage
     ].join("\n");
 
   await appendDailyNote(options.workspaceDir, sessionId, "assistant", assistantText);
@@ -251,10 +205,12 @@ export async function runReActLoop(
     phase: "final",
     eventType: "final_answer",
     payload: {
-      candidateCount: candidates.length,
+      candidateCount: subReactResult.finalCandidateCount,
+      requestedLeadCount: subReactResult.requestedLeadCount,
+      deficitCount: subReactResult.deficitCount,
       csvPath,
-      provider: primaryProvider,
-      fallbackUsed: anyFallbackUsed
+      llmCallsUsed: subReactResult.llmCallsUsed,
+      llmCallsRemaining: subReactResult.llmCallsRemaining
     },
     timestamp: nowIso()
   });

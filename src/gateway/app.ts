@@ -55,7 +55,12 @@ const chatService = new ChatService({
   fastScrapeCount: appConfig.fastScrapeCount,
   enablePlaywright: appConfig.enablePlaywright,
   maxSteps: appConfig.runMaxSteps,
-  openAiApiKey: appConfig.openAiApiKey
+  openAiApiKey: appConfig.openAiApiKey,
+  subReactMaxPages: appConfig.subReactMaxPages,
+  subReactBrowseConcurrency: appConfig.subReactBrowseConcurrency,
+  subReactBatchSize: appConfig.subReactBatchSize,
+  subReactLlmMaxCalls: appConfig.subReactLlmMaxCalls,
+  subReactMinConfidence: appConfig.subReactMinConfidence
 });
 
 app.get("/health", (c) => {

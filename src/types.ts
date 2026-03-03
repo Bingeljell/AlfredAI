@@ -23,13 +23,12 @@ export interface SearchResult {
 
 export interface LeadCandidate {
   companyName: string;
-  fullName?: string;
-  role?: string;
+  website?: string;
   location?: string;
-  email?: string;
-  emailConfidence: number;
-  sourceUrls: string[];
-  notes?: string;
+  shortDesc: string;
+  sourceUrl: string;
+  confidence: number;
+  evidence: string;
 }
 
 export interface ToolCallRecord {
@@ -41,10 +40,21 @@ export interface ToolCallRecord {
   timestamp: string;
 }
 
+export type RunPhase =
+  | "session"
+  | "thought"
+  | "sub_react_step"
+  | "tool"
+  | "observe"
+  | "persist"
+  | "route"
+  | "final"
+  | "approval";
+
 export interface RunEvent {
   runId: string;
   sessionId: string;
-  phase: "session" | "thought" | "tool" | "observe" | "persist" | "route" | "final" | "approval";
+  phase: RunPhase;
   eventType: string;
   payload: Record<string, unknown>;
   timestamp: string;
@@ -68,10 +78,4 @@ export interface RunOutcome {
   assistantText?: string;
   artifactPaths?: string[];
   approvalToken?: string;
-}
-
-export interface ReActContext {
-  runId: string;
-  sessionId: string;
-  message: string;
 }

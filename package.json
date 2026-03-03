@@ -7,6 +7,8 @@
     "build": "tsc -p tsconfig.json",
     "dev:gateway": "tsx watch src/gateway/server.ts",
     "start": "tsx src/gateway/server.ts",
+    "postinstall": "node scripts/setup-playwright.js",
+    "setup:browsers": "playwright install chromium --with-deps",
     "test:unit": "node --import tsx --test tests/unit/**/*.test.ts",
     "test:integration": "node --import tsx --test tests/integration/**/*.test.ts",
     "test:smoke": "node --import tsx --test tests/smoke/**/*.test.ts",
@@ -17,6 +19,7 @@
     "cheerio": "^1.1.2",
     "dotenv": "^16.6.1",
     "hono": "^4.9.8",
+    "playwright": "^1.55.1",
     "zod": "^4.1.8"
   },
   "devDependencies": {

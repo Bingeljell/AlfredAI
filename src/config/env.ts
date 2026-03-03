@@ -17,11 +17,16 @@ const EnvSchema = z.object({
   SEARXNG_RETRY_INTERVAL_MS: z.coerce.number().default(1000),
   BRAVE_SEARCH_API_KEY: z.string().default(""),
   ALFRED_SEARCH_MAX_RESULTS: z.coerce.number().int().min(1).max(15).default(15),
-  ALFRED_FAST_SCRAPE_COUNT: z.coerce.number().int().min(1).max(5).default(5),
+  ALFRED_FAST_SCRAPE_COUNT: z.coerce.number().int().min(1).max(10).default(10),
   ALFRED_ENABLE_PLAYWRIGHT: z.string().default("true"),
   ALFRED_RUN_MAX_STEPS: z.coerce.number().int().min(1).max(12).default(6),
   ALFRED_WORKSPACE_DIR: z.string().default("./workspace/alfred"),
-  ALFRED_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2)
+  ALFRED_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2),
+  ALFRED_SUBREACT_MAX_PAGES: z.coerce.number().int().min(1).max(20).default(10),
+  ALFRED_SUBREACT_BROWSE_CONCURRENCY: z.coerce.number().int().min(1).max(6).default(3),
+  ALFRED_SUBREACT_BATCH_SIZE: z.coerce.number().int().min(1).max(6).default(4),
+  ALFRED_SUBREACT_LLM_MAX_CALLS: z.coerce.number().int().min(1).max(20).default(6),
+  ALFRED_SUBREACT_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.6)
 });
 
 const parsed = EnvSchema.parse(process.env);
@@ -42,7 +47,12 @@ export const appConfig = {
   enablePlaywright: parsed.ALFRED_ENABLE_PLAYWRIGHT.toLowerCase() === "true",
   runMaxSteps: parsed.ALFRED_RUN_MAX_STEPS,
   workspaceDir: path.resolve(parsed.ALFRED_WORKSPACE_DIR),
-  concurrency: parsed.ALFRED_CONCURRENCY
+  concurrency: parsed.ALFRED_CONCURRENCY,
+  subReactMaxPages: parsed.ALFRED_SUBREACT_MAX_PAGES,
+  subReactBrowseConcurrency: parsed.ALFRED_SUBREACT_BROWSE_CONCURRENCY,
+  subReactBatchSize: parsed.ALFRED_SUBREACT_BATCH_SIZE,
+  subReactLlmMaxCalls: parsed.ALFRED_SUBREACT_LLM_MAX_CALLS,
+  subReactMinConfidence: parsed.ALFRED_SUBREACT_MIN_CONFIDENCE
 };
 
 export function getPolicyMode(): PolicyMode {

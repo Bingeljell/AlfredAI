@@ -23,6 +23,11 @@ interface ChatServiceOptions {
   enablePlaywright: boolean;
   maxSteps: number;
   openAiApiKey?: string;
+  subReactMaxPages: number;
+  subReactBrowseConcurrency: number;
+  subReactBatchSize: number;
+  subReactLlmMaxCalls: number;
+  subReactMinConfidence: number;
 }
 
 export class ChatService {
@@ -41,7 +46,12 @@ export class ChatService {
         fastScrapeCount: this.options.fastScrapeCount,
         enablePlaywright: this.options.enablePlaywright,
         maxSteps: this.options.maxSteps,
-        openAiApiKey: this.options.openAiApiKey
+        openAiApiKey: this.options.openAiApiKey,
+        subReactMaxPages: this.options.subReactMaxPages,
+        subReactBrowseConcurrency: this.options.subReactBrowseConcurrency,
+        subReactBatchSize: this.options.subReactBatchSize,
+        subReactLlmMaxCalls: this.options.subReactLlmMaxCalls,
+        subReactMinConfidence: this.options.subReactMinConfidence
       });
 
       await this.options.runStore.updateRun(runId, {

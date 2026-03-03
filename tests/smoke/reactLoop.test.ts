@@ -36,7 +36,34 @@ test("runReActLoop produces a completed outcome with artifact", async () => {
     searchMaxResults: 15,
     fastScrapeCount: 1,
     enablePlaywright: false,
-    maxSteps: 6
+    maxSteps: 6,
+    subReactMaxPages: 10,
+    subReactBrowseConcurrency: 3,
+    subReactBatchSize: 4,
+    subReactLlmMaxCalls: 6,
+    subReactMinConfidence: 0.6,
+    leadPipelineExecutor: async () => ({
+      leads: [
+        {
+          companyName: "Acme Tech",
+          website: "https://acmetech.example",
+          location: "India",
+          shortDesc: "Managed IT and SI services provider",
+          sourceUrl: "https://example.com",
+          confidence: 0.82,
+          evidence: "Listed on source directory as managed service provider"
+        }
+      ],
+      llmCallsUsed: 2,
+      llmCallsRemaining: 4,
+      requestedLeadCount: 50,
+      rawCandidateCount: 10,
+      validatedCandidateCount: 1,
+      finalCandidateCount: 1,
+      queryCount: 3,
+      pagesVisited: 5,
+      deficitCount: 49
+    })
   });
 
   assert.equal(outcome.status, "completed");

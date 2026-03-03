@@ -24,6 +24,40 @@ function pretty(obj) {
   return JSON.stringify(obj, null, 2);
 }
 
+function renderTimelineView(payload) {
+  if (!payload || !payload.run || !Array.isArray(payload.events)) {
+    return pretty(payload);
+  }
+
+  const lines = [];
+  lines.push(`Run: ${payload.run.runId}`);
+  lines.push(`Status: ${payload.run.status}`);
+  lines.push(`Message: ${payload.run.message}`);
+  lines.push("");
+  lines.push("Timeline:");
+
+  for (const event of payload.events) {
+    if (event.phase === "sub_react_step") {
+      const step = event.payload?.step || "unknown";
+      const status = event.payload?.status || "n/a";
+      lines.push(`- [${event.timestamp}] ${event.phase}:${step} (${status})`);
+      continue;
+    }
+    lines.push(`- [${event.timestamp}] ${event.phase}:${event.eventType}`);
+  }
+
+  lines.push("");
+  lines.push("Tool Calls:");
+  for (const call of payload.run.toolCalls || []) {
+    lines.push(`- ${call.toolName} | ${call.status} | ${call.durationMs}ms`);
+  }
+
+  lines.push("");
+  lines.push("Raw JSON:");
+  lines.push(pretty(payload));
+  return lines.join("\n");
+}
+
 async function api(path, init = {}) {
   const res = await fetch(path, {
     headers: { "content-type": "application/json" },
@@ -72,7 +106,7 @@ async function loadRun(runId) {
   const payload = await api(`/v1/runs/${runId}`);
   state.activeRunId = runId;
   els.runIdInput.value = runId;
-  els.timeline.textContent = pretty(payload);
+  els.timeline.textContent = renderTimelineView(payload);
 }
 
 els.createSession.addEventListener("click", async () => {

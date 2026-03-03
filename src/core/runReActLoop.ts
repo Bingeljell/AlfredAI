@@ -154,6 +154,7 @@ export async function runReActLoop(
   });
 
   let llmSummary: string | undefined;
+  let summaryLlmCallUsed = 0;
   if (options.openAiApiKey && subReactResult.llmCallsRemaining > 0) {
     llmSummary = await runOpenAiChat({
       apiKey: options.openAiApiKey,
@@ -181,7 +182,13 @@ export async function runReActLoop(
         }
       ]
     });
+    if (llmSummary) {
+      summaryLlmCallUsed = 1;
+    }
   }
+
+  const totalLlmCallsUsed = subReactResult.llmCallsUsed + summaryLlmCallUsed;
+  const totalLlmCallsRemaining = Math.max(0, options.subReactLlmMaxCalls - totalLlmCallsUsed);
 
   const deficitMessage =
     subReactResult.deficitCount > 0
@@ -193,7 +200,7 @@ export async function runReActLoop(
     [
       `Lead sub-ReAct completed with ${subReactResult.finalCandidateCount} validated leads.`,
       `Visited ${subReactResult.pagesVisited} pages across ${subReactResult.queryCount} queries.`,
-      `LLM calls used: ${subReactResult.llmCallsUsed}/${options.subReactLlmMaxCalls}.`,
+      `LLM calls used: ${totalLlmCallsUsed}/${options.subReactLlmMaxCalls}.`,
       deficitMessage
     ].join("\n");
 
@@ -209,8 +216,8 @@ export async function runReActLoop(
       requestedLeadCount: subReactResult.requestedLeadCount,
       deficitCount: subReactResult.deficitCount,
       csvPath,
-      llmCallsUsed: subReactResult.llmCallsUsed,
-      llmCallsRemaining: subReactResult.llmCallsRemaining
+      llmCallsUsed: totalLlmCallsUsed,
+      llmCallsRemaining: totalLlmCallsRemaining
     },
     timestamp: nowIso()
   });

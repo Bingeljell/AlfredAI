@@ -46,6 +46,7 @@
   - Extraction prompt quality is now upgraded with a schema-first system prompt that explicitly handles batched payloads, near-range confidence behavior, anti-hallucination constraints, and strict JSON output/repair expectations for higher extraction success.
   - Pass-2 agentic foundation started: tool registry is now folder-based auto-discovery with Zod input contracts, enabling model-directed tool invocation over `lead_pipeline`, `search`, and `write_csv`.
   - Lead-generation now runs through an outer agentic loop with iterative planning, action execution (single/parallel tools), observation history, replan triggers, and explicit stop-reason events (`target_met`, `budget_exhausted`, `diminishing_returns`, `tool_blocked`, `manual_guardrail`).
+  - Agent-loop execution budgets are now configurable in `.env`, making iteration depth, parallelism, planner-call budget, observation window, and diminishing-return sensitivity tunable without code changes.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Additional resiliency and production hardening tasks remain for later iterations.

@@ -60,7 +60,13 @@ const chatService = new ChatService({
   subReactBrowseConcurrency: appConfig.subReactBrowseConcurrency,
   subReactBatchSize: appConfig.subReactBatchSize,
   subReactLlmMaxCalls: appConfig.subReactLlmMaxCalls,
-  subReactMinConfidence: appConfig.subReactMinConfidence
+  subReactMinConfidence: appConfig.subReactMinConfidence,
+  agentMaxDurationMs: appConfig.agentMaxDurationMs,
+  agentMaxToolCalls: appConfig.agentMaxToolCalls,
+  agentMaxParallelTools: appConfig.agentMaxParallelTools,
+  agentPlannerMaxCalls: appConfig.agentPlannerMaxCalls,
+  agentObservationWindow: appConfig.agentObservationWindow,
+  agentDiminishingThreshold: appConfig.agentDiminishingThreshold
 });
 
 app.get("/health", (c) => {

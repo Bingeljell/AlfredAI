@@ -28,6 +28,12 @@ interface ChatServiceOptions {
   subReactBatchSize: number;
   subReactLlmMaxCalls: number;
   subReactMinConfidence: number;
+  agentMaxDurationMs: number;
+  agentMaxToolCalls: number;
+  agentMaxParallelTools: number;
+  agentPlannerMaxCalls: number;
+  agentObservationWindow: number;
+  agentDiminishingThreshold: number;
 }
 
 export class ChatService {
@@ -66,7 +72,13 @@ export class ChatService {
         subReactBrowseConcurrency: this.options.subReactBrowseConcurrency,
         subReactBatchSize: this.options.subReactBatchSize,
         subReactLlmMaxCalls: this.options.subReactLlmMaxCalls,
-        subReactMinConfidence: this.options.subReactMinConfidence
+        subReactMinConfidence: this.options.subReactMinConfidence,
+        agentMaxDurationMs: this.options.agentMaxDurationMs,
+        agentMaxToolCalls: this.options.agentMaxToolCalls,
+        agentMaxParallelTools: this.options.agentMaxParallelTools,
+        agentPlannerMaxCalls: this.options.agentPlannerMaxCalls,
+        agentObservationWindow: this.options.agentObservationWindow,
+        agentDiminishingThreshold: this.options.agentDiminishingThreshold
       });
 
       await this.options.runStore.updateRun(runId, {

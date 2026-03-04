@@ -54,6 +54,7 @@ export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInpu
       deficitCount: outcome.deficitCount,
       llmCallsUsed: outcome.llmCallsUsed,
       llmCallsRemaining: outcome.llmCallsRemaining,
+      llmUsage: outcome.llmUsage,
       sizeRangeRequested: outcome.sizeRangeRequested,
       sizeMatchBreakdown: outcome.sizeMatchBreakdown,
       relaxModeApplied: outcome.relaxModeApplied,

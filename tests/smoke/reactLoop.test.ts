@@ -58,6 +58,12 @@ test("runReActLoop produces a completed outcome with artifact", async () => {
       cancelled: false,
       llmCallsUsed: 2,
       llmCallsRemaining: 4,
+      llmUsage: {
+        promptTokens: 120,
+        completionTokens: 80,
+        totalTokens: 200,
+        callCount: 2
+      },
       requestedLeadCount: 50,
       rawCandidateCount: 10,
       validatedCandidateCount: 1,

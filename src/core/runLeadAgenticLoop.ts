@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { RunOutcome, ToolCallRecord } from "../types.js";
+import type { LlmUsage, LlmUsageTotals, RunOutcome, ToolCallRecord } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import { discoverLeadAgentTools } from "../agent/tools/registry.js";
@@ -169,6 +169,7 @@ interface PlannerDecision {
   };
   usedFallback: boolean;
   plannerFailureReason?: string;
+  llmUsage?: LlmUsage;
 }
 
 interface ToolRunResult {
@@ -181,6 +182,51 @@ interface ToolRunResult {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function emptyLlmUsageTotals(): LlmUsageTotals {
+  return {
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    callCount: 0
+  };
+}
+
+function sanitizeTokenValue(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.round(value));
+}
+
+function normalizeLlmUsage(value: unknown): LlmUsage | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const promptTokens = sanitizeTokenValue((value as { promptTokens?: unknown }).promptTokens);
+  const completionTokens = sanitizeTokenValue((value as { completionTokens?: unknown }).completionTokens);
+  const totalTokens =
+    sanitizeTokenValue((value as { totalTokens?: unknown }).totalTokens) || promptTokens + completionTokens;
+  if (promptTokens === 0 && completionTokens === 0 && totalTokens === 0) {
+    return undefined;
+  }
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens
+  };
+}
+
+function parseLlmUsageCallCount(value: unknown): number | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const raw = (value as { callCount?: unknown }).callCount;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    return undefined;
+  }
+  return Math.max(0, Math.round(raw));
 }
 
 function normalizeCompanyName(value: string): string {
@@ -378,6 +424,7 @@ function buildDeterministicAssistantSummary(args: {
   elapsedMs: number;
   observations: LeadAgentObservation[];
   stateLeads: LeadAgentState["leads"];
+  llmUsageTotals: LlmUsageTotals;
 }): string {
   const deficitCount = Math.max(0, args.requestedLeadCount - args.leadCount);
   const emailLeadCount = args.stateLeads.filter((lead) => Boolean(lead.email)).length;
@@ -396,6 +443,7 @@ function buildDeterministicAssistantSummary(args: {
     `Leads collected: ${args.leadCount}/${args.requestedLeadCount} (deficit ${deficitCount}).`,
     `Email coverage: ${emailLeadCount}/${args.leadCount} (${(emailCoverageRatio * 100).toFixed(1)}%).`,
     `Observed failures: search ${searchFailureCount}, browse ${browseFailureCount}, extraction ${extractionFailureCount}.`,
+    `LLM usage: ${args.llmUsageTotals.totalTokens} total tokens (${args.llmUsageTotals.promptTokens} prompt, ${args.llmUsageTotals.completionTokens} completion) across ${args.llmUsageTotals.callCount} calls.`,
     `Stop: ${args.stopReason} (${args.stopExplanation}) | Tool calls ${args.totalToolCalls}/${args.maxToolCalls}, planner calls ${args.plannerCallsUsed}/${args.plannerMaxCalls}, elapsed ${Math.round(args.elapsedMs / 1000)}s.`
   ].join("\n");
 }
@@ -593,6 +641,23 @@ async function decidePlannerAction(
   }
 
   const lastObservations = observations.slice(-options.observationWindow);
+  const aggregateFailures = lastObservations.reduce(
+    (acc, item) => {
+      acc.failedToolCount += item.failedToolCount;
+      acc.searchFailureCount += item.searchFailureCount;
+      acc.browseFailureCount += item.browseFailureCount;
+      acc.extractionFailureCount += item.extractionFailureCount;
+      acc.hadLlmBudgetExhausted = acc.hadLlmBudgetExhausted || item.hadLlmBudgetExhausted;
+      return acc;
+    },
+    {
+      failedToolCount: 0,
+      searchFailureCount: 0,
+      browseFailureCount: 0,
+      extractionFailureCount: 0,
+      hadLlmBudgetExhausted: false
+    }
+  );
   const diagnostic = await runOpenAiStructuredChatWithDiagnostics(
     {
       apiKey: options.openAiApiKey,
@@ -602,7 +667,7 @@ async function decidePlannerAction(
         {
           role: "system",
           content:
-            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, hadLlmBudgetExhausted). React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
+            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, hadLlmBudgetExhausted). React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. If failedToolCount > 0 across recent observations, your thought must acknowledge that failure signal before choosing the next action. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
         },
         {
           role: "user",
@@ -615,7 +680,8 @@ async function decidePlannerAction(
               artifactCount: state.artifacts.length
             },
             tools: availableTools,
-            recentObservations: lastObservations
+            recentObservations: lastObservations,
+            aggregateFailures
           })
         }
       ]
@@ -626,7 +692,8 @@ async function decidePlannerAction(
   if (!diagnostic.result) {
     return {
       ...fallbackPlan(iteration, options.defaults, state.leads.length, state.requestedLeadCount),
-      plannerFailureReason: diagnostic.failureMessage
+      plannerFailureReason: diagnostic.failureMessage,
+      llmUsage: diagnostic.usage
     };
   }
 
@@ -637,7 +704,8 @@ async function decidePlannerAction(
         reason: diagnostic.result.stopReason ?? "manual_guardrail",
         explanation: diagnostic.result.stopExplanation ?? "Planner requested stop"
       },
-      usedFallback: false
+      usedFallback: false,
+      llmUsage: diagnostic.usage
     };
   }
 
@@ -645,14 +713,16 @@ async function decidePlannerAction(
   if (!action) {
     return {
       ...fallbackPlan(iteration, options.defaults, state.leads.length, state.requestedLeadCount),
-      plannerFailureReason: "planner_returned_empty_action"
+      plannerFailureReason: "planner_returned_empty_action",
+      llmUsage: diagnostic.usage
     };
   }
 
   return {
     thought: diagnostic.result.thought,
     action,
-    usedFallback: false
+    usedFallback: false,
+    llmUsage: diagnostic.usage
   };
 }
 
@@ -726,9 +796,49 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
   };
   const plannerBudget = new LlmBudgetManager(options.plannerMaxCalls);
   const observations: LeadAgentObservation[] = [];
+  const llmUsageTotals = emptyLlmUsageTotals();
   let toolCallsUsed = 0;
   let stop: { reason: AgentStopReason; explanation: string } | undefined;
   let diminishingObservedOnce = false;
+
+  const recordLlmUsage = async (args: {
+    usage?: LlmUsage;
+    callCountDelta?: number;
+    source: string;
+    iteration: number;
+  }): Promise<void> => {
+    const usage = args.usage;
+    const callCountDelta = Math.max(0, Math.round(args.callCountDelta ?? (usage ? 1 : 0)));
+    if (usage) {
+      llmUsageTotals.promptTokens += usage.promptTokens;
+      llmUsageTotals.completionTokens += usage.completionTokens;
+      llmUsageTotals.totalTokens += usage.totalTokens;
+    }
+    llmUsageTotals.callCount += callCountDelta;
+    if (!usage && callCountDelta === 0) {
+      return;
+    }
+
+    await options.runStore.addLlmUsage(
+      options.runId,
+      usage ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      callCountDelta
+    );
+    await options.runStore.appendEvent({
+      runId: options.runId,
+      sessionId: options.sessionId,
+      phase: "observe",
+      eventType: "llm_usage",
+      payload: {
+        iteration: args.iteration,
+        source: args.source,
+        usageDelta: usage ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        callCountDelta,
+        totals: llmUsageTotals
+      },
+      timestamp: nowIso()
+    });
+  };
 
   await options.runStore.appendEvent({
     runId: options.runId,
@@ -794,6 +904,12 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       state,
       observations
     );
+
+    await recordLlmUsage({
+      usage: plannerDecision.llmUsage,
+      source: "planner",
+      iteration
+    });
 
     await options.runStore.appendEvent({
       runId: options.runId,
@@ -984,6 +1100,17 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
     const results = action.type === "parallel" ? await Promise.all(callExecutions) : [await callExecutions[0]!];
     toolCallsUsed += calls.length;
 
+    for (const result of results) {
+      const usage = normalizeLlmUsage(result.output?.llmUsage);
+      const callCountDelta = parseLlmUsageCallCount(result.output?.llmUsage) ?? (usage ? 1 : 0);
+      await recordLlmUsage({
+        usage,
+        callCountDelta,
+        source: `tool:${result.tool}`,
+        iteration
+      });
+    }
+
     const newLeadCount = state.leads.length - leadsBefore;
     const failedToolCount = results.filter((result) => result.status === "error").length;
     const signals = extractObservationSignals(results);
@@ -1018,7 +1145,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
         browseFailureCount: signals.browseFailureCount,
         extractionFailureCount: signals.extractionFailureCount,
         hadLlmBudgetExhausted: signals.hadLlmBudgetExhausted,
-        results
+        results,
+        llmUsageTotals
       },
       timestamp: nowIso()
     });
@@ -1117,7 +1245,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       csvPath,
       candidateCount: state.leads.length,
       totalToolCalls: toolCallsUsed,
-      plannerCallsUsed: plannerBudget.used
+      plannerCallsUsed: plannerBudget.used,
+      llmUsageTotals
     },
     timestamp: nowIso()
   });
@@ -1135,7 +1264,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       requestedLeadCount: state.requestedLeadCount,
       totalToolCalls: toolCallsUsed,
       plannerCallsUsed: plannerBudget.used,
-      elapsedMs: Date.now() - startMs
+      elapsedMs: Date.now() - startMs,
+      llmUsageTotals
     },
     timestamp: nowIso()
   });
@@ -1154,7 +1284,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
     plannerMaxCalls: options.plannerMaxCalls,
     elapsedMs: Date.now() - startMs,
     observations,
-    stateLeads: state.leads
+    stateLeads: state.leads,
+    llmUsageTotals
   });
 
   await options.runStore.appendEvent({
@@ -1171,7 +1302,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       csvPath,
       stopReason: stop.reason,
       totalToolCalls: toolCallsUsed,
-      plannerCallsUsed: plannerBudget.used
+      plannerCallsUsed: plannerBudget.used,
+      llmUsageTotals
     },
     timestamp: nowIso()
   });

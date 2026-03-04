@@ -65,6 +65,7 @@
   - Planner/observe loop now has structured failure awareness (search/browse/extraction counts + LLM-budget exhaustion flag) and applies a deterministic guardrail to check `search_status` before re-running `lead_pipeline` after search-failure iterations.
   - Run budget handling is now deadline-aware end-to-end: the agent avoids launching deep lead passes when remaining time is too low, dynamically downscales crawl settings under tight budgets, and propagates deadline checks into browse/extract/enrichment so runs persist partial work and stop gracefully instead of overrunning.
   - Email enrichment is now explicitly budget-aware with dynamic URL caps and diminishing-return early-stop behavior, reducing wasted crawl time while preserving useful email-fill improvements under constrained run budgets.
+  - Run-level LLM usage accounting is now wired end-to-end (OpenAI response usage capture -> sub-pipeline/tool propagation -> run-state aggregation/events/final summary), and planner context now includes aggregate failure signals so replans can explicitly react to repeated tool/search/extraction failures.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Additional resiliency and production hardening tasks remain for later iterations.

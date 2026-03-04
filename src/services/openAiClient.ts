@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { LlmUsage } from "../types.js";
 
 interface OpenAiMessage {
   role: "system" | "user" | "assistant";
@@ -17,6 +18,11 @@ interface OpenAiResponse {
       content?: string;
     };
   }>;
+  usage?: {
+    prompt_tokens?: unknown;
+    completion_tokens?: unknown;
+    total_tokens?: unknown;
+  };
 }
 
 interface OpenAiStructuredChatOptions extends OpenAiChatOptions {
@@ -38,6 +44,7 @@ export interface StructuredChatDiagnostic<T> {
   failureMessage?: string;
   statusCode?: number;
   httpErrorDetails?: StructuredChatHttpErrorDetails;
+  usage?: LlmUsage;
 }
 
 export interface StructuredChatHttpErrorDetails {
@@ -131,12 +138,44 @@ function formatHttpFailureMessage(details: StructuredChatHttpErrorDetails): stri
   return fragments.join(" | ");
 }
 
-async function parseResponse(response: Response): Promise<string | undefined> {
+interface ParsedOpenAiResponse {
+  content?: string;
+  usage?: LlmUsage;
+}
+
+function toTokenCount(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const rounded = Math.round(value);
+  return rounded >= 0 ? rounded : undefined;
+}
+
+function parseUsage(payload: OpenAiResponse): LlmUsage | undefined {
+  const promptTokens = toTokenCount(payload.usage?.prompt_tokens) ?? 0;
+  const completionTokens = toTokenCount(payload.usage?.completion_tokens) ?? 0;
+  const totalTokens = toTokenCount(payload.usage?.total_tokens) ?? promptTokens + completionTokens;
+
+  if (promptTokens === 0 && completionTokens === 0 && totalTokens === 0) {
+    return undefined;
+  }
+
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens
+  };
+}
+
+async function parseResponse(response: Response): Promise<ParsedOpenAiResponse | undefined> {
   if (!response.ok) {
     return undefined;
   }
   const payload = (await response.json()) as OpenAiResponse;
-  return payload.choices?.[0]?.message?.content?.trim() || undefined;
+  return {
+    content: payload.choices?.[0]?.message?.content?.trim() || undefined,
+    usage: parseUsage(payload)
+  };
 }
 
 export async function runOpenAiChat(options: OpenAiChatOptions): Promise<string | undefined> {
@@ -158,7 +197,8 @@ export async function runOpenAiChat(options: OpenAiChatOptions): Promise<string 
     signal: AbortSignal.timeout(25000)
   });
 
-  return parseResponse(response);
+  const parsed = await parseResponse(response);
+  return parsed?.content;
 }
 
 export async function runOpenAiStructuredChat<T>(
@@ -220,11 +260,13 @@ export async function runOpenAiStructuredChatWithDiagnostics<T>(
     };
   }
 
-  const content = await parseResponse(response);
+  const parsed = await parseResponse(response);
+  const content = parsed?.content;
   if (!content) {
     return {
       failureCode: "empty_content",
-      failureMessage: "Structured response content was empty"
+      failureMessage: "Structured response content was empty",
+      usage: parsed?.usage
     };
   }
 
@@ -234,18 +276,21 @@ export async function runOpenAiStructuredChatWithDiagnostics<T>(
   } catch {
     return {
       failureCode: "json_parse_error",
-      failureMessage: "Model response was not valid JSON"
+      failureMessage: "Model response was not valid JSON",
+      usage: parsed?.usage
     };
   }
 
   try {
     return {
-      result: validator.parse(parsedJson)
+      result: validator.parse(parsedJson),
+      usage: parsed?.usage
     };
   } catch (error) {
     return {
       failureCode: "zod_validation_error",
-      failureMessage: error instanceof Error ? error.message : "Schema validation failed"
+      failureMessage: error instanceof Error ? error.message : "Schema validation failed",
+      usage: parsed?.usage
     };
   }
 }

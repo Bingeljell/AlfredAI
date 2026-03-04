@@ -1,4 +1,4 @@
-import type { LeadCandidate, LeadSizeMatch, SearchProviderName, SearchResult } from "../../types.js";
+import type { LeadCandidate, LeadSizeMatch, LlmUsage, LlmUsageTotals, SearchProviderName, SearchResult } from "../../types.js";
 import type { RunStore } from "../../runs/runStore.js";
 import type { SearchManager } from "../search/searchManager.js";
 import {
@@ -230,6 +230,7 @@ export interface LeadSubReactResult {
   emailEnrichmentUrlCap?: number;
   emailEnrichmentStoppedEarlyReason?: string;
   emailRequested?: boolean;
+  llmUsage: LlmUsageTotals;
 }
 
 interface QueryPlanResult {
@@ -238,6 +239,7 @@ interface QueryPlanResult {
   plannerFailureReason?: string;
   plannerFailureDetails?: StructuredChatHttpErrorDetails;
   usedModelPlan: boolean;
+  llmUsage?: LlmUsage;
 }
 
 interface ExtractBatchResult {
@@ -245,6 +247,7 @@ interface ExtractBatchResult {
   attemptsUsed: number;
   failureReasons: string[];
   failureDetails: Array<Record<string, unknown>>;
+  llmUsage: LlmUsageTotals;
 }
 
 interface SearchOutcomeSuccess {
@@ -281,6 +284,24 @@ interface EmailEnrichmentResult {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function emptyLlmUsageTotals(): LlmUsageTotals {
+  return {
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    callCount: 0
+  };
+}
+
+function addLlmUsage(totals: LlmUsageTotals, usage: LlmUsage | undefined): void {
+  if (!usage) {
+    return;
+  }
+  totals.promptTokens += Math.max(0, Math.round(usage.promptTokens));
+  totals.completionTokens += Math.max(0, Math.round(usage.completionTokens));
+  totals.totalTokens += Math.max(0, Math.round(usage.totalTokens));
 }
 
 function parseLocationHint(message: string): string | undefined {
@@ -796,7 +817,8 @@ function qualityGate(
     browseFailureSamples: [],
     extractionFailureCount: 0,
     extractionFailureSamples: [],
-    emailRequested
+    emailRequested,
+    llmUsage: emptyLlmUsageTotals()
   };
 }
 
@@ -857,7 +879,8 @@ async function buildQueryPlan(message: string, options: LeadSubReactOptions, bud
     return {
       queries: fallbackQueryExpansion(message, options.filters),
       usedModelPlan: false,
-      plannerFailureReason: !options.openAiApiKey ? "missing_api_key" : "llm_budget_exhausted"
+      plannerFailureReason: !options.openAiApiKey ? "missing_api_key" : "llm_budget_exhausted",
+      llmUsage: undefined
     };
   }
 
@@ -883,14 +906,16 @@ async function buildQueryPlan(message: string, options: LeadSubReactOptions, bud
       queries: fallbackQueryExpansion(message, options.filters),
       usedModelPlan: false,
       plannerFailureReason: formatDiagnosticReason(diagnostic),
-      plannerFailureDetails: diagnostic.httpErrorDetails
+      plannerFailureDetails: diagnostic.httpErrorDetails,
+      llmUsage: diagnostic.usage
     };
   }
 
   return {
     queries: diagnostic.result.queries.map((query) => query.trim()).filter(Boolean).slice(0, 5),
     targetLeadCount: diagnostic.result.targetLeadCount ?? undefined,
-    usedModelPlan: true
+    usedModelPlan: true,
+    llmUsage: diagnostic.usage
   };
 }
 
@@ -935,13 +960,15 @@ async function extractBatch(
 ): Promise<ExtractBatchResult> {
   const failureReasons: string[] = [];
   const failureDetails: Array<Record<string, unknown>> = [];
+  const llmUsage = emptyLlmUsageTotals();
 
   if (!options.openAiApiKey) {
     return {
       leads: [],
       attemptsUsed: 0,
       failureReasons: ["missing_api_key"],
-      failureDetails: [{ attempt: 0, failureCode: "missing_api_key", failureMessage: "OpenAI API key is not configured" }]
+      failureDetails: [{ attempt: 0, failureCode: "missing_api_key", failureMessage: "OpenAI API key is not configured" }],
+      llmUsage
     };
   }
 
@@ -956,7 +983,8 @@ async function extractBatch(
           failureCode: "llm_budget_exhausted",
           failureMessage: "LLM budget exhausted before first extraction attempt"
         }
-      ]
+      ],
+      llmUsage
     };
   }
 
@@ -979,13 +1007,15 @@ async function extractBatch(
     },
     ExtractedLeadBatchSchema
   );
+  addLlmUsage(llmUsage, firstAttempt.usage);
 
   if (firstAttempt.result) {
     return {
       leads: firstAttempt.result.leads.map(normalizeCandidate),
       attemptsUsed,
       failureReasons,
-      failureDetails
+      failureDetails,
+      llmUsage
     };
   }
 
@@ -1003,7 +1033,8 @@ async function extractBatch(
       leads: [],
       attemptsUsed,
       failureReasons,
-      failureDetails
+      failureDetails,
+      llmUsage
     };
   }
 
@@ -1036,13 +1067,15 @@ async function extractBatch(
     },
     ExtractedLeadBatchSchema
   );
+  addLlmUsage(llmUsage, retryAttempt.usage);
 
   if (retryAttempt.result) {
     return {
       leads: retryAttempt.result.leads.map(normalizeCandidate),
       attemptsUsed,
       failureReasons,
-      failureDetails
+      failureDetails,
+      llmUsage
     };
   }
 
@@ -1052,7 +1085,8 @@ async function extractBatch(
     leads: [],
     attemptsUsed,
     failureReasons,
-    failureDetails
+    failureDetails,
+    llmUsage
   };
 }
 
@@ -1192,6 +1226,7 @@ async function enrichLeadEmails(
 
 export async function executeLeadSubReactPipeline(options: LeadSubReactOptions): Promise<LeadSubReactResult> {
   const budget = new LlmBudgetManager(options.llmMaxCalls);
+  const llmUsage = emptyLlmUsageTotals();
   const fallbackRequestedLeadCount = parseRequestedLeadCount(options.message);
   const targetEmployeeRange = resolveTargetEmployeeRange(options.message, options.filters);
   const emailRequested = isEmailRequested(options.message, options.filters);
@@ -1204,6 +1239,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   });
 
   const queryPlan = await buildQueryPlan(options.message, options, budget);
+  addLlmUsage(llmUsage, queryPlan.llmUsage);
   const requestedLeadCount = queryPlan.targetLeadCount ?? fallbackRequestedLeadCount;
 
   if (hasTimedOut(options)) {
@@ -1211,6 +1247,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     timedOutEarly.queryCount = queryPlan.queries.length;
     timedOutEarly.llmCallsUsed = budget.used;
     timedOutEarly.llmCallsRemaining = budget.remaining;
+    timedOutEarly.llmUsage = { ...llmUsage, callCount: budget.used };
     timedOutEarly.timedOut = true;
     return timedOutEarly;
   }
@@ -1220,6 +1257,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     cancelledEarly.queryCount = queryPlan.queries.length;
     cancelledEarly.llmCallsUsed = budget.used;
     cancelledEarly.llmCallsRemaining = budget.remaining;
+    cancelledEarly.llmUsage = { ...llmUsage, callCount: budget.used };
     cancelledEarly.cancelled = true;
     return cancelledEarly;
   }
@@ -1234,7 +1272,8 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     plannerFailureReason: queryPlan.plannerFailureReason,
     plannerFailureDetails: queryPlan.plannerFailureDetails,
     llmCallsUsed: budget.used,
-    llmCallsRemaining: budget.remaining
+    llmCallsRemaining: budget.remaining,
+    llmUsage
   });
 
   const searchOutcomes: SearchOutcome[] = await Promise.all(
@@ -1275,6 +1314,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     timedOutDuringSearch.queryCount = queryPlan.queries.length;
     timedOutDuringSearch.llmCallsUsed = budget.used;
     timedOutDuringSearch.llmCallsRemaining = budget.remaining;
+    timedOutDuringSearch.llmUsage = { ...llmUsage, callCount: budget.used };
     timedOutDuringSearch.searchFailureCount = failedSearches.length;
     timedOutDuringSearch.searchFailureSamples = failedSearches.slice(0, 5);
     timedOutDuringSearch.timedOut = true;
@@ -1286,6 +1326,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     cancelledDuringSearch.queryCount = queryPlan.queries.length;
     cancelledDuringSearch.llmCallsUsed = budget.used;
     cancelledDuringSearch.llmCallsRemaining = budget.remaining;
+    cancelledDuringSearch.llmUsage = { ...llmUsage, callCount: budget.used };
     cancelledDuringSearch.searchFailureCount = failedSearches.length;
     cancelledDuringSearch.searchFailureSamples = failedSearches.slice(0, 5);
     cancelledDuringSearch.cancelled = true;
@@ -1355,6 +1396,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     });
 
     const extraction = await extractBatch(batch, options, budget);
+    addLlmUsage(llmUsage, extraction.llmUsage);
     extractedLeads.push(...extraction.leads);
     if (extraction.failureReasons.length > 0) {
       for (const reason of extraction.failureReasons) {
@@ -1374,7 +1416,8 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
       failureReasons: extraction.failureReasons,
       failureDetails: extraction.failureDetails,
       llmCallsUsed: budget.used,
-      llmCallsRemaining: budget.remaining
+      llmCallsRemaining: budget.remaining,
+      llmUsage
     });
   }
 
@@ -1423,6 +1466,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   gated.pagesVisited = pagePayloads.length;
   gated.llmCallsUsed = budget.used;
   gated.llmCallsRemaining = budget.remaining;
+  gated.llmUsage = { ...llmUsage, callCount: budget.used };
   gated.searchFailureCount = failedSearches.length;
   gated.searchFailureSamples = failedSearches.slice(0, 5);
   gated.browseFailureCount = browseFailures.length;
@@ -1464,7 +1508,8 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     emailEnrichmentUrlCap: gated.emailEnrichmentUrlCap,
     emailEnrichmentStoppedEarlyReason: gated.emailEnrichmentStoppedEarlyReason,
     llmCallsUsed: gated.llmCallsUsed,
-    llmCallsRemaining: gated.llmCallsRemaining
+    llmCallsRemaining: gated.llmCallsRemaining,
+    llmUsage: gated.llmUsage
   });
 
   return gated;

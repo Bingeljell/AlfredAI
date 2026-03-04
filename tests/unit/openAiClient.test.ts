@@ -88,3 +88,56 @@ test("captures body snippet when OpenAI http error is non-json", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("captures usage metadata from structured OpenAI responses", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({ ok: true })
+            }
+          }
+        ],
+        usage: {
+          prompt_tokens: 123,
+          completion_tokens: 45,
+          total_tokens: 168
+        }
+      }),
+      {
+        status: 200,
+        headers: {
+          "content-type": "application/json"
+        }
+      }
+    );
+
+  try {
+    const diagnostic = await runOpenAiStructuredChatWithDiagnostics(
+      {
+        apiKey: "test-key",
+        schemaName: "simple_schema",
+        jsonSchema: {
+          type: "object",
+          properties: { ok: { type: "boolean" } },
+          required: ["ok"],
+          additionalProperties: false
+        },
+        messages: [{ role: "user", content: "hello" }]
+      },
+      SimpleSchema
+    );
+
+    assert.deepEqual(diagnostic.result, { ok: true });
+    assert.deepEqual(diagnostic.usage, {
+      promptTokens: 123,
+      completionTokens: 45,
+      totalTokens: 168
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

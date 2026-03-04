@@ -51,6 +51,16 @@ export interface ToolCallRecord {
   timestamp: string;
 }
 
+export interface LlmUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+export interface LlmUsageTotals extends LlmUsage {
+  callCount: number;
+}
+
 export type RunPhase =
   | "session"
   | "thought"
@@ -83,6 +93,7 @@ export interface RunRecord {
   assistantText?: string;
   artifactPaths?: string[];
   approvalToken?: string;
+  llmUsage?: LlmUsageTotals;
   toolCalls: ToolCallRecord[];
 }
 

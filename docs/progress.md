@@ -52,6 +52,7 @@
   - Lead extraction/output now includes optional `email` as a first-class field across structured extraction, normalized candidate mapping, and CSV export.
   - User-initiated run cancellation is now supported end-to-end: backend cancel API, persisted cancel requests, cooperative stop checks through lead loops, partial-result persistence, and a UI `Cancel Run` action.
   - Lead-quality hotfixes now reduce false dedupe collapse (company-identity keying instead of `sourceUrl` domain fallback), and browse-stage diagnostics now include per-URL failure telemetry plus a Playwright navigation fallback path to improve scrape coverage on difficult pages.
+  - Extraction prompt quality is now further tightened for employee-size normalization with explicit numeric parsing rules, conservative null behavior, and anti-aggregator naming constraints to improve size-aware lead scoring outcomes.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Additional resiliency and production hardening tasks remain for later iterations.

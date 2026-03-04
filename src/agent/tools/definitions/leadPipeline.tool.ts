@@ -51,7 +51,9 @@ export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInpu
       sizeMatchBreakdown: outcome.sizeMatchBreakdown,
       relaxModeApplied: outcome.relaxModeApplied,
       strictMinConfidence: outcome.strictMinConfidence,
-      effectiveMinConfidence: outcome.effectiveMinConfidence
+      effectiveMinConfidence: outcome.effectiveMinConfidence,
+      searchFailureCount: outcome.searchFailureCount,
+      searchFailureSamples: outcome.searchFailureSamples
     };
   }
 };

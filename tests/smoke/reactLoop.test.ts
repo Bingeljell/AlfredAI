@@ -72,7 +72,9 @@ test("runReActLoop produces a completed outcome with artifact", async () => {
       },
       relaxModeApplied: false,
       strictMinConfidence: 0.6,
-      effectiveMinConfidence: 0.6
+      effectiveMinConfidence: 0.6,
+      searchFailureCount: 0,
+      searchFailureSamples: []
     })
   });
 

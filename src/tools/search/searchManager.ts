@@ -11,10 +11,19 @@ interface SearchManagerOptions {
   retryIntervalMs: number;
 }
 
-interface ProviderStatus {
+export interface ProviderStatus {
+  primaryProvider: SearchProviderName;
+  fallbackProvider?: SearchProviderName;
   primaryHealthy: boolean;
   fallbackHealthy: boolean;
+  primaryRecoverySupported: boolean;
   activeDefault: SearchProviderName;
+}
+
+export interface PrimaryRecoveryResult {
+  attempted: boolean;
+  recovered: boolean;
+  reason: string;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -45,24 +54,49 @@ export class SearchManager {
       return true;
     }
 
+    const recovery = await this.recoverPrimary();
+    return recovery.recovered;
+  }
+
+  async recoverPrimary(): Promise<PrimaryRecoveryResult> {
     if (!this.primaryStartCommand) {
-      return false;
+      return {
+        attempted: false,
+        recovered: false,
+        reason: "primary_start_command_not_configured"
+      };
     }
 
-    spawn(this.primaryStartCommand, {
-      stdio: "ignore",
-      detached: true,
-      shell: true
-    }).unref();
+    try {
+      spawn(this.primaryStartCommand, {
+        stdio: "ignore",
+        detached: true,
+        shell: true
+      }).unref();
+    } catch {
+      return {
+        attempted: true,
+        recovered: false,
+        reason: "primary_start_command_spawn_failed"
+      };
+    }
 
     const deadline = Date.now() + this.startupTimeoutMs;
     while (Date.now() < deadline) {
       await sleep(this.retryIntervalMs);
       if (await this.primary.healthcheck()) {
-        return true;
+        return {
+          attempted: true,
+          recovered: true,
+          reason: "primary_recovered_after_restart"
+        };
       }
     }
-    return false;
+    return {
+      attempted: true,
+      recovered: false,
+      reason: "primary_unhealthy_after_restart_timeout"
+    };
   }
 
   async getProviderStatus(): Promise<ProviderStatus> {
@@ -72,8 +106,11 @@ export class SearchManager {
     ]);
 
     return {
+      primaryProvider: this.primary.name,
+      fallbackProvider: this.fallback?.name,
       primaryHealthy,
       fallbackHealthy,
+      primaryRecoverySupported: Boolean(this.primaryStartCommand),
       activeDefault: primaryHealthy ? this.primary.name : this.fallback?.name ?? this.primary.name
     };
   }
@@ -83,13 +120,36 @@ export class SearchManager {
 
     const primaryHealthy = await this.ensurePrimaryHealthy();
     if (primaryHealthy) {
-      const primaryResults = await this.primary.search(query, cappedMax);
-      if (primaryResults.length > 0) {
-        return {
-          provider: this.primary.name,
-          fallbackUsed: false,
-          results: primaryResults
-        };
+      try {
+        const primaryResults = await this.primary.search(query, cappedMax);
+        if (primaryResults.length > 0) {
+          return {
+            provider: this.primary.name,
+            fallbackUsed: false,
+            results: primaryResults
+          };
+        }
+      } catch (error) {
+        const primarySearchError = error instanceof Error ? error.message : "primary_search_failed";
+        const recovery = await this.recoverPrimary();
+        if (recovery.recovered) {
+          try {
+            const retriedResults = await this.primary.search(query, cappedMax);
+            if (retriedResults.length > 0) {
+              return {
+                provider: this.primary.name,
+                fallbackUsed: false,
+                results: retriedResults
+              };
+            }
+          } catch {
+            // Ignore and fall through to fallback provider path below.
+          }
+        }
+
+        if (!this.fallback) {
+          throw new Error(`Primary search failed (${primarySearchError}); ${recovery.reason}; no fallback configured`);
+        }
       }
     }
 

@@ -190,9 +190,26 @@ function summarizeToolResult(result: ToolRunResult): string {
   }
 
   const output = result.output ?? {};
+  if (result.tool === "recover_search") {
+    const recovery = output.recovery as { recovered?: unknown; reason?: unknown } | undefined;
+    const recovered = recovery?.recovered === true;
+    const reason = typeof recovery?.reason === "string" ? recovery.reason : "unknown";
+    return `recover_search ${recovered ? "recovered" : "not_recovered"} (${reason})`;
+  }
+
+  if (result.tool === "search_status") {
+    const primaryHealthy = output.primaryHealthy === true ? "healthy" : "unhealthy";
+    const fallbackHealthy = output.fallbackHealthy === true ? "healthy" : "unhealthy";
+    return `search_status primary=${primaryHealthy}, fallback=${fallbackHealthy}`;
+  }
+
   const leadCount = typeof output.totalLeadCount === "number" ? output.totalLeadCount : undefined;
   const added = typeof output.addedLeadCount === "number" ? output.addedLeadCount : undefined;
   if (typeof leadCount === "number") {
+    const searchFailures = typeof output.searchFailureCount === "number" ? output.searchFailureCount : 0;
+    if (searchFailures > 0) {
+      return `${result.tool} ok, added ${added ?? 0}, total leads ${leadCount}, search failures ${searchFailures}`;
+    }
     return `${result.tool} ok, added ${added ?? 0}, total leads ${leadCount}`;
   }
 
@@ -334,7 +351,7 @@ async function decidePlannerAction(
         {
           role: "system",
           content:
-            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
+            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. If observations indicate search failures/provider outage, first use search_status, then recover_search when recovery is supported, then retry search or lead_pipeline. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
         },
         {
           role: "user",

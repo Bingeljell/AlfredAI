@@ -193,6 +193,8 @@ export interface LeadSubReactResult {
   strictMinConfidence: number;
   effectiveMinConfidence: number;
   relaxedMinConfidence?: number;
+  searchFailureCount: number;
+  searchFailureSamples: Array<{ query: string; error: string }>;
 }
 
 interface QueryPlanResult {
@@ -534,7 +536,9 @@ function qualityGate(
     relaxModeApplied,
     strictMinConfidence: minConfidence,
     effectiveMinConfidence: relaxModeApplied ? (relaxedMinConfidence ?? minConfidence) : minConfidence,
-    relaxedMinConfidence
+    relaxedMinConfidence,
+    searchFailureCount: 0,
+    searchFailureSamples: []
   };
 }
 
@@ -902,6 +906,8 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   gated.pagesVisited = pagePayloads.length;
   gated.llmCallsUsed = budget.used;
   gated.llmCallsRemaining = budget.remaining;
+  gated.searchFailureCount = failedSearches.length;
+  gated.searchFailureSamples = failedSearches.slice(0, 5);
 
   await emitStep(options.runStore, options.runId, options.sessionId, "quality_gate", {
     status: "completed",

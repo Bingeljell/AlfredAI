@@ -25,6 +25,18 @@ class FakeProvider implements SearchProvider {
   }
 }
 
+class ThrowingProvider implements SearchProvider {
+  readonly name = "searxng" as const;
+
+  async healthcheck(): Promise<boolean> {
+    return true;
+  }
+
+  async search(): Promise<never> {
+    throw new Error("primary_timeout");
+  }
+}
+
 test("search manager enforces max 15 result cap", async () => {
   const manager = new SearchManager({
     primary: new FakeProvider("searxng", true, 50),
@@ -52,4 +64,37 @@ test("search manager falls back when primary is unhealthy", async () => {
   assert.equal(output.provider, "brave");
   assert.equal(output.fallbackUsed, true);
   assert.equal(output.results.length, 3);
+});
+
+test("search manager falls back when primary search throws", async () => {
+  const manager = new SearchManager({
+    primary: new ThrowingProvider(),
+    fallback: new FakeProvider("brave", true, 4),
+    maxResults: 15,
+    startupTimeoutMs: 1,
+    retryIntervalMs: 1
+  });
+
+  const output = await manager.search("msp usa");
+  assert.equal(output.provider, "brave");
+  assert.equal(output.fallbackUsed, true);
+  assert.equal(output.results.length, 4);
+});
+
+test("recoverPrimary reports unsupported when start command is not configured", async () => {
+  const manager = new SearchManager({
+    primary: new FakeProvider("searxng", false, 0),
+    fallback: new FakeProvider("brave", true, 3),
+    maxResults: 15,
+    startupTimeoutMs: 1,
+    retryIntervalMs: 1
+  });
+
+  const recovery = await manager.recoverPrimary();
+  assert.equal(recovery.attempted, false);
+  assert.equal(recovery.recovered, false);
+  assert.equal(recovery.reason, "primary_start_command_not_configured");
+
+  const status = await manager.getProviderStatus();
+  assert.equal(status.primaryRecoverySupported, false);
 });

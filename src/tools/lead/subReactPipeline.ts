@@ -223,6 +223,7 @@ export interface LeadSubReactResult {
   emailEnrichmentUpdatedCount?: number;
   emailEnrichmentFailureCount?: number;
   emailEnrichmentFailureSamples?: Array<{ url: string; error: string }>;
+  emailRequested?: boolean;
 }
 
 interface QueryPlanResult {
@@ -277,6 +278,14 @@ function nowIso(): string {
 function parseLocationHint(message: string): string | undefined {
   const match = message.match(/\bin\s+([A-Za-z][A-Za-z\s]{1,40})$/i);
   return match?.[1]?.trim();
+}
+
+function isEmailRequested(message: string, filters: NormalizedLeadPipelineFilters | undefined): boolean {
+  if (filters?.requireEmail === true) {
+    return true;
+  }
+
+  return /\bemails?\b|\bcontact\s+(?:email|details?)\b|\bemail\s+contacts?\b/i.test(message);
 }
 
 function toPositiveInt(value: number | undefined | null): number | undefined {
@@ -607,8 +616,12 @@ function deriveSizeMatch(lead: LeadCandidate, targetRange: EmployeeSizeRange | u
   return "out_of_range";
 }
 
-function scoreLead(lead: LeadCandidate, targetRange: EmployeeSizeRange | undefined): number {
-  const completeness = [lead.website, lead.location, lead.shortDesc, lead.evidence].filter(Boolean).length / 4;
+function scoreLead(
+  lead: LeadCandidate,
+  targetRange: EmployeeSizeRange | undefined,
+  emailRequested: boolean
+): number {
+  const completeness = [lead.website, lead.location, lead.shortDesc, lead.evidence, lead.email].filter(Boolean).length / 5;
   const citationBonus = lead.evidence.length > 30 ? 0.05 : 0;
   const sizeMatch = lead.sizeMatch ?? deriveSizeMatch(lead, targetRange);
   const sizeAdjustment: Record<LeadSizeMatch, number> = {
@@ -618,7 +631,8 @@ function scoreLead(lead: LeadCandidate, targetRange: EmployeeSizeRange | undefin
     out_of_range: -0.18
   };
   const sizeScoreDelta = targetRange ? sizeAdjustment[sizeMatch] : 0;
-  return Math.min(1, Math.max(0, lead.confidence * 0.75 + completeness * 0.2 + citationBonus + sizeScoreDelta));
+  const emailAdjustment = lead.email ? 0.08 : emailRequested ? -0.12 : -0.05;
+  return Math.min(1, Math.max(0, lead.confidence * 0.72 + completeness * 0.2 + citationBonus + sizeScoreDelta + emailAdjustment));
 }
 
 export const leadQualityScoringForTests = {
@@ -630,7 +644,8 @@ function qualityGate(
   leads: LeadCandidate[],
   requestedLeadCount: number,
   minConfidence: number,
-  targetEmployeeRange: EmployeeSizeRange | undefined
+  targetEmployeeRange: EmployeeSizeRange | undefined,
+  emailRequested: boolean
 ): LeadSubReactResult {
   const minFinal = 15;
   const maxFinal = Math.min(25, requestedLeadCount);
@@ -641,7 +656,7 @@ function qualityGate(
       return {
         ...lead,
         sizeMatch,
-        confidence: scoreLead({ ...lead, sizeMatch }, targetEmployeeRange),
+        confidence: scoreLead({ ...lead, sizeMatch }, targetEmployeeRange, emailRequested),
         selectionMode: "strict" as const
       };
     })
@@ -721,7 +736,8 @@ function qualityGate(
     searchFailureCount: 0,
     searchFailureSamples: [],
     browseFailureCount: 0,
-    browseFailureSamples: []
+    browseFailureSamples: [],
+    emailRequested
   };
 }
 
@@ -1078,6 +1094,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   const budget = new LlmBudgetManager(options.llmMaxCalls);
   const fallbackRequestedLeadCount = parseRequestedLeadCount(options.message);
   const targetEmployeeRange = resolveTargetEmployeeRange(options.message, options.filters);
+  const emailRequested = isEmailRequested(options.message, options.filters);
 
   await emitStep(options.runStore, options.runId, options.sessionId, "query_expansion", {
     status: "started",
@@ -1090,7 +1107,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   const requestedLeadCount = queryPlan.targetLeadCount ?? fallbackRequestedLeadCount;
 
   if (await isCancelled(options)) {
-    const cancelledEarly = qualityGate([], requestedLeadCount, options.minConfidence, targetEmployeeRange);
+    const cancelledEarly = qualityGate([], requestedLeadCount, options.minConfidence, targetEmployeeRange, emailRequested);
     cancelledEarly.queryCount = queryPlan.queries.length;
     cancelledEarly.llmCallsUsed = budget.used;
     cancelledEarly.llmCallsRemaining = budget.remaining;
@@ -1145,7 +1162,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   );
 
   if (await isCancelled(options)) {
-    const cancelledDuringSearch = qualityGate([], requestedLeadCount, options.minConfidence, targetEmployeeRange);
+    const cancelledDuringSearch = qualityGate([], requestedLeadCount, options.minConfidence, targetEmployeeRange, emailRequested);
     cancelledDuringSearch.queryCount = queryPlan.queries.length;
     cancelledDuringSearch.llmCallsUsed = budget.used;
     cancelledDuringSearch.llmCallsRemaining = budget.remaining;
@@ -1250,7 +1267,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     targetEmployeeRange
   });
 
-  const gated = qualityGate(extractedLeads, requestedLeadCount, options.minConfidence, targetEmployeeRange);
+  const gated = qualityGate(extractedLeads, requestedLeadCount, options.minConfidence, targetEmployeeRange, emailRequested);
   gated.queryCount = queryPlan.queries.length;
   gated.pagesVisited = pagePayloads.length;
   gated.llmCallsUsed = budget.used;
@@ -1270,6 +1287,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   await emitStep(options.runStore, options.runId, options.sessionId, "quality_gate", {
     status: "completed",
     requestedLeadCount,
+    emailRequested,
     rawCandidateCount: gated.rawCandidateCount,
     validatedCandidateCount: gated.validatedCandidateCount,
     finalCandidateCount: gated.finalCandidateCount,

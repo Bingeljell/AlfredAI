@@ -17,12 +17,28 @@ function baseLead(): LeadCandidate {
 
 test("size scoring boosts near_range and keeps unknown neutral relative to out_of_range", () => {
   const targetRange = { min: 5, max: 50 };
-  const inRange = leadQualityScoringForTests.scoreLead({ ...baseLead(), sizeMatch: "in_range" }, targetRange);
-  const nearRange = leadQualityScoringForTests.scoreLead({ ...baseLead(), sizeMatch: "near_range" }, targetRange);
-  const unknown = leadQualityScoringForTests.scoreLead({ ...baseLead(), sizeMatch: "unknown" }, targetRange);
-  const outOfRange = leadQualityScoringForTests.scoreLead({ ...baseLead(), sizeMatch: "out_of_range" }, targetRange);
+  const inRange = leadQualityScoringForTests.scoreLead({ ...baseLead(), sizeMatch: "in_range" }, targetRange, false);
+  const nearRange = leadQualityScoringForTests.scoreLead({ ...baseLead(), sizeMatch: "near_range" }, targetRange, false);
+  const unknown = leadQualityScoringForTests.scoreLead({ ...baseLead(), sizeMatch: "unknown" }, targetRange, false);
+  const outOfRange = leadQualityScoringForTests.scoreLead({ ...baseLead(), sizeMatch: "out_of_range" }, targetRange, false);
 
   assert.ok(inRange > nearRange);
   assert.ok(nearRange > unknown);
   assert.ok(unknown > outOfRange);
+});
+
+test("email-aware scoring prefers leads with email when email is requested", () => {
+  const targetRange = { min: 5, max: 50 };
+  const withEmail = leadQualityScoringForTests.scoreLead(
+    { ...baseLead(), sizeMatch: "in_range", email: "hello@acme.example" },
+    targetRange,
+    true
+  );
+  const withoutEmail = leadQualityScoringForTests.scoreLead(
+    { ...baseLead(), sizeMatch: "in_range" },
+    targetRange,
+    true
+  );
+
+  assert.ok(withEmail > withoutEmail);
 });

@@ -452,21 +452,48 @@ function normalizeDomain(url: string | undefined): string {
 function normalizeCompanyName(value: string): string {
   return value
     .toLowerCase()
+    .replace(/\b(incorporated|inc|llc|ltd|corp|corporation|co|company)\b/g, " ")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeLocationKey(value: string | undefined): string {
+  if (!value) {
+    return "";
+  }
+  return value
+    .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 function dedupeKeyForLead(lead: LeadCandidate): string {
+  const company = normalizeCompanyName(lead.companyName);
+  const location = normalizeLocationKey(lead.location);
+  if (company && location) {
+    return `name:${company}|loc:${location}`;
+  }
+  if (company) {
+    return `name:${company}`;
+  }
+
   const websiteDomain = normalizeDomain(lead.website);
   if (websiteDomain) {
     return `domain:${websiteDomain}`;
   }
 
-  const company = normalizeCompanyName(lead.companyName);
-  const location = (lead.location ?? "").toLowerCase().trim();
-  return `name:${company}|loc:${location}`;
+  const sourceDomain = normalizeDomain(lead.sourceUrl);
+  if (sourceDomain) {
+    return `source_domain:${sourceDomain}`;
+  }
+  return `source:${lead.sourceUrl}`;
 }
+
+export const leadDedupeForTests = {
+  dedupeKeyForLead
+};
 
 function normalizeEmail(value: string | null | undefined): string | undefined {
   if (!value) {

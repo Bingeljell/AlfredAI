@@ -182,22 +182,60 @@ function nowIso(): string {
 function normalizeCompanyName(value: string): string {
   return value
     .toLowerCase()
+    .replace(/\b(incorporated|inc|llc|ltd|corp|corporation|co|company)\b/g, " ")
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function leadKey(lead: { companyName: string; website?: string; sourceUrl: string }): string {
-  if (lead.website) {
-    try {
-      return `domain:${new URL(lead.website).hostname.replace(/^www\./, "").toLowerCase()}`;
-    } catch {
-      // Fall through to company-name key.
-    }
+function normalizeLocationKey(value: string | undefined): string {
+  if (!value) {
+    return "";
+  }
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeDomain(url: string | undefined): string {
+  if (!url) {
+    return "";
+  }
+  try {
+    return new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function leadKey(lead: { companyName: string; website?: string; sourceUrl: string; location?: string }): string {
+  const company = normalizeCompanyName(lead.companyName);
+  const location = normalizeLocationKey(lead.location);
+  if (company && location) {
+    return `name:${company}|loc:${location}`;
+  }
+  if (company) {
+    return `name:${company}`;
   }
 
-  return `name:${normalizeCompanyName(lead.companyName)}`;
+  const websiteDomain = normalizeDomain(lead.website);
+  if (websiteDomain) {
+    return `domain:${websiteDomain}`;
+  }
+
+  const sourceDomain = normalizeDomain(lead.sourceUrl);
+  if (sourceDomain) {
+    return `source_domain:${sourceDomain}`;
+  }
+
+  return `source:${lead.sourceUrl}`;
 }
+
+export const leadDedupeForTests = {
+  leadKey
+};
 
 function summarizeToolResult(result: ToolRunResult): string {
   if (result.status === "error") {

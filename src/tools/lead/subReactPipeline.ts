@@ -1,4 +1,4 @@
-import type { LeadCandidate, SearchResult } from "../../types.js";
+import type { LeadCandidate, SearchProviderName, SearchResult } from "../../types.js";
 import type { RunStore } from "../../runs/runStore.js";
 import type { SearchManager } from "../search/searchManager.js";
 import {
@@ -23,12 +23,19 @@ const QUERY_EXPANSION_JSON_SCHEMA = {
       items: { type: "string" }
     },
     targetLeadCount: {
-      type: "integer",
-      minimum: 10,
-      maximum: 100
+      anyOf: [
+        {
+          type: "integer",
+          minimum: 10,
+          maximum: 100
+        },
+        {
+          type: "null"
+        }
+      ]
     }
   },
-  required: ["queries"]
+  required: ["queries", "targetLeadCount"]
 } as const;
 
 const EXTRACTED_LEAD_BATCH_JSON_SCHEMA = {
@@ -42,14 +49,18 @@ const EXTRACTED_LEAD_BATCH_JSON_SCHEMA = {
         additionalProperties: false,
         properties: {
           companyName: { type: "string" },
-          website: { type: "string" },
-          location: { type: "string" },
+          website: {
+            anyOf: [{ type: "string" }, { type: "null" }]
+          },
+          location: {
+            anyOf: [{ type: "string" }, { type: "null" }]
+          },
           shortDesc: { type: "string" },
           sourceUrl: { type: "string" },
           confidence: { type: "number" },
           evidence: { type: "string" }
         },
-        required: ["companyName", "shortDesc", "sourceUrl", "confidence", "evidence"]
+        required: ["companyName", "website", "location", "shortDesc", "sourceUrl", "confidence", "evidence"]
       }
     }
   },
@@ -98,6 +109,21 @@ interface ExtractBatchResult {
   failureReasons: string[];
   failureDetails: Array<Record<string, unknown>>;
 }
+
+interface SearchOutcomeSuccess {
+  query: string;
+  provider: SearchProviderName;
+  fallbackUsed: boolean;
+  resultCount: number;
+  results: SearchResult[];
+}
+
+interface SearchOutcomeFailure {
+  query: string;
+  error: string;
+}
+
+type SearchOutcome = SearchOutcomeSuccess | SearchOutcomeFailure;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -152,7 +178,7 @@ function normalizeDomain(url: string | undefined): string {
 function normalizeCandidate(item: ExtractedLead): LeadCandidate {
   return {
     companyName: item.companyName.replace(/\s+/g, " ").trim(),
-    website: normalizeWebsite(item.website),
+    website: normalizeWebsite(item.website ?? undefined),
     location: item.location?.replace(/\s+/g, " ").trim(),
     shortDesc: item.shortDesc.replace(/\s+/g, " ").trim(),
     sourceUrl: item.sourceUrl,
@@ -281,7 +307,7 @@ async function buildQueryPlan(message: string, options: LeadSubReactOptions, bud
 
   return {
     queries: diagnostic.result.queries.map((query) => query.trim()).filter(Boolean).slice(0, 5),
-    targetLeadCount: diagnostic.result.targetLeadCount,
+    targetLeadCount: diagnostic.result.targetLeadCount ?? undefined,
     usedModelPlan: true
   };
 }
@@ -475,16 +501,51 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     llmCallsRemaining: budget.remaining
   });
 
-  const searchOutputs = await Promise.all(
-    queryPlan.queries.map((query) => options.searchManager.search(query, options.searchMaxResults).catch(() => undefined))
+  const searchOutcomes: SearchOutcome[] = await Promise.all(
+    queryPlan.queries.map(async (query) => {
+      try {
+        const searchResponse = await options.searchManager.search(query, options.searchMaxResults);
+        return {
+          query,
+          provider: searchResponse.provider,
+          fallbackUsed: searchResponse.fallbackUsed,
+          resultCount: searchResponse.results.length,
+          results: searchResponse.results
+        };
+      } catch (error) {
+        return {
+          query,
+          error: error instanceof Error ? error.message.slice(0, 220) : String(error).slice(0, 220)
+        };
+      }
+    })
   );
+
+  const successfulSearches = searchOutcomes.filter(
+    (outcome): outcome is SearchOutcomeSuccess =>
+      "results" in outcome
+  );
+  const failedSearches = searchOutcomes
+    .filter((outcome): outcome is SearchOutcomeFailure => "error" in outcome)
+    .map((outcome) => ({ query: outcome.query, error: outcome.error }));
+
   const mergedResults = mergeSearchResults(
-    searchOutputs.filter(Boolean).map((item) => item!.results),
+    successfulSearches.map((item) => item.results),
     options.maxPages
   );
 
   await emitStep(options.runStore, options.runId, options.sessionId, "browse_batch", {
     status: "started",
+    queryCount: queryPlan.queries.length,
+    successfulQueries: successfulSearches.length,
+    failedQueries: failedSearches.length,
+    searchResultsSummary: successfulSearches.map((item) => ({
+      query: item.query,
+      provider: item.provider,
+      fallbackUsed: item.fallbackUsed,
+      resultCount: item.resultCount
+    })),
+    searchFailures: failedSearches,
     urlCount: mergedResults.length
   });
 

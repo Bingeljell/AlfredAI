@@ -39,6 +39,7 @@
   - Lead target-count intent parsing is now robust for natural prompts (`find me 20...`) and can use model-planned count when available.
   - Extraction step now emits per-batch failure diagnostics for schema/API/content failures to make zero-result runs debuggable.
   - OpenAI HTTP failure diagnostics now include structured metadata (error type/code/message + request and rate-limit headers) and are surfaced in sub-ReAct timeline payloads for query-planning and extraction troubleshooting.
+  - Strict JSON-schema compatibility fixes are in place for query/extraction structured outputs (nullable required fields), and search-stage events now include per-query failure detail so `urlCount: 0` runs are diagnosable from timeline data.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Additional resiliency and production hardening tasks remain for later iterations.

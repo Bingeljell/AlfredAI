@@ -44,6 +44,7 @@
   - Lead quality gate now applies employee-size-aware soft matching (in-range/near/unknown/out-of-range), includes conditional relax mode for high-deficit size-filtered runs, and exports size/selection metadata in CSV and run telemetry for clearer evaluation.
   - Size metadata extraction is now resilient: `sizeSource` was replaced with free-text `sizeEvidence` to avoid URL-format validation drops that previously zeroed entire extraction batches.
   - Extraction prompt quality is now upgraded with a schema-first system prompt that explicitly handles batched payloads, near-range confidence behavior, anti-hallucination constraints, and strict JSON output/repair expectations for higher extraction success.
+  - Pass-2 agentic foundation started: tool registry is now folder-based auto-discovery with Zod input contracts, enabling model-directed tool invocation over `lead_pipeline`, `search`, and `write_csv`.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Additional resiliency and production hardening tasks remain for later iterations.

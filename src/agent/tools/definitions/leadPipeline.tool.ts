@@ -34,6 +34,7 @@ export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInpu
       llmMaxCalls: input.llmMaxCalls ?? context.defaults.subReactLlmMaxCalls,
       minConfidence: input.minConfidence ?? context.defaults.subReactMinConfidence,
       filters: normalizedFilters,
+      deadlineAtMs: context.deadlineAtMs,
       isCancellationRequested: context.isCancellationRequested
     });
 
@@ -58,6 +59,7 @@ export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInpu
       relaxModeApplied: outcome.relaxModeApplied,
       strictMinConfidence: outcome.strictMinConfidence,
       effectiveMinConfidence: outcome.effectiveMinConfidence,
+      timedOut: outcome.timedOut,
       cancelled: outcome.cancelled,
       searchFailureCount: outcome.searchFailureCount,
       searchFailureSamples: outcome.searchFailureSamples,

@@ -187,12 +187,14 @@ interface LeadSubReactOptions {
   llmMaxCalls: number;
   minConfidence: number;
   filters?: NormalizedLeadPipelineFilters;
+  deadlineAtMs?: number;
   isCancellationRequested?: () => Promise<boolean>;
 }
 
 export interface LeadSubReactResult {
   leads: LeadCandidate[];
   cancelled: boolean;
+  timedOut?: boolean;
   llmCallsUsed: number;
   llmCallsRemaining: number;
   requestedLeadCount: number;
@@ -747,6 +749,7 @@ function qualityGate(
   return {
     leads: finalLeads,
     cancelled: false,
+    timedOut: false,
     llmCallsUsed: 0,
     llmCallsRemaining: 0,
     requestedLeadCount,
@@ -777,6 +780,18 @@ async function isCancelled(options: LeadSubReactOptions): Promise<boolean> {
     return false;
   }
   return options.isCancellationRequested();
+}
+
+function remainingDeadlineMs(options: LeadSubReactOptions): number | undefined {
+  if (!options.deadlineAtMs) {
+    return undefined;
+  }
+  return options.deadlineAtMs - Date.now();
+}
+
+function hasTimedOut(options: LeadSubReactOptions): boolean {
+  const remaining = remainingDeadlineMs(options);
+  return typeof remaining === "number" ? remaining <= 0 : false;
 }
 
 async function emitStep(
@@ -1067,7 +1082,7 @@ async function enrichLeadEmails(
 
   const browserPool = await BrowserPool.create();
   try {
-    const collection = await browserPool.collectPages(urls, options.browseConcurrency);
+    const collection = await browserPool.collectPages(urls, options.browseConcurrency, options.deadlineAtMs);
     const visitedByDomain = new Set<string>();
     let updatedLeadCount = 0;
 
@@ -1137,6 +1152,15 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   const queryPlan = await buildQueryPlan(options.message, options, budget);
   const requestedLeadCount = queryPlan.targetLeadCount ?? fallbackRequestedLeadCount;
 
+  if (hasTimedOut(options)) {
+    const timedOutEarly = qualityGate([], requestedLeadCount, options.minConfidence, targetEmployeeRange, emailRequested);
+    timedOutEarly.queryCount = queryPlan.queries.length;
+    timedOutEarly.llmCallsUsed = budget.used;
+    timedOutEarly.llmCallsRemaining = budget.remaining;
+    timedOutEarly.timedOut = true;
+    return timedOutEarly;
+  }
+
   if (await isCancelled(options)) {
     const cancelledEarly = qualityGate([], requestedLeadCount, options.minConfidence, targetEmployeeRange, emailRequested);
     cancelledEarly.queryCount = queryPlan.queries.length;
@@ -1192,6 +1216,17 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     options.maxPages
   );
 
+  if (hasTimedOut(options)) {
+    const timedOutDuringSearch = qualityGate([], requestedLeadCount, options.minConfidence, targetEmployeeRange, emailRequested);
+    timedOutDuringSearch.queryCount = queryPlan.queries.length;
+    timedOutDuringSearch.llmCallsUsed = budget.used;
+    timedOutDuringSearch.llmCallsRemaining = budget.remaining;
+    timedOutDuringSearch.searchFailureCount = failedSearches.length;
+    timedOutDuringSearch.searchFailureSamples = failedSearches.slice(0, 5);
+    timedOutDuringSearch.timedOut = true;
+    return timedOutDuringSearch;
+  }
+
   if (await isCancelled(options)) {
     const cancelledDuringSearch = qualityGate([], requestedLeadCount, options.minConfidence, targetEmployeeRange, emailRequested);
     cancelledDuringSearch.queryCount = queryPlan.queries.length;
@@ -1224,7 +1259,8 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   try {
     const collection = await browserPool.collectPages(
       mergedResults.map((item) => item.url),
-      options.browseConcurrency
+      options.browseConcurrency,
+      options.deadlineAtMs
     );
     pagePayloads = collection.pages;
     browseFailures = collection.failures;
@@ -1244,8 +1280,13 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   const extractedLeads: LeadCandidate[] = [];
   const extractionFailureSamples: Array<{ batchIndex: number; reason: string }> = [];
   let cancelledDuringExtraction = false;
+  let timedOutDuringExtraction = false;
 
   for (let index = 0; index < batches.length; index += 1) {
+    if (hasTimedOut(options)) {
+      timedOutDuringExtraction = true;
+      break;
+    }
     if (await isCancelled(options)) {
       cancelledDuringExtraction = true;
       break;
@@ -1283,12 +1324,24 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     });
   }
 
+  const emailTargets = buildEmailEnrichmentTargets(extractedLeads, requestedLeadCount);
   await emitStep(options.runStore, options.runId, options.sessionId, "email_enrichment", {
     status: "started",
-    candidateLeadCount: buildEmailEnrichmentTargets(extractedLeads, requestedLeadCount).length
+    candidateLeadCount: emailTargets.length,
+    skippedForTimeout: hasTimedOut(options)
   });
 
-  const emailEnrichment = await enrichLeadEmails(extractedLeads, requestedLeadCount, options);
+  const emailEnrichment = hasTimedOut(options)
+    ? {
+        attempted: false,
+        candidateLeadCount: emailTargets.length,
+        candidateUrlCount: 0,
+        pagesVisited: 0,
+        updatedLeadCount: 0,
+        failureCount: 0,
+        failureSamples: []
+      }
+    : await enrichLeadEmails(extractedLeads, requestedLeadCount, options);
 
   await emitStep(options.runStore, options.runId, options.sessionId, "email_enrichment", {
     status: "completed",
@@ -1324,7 +1377,9 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   gated.emailEnrichmentUpdatedCount = emailEnrichment.updatedLeadCount;
   gated.emailEnrichmentFailureCount = emailEnrichment.failureCount;
   gated.emailEnrichmentFailureSamples = emailEnrichment.failureSamples;
+  gated.emailRequested = emailRequested;
   gated.cancelled = cancelledDuringExtraction || (await isCancelled(options));
+  gated.timedOut = timedOutDuringExtraction || hasTimedOut(options);
 
   await emitStep(options.runStore, options.runId, options.sessionId, "quality_gate", {
     status: "completed",
@@ -1342,6 +1397,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     relaxModeApplied: gated.relaxModeApplied,
     extractionFailureCount: gated.extractionFailureCount,
     extractionFailureSamples: gated.extractionFailureSamples,
+    timedOut: gated.timedOut,
     emailLeadCount: gated.emailLeadCount,
     emailCoverageRatio: gated.emailCoverageRatio,
     emailEnrichmentUpdatedCount: gated.emailEnrichmentUpdatedCount,

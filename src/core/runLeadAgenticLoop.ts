@@ -272,13 +272,15 @@ function summarizeToolResult(result: ToolRunResult): string {
     const browseFailures = typeof output.browseFailureCount === "number" ? output.browseFailureCount : 0;
     const extractionFailures = typeof output.extractionFailureCount === "number" ? output.extractionFailureCount : 0;
     const cancelled = output.cancelled === true;
+    const timedOut = output.timedOut === true;
     const cancelledText = cancelled ? ", cancelled=true" : "";
+    const timedOutText = timedOut ? ", timedOut=true" : "";
     const browseText = browseFailures > 0 ? `, browse failures ${browseFailures}` : "";
     const extractionText = extractionFailures > 0 ? `, extraction failures ${extractionFailures}` : "";
     if (searchFailures > 0) {
-      return `${result.tool} ok, added ${added ?? 0}, total leads ${leadCount}, search failures ${searchFailures}${browseText}${extractionText}${cancelledText}`;
+      return `${result.tool} ok, added ${added ?? 0}, total leads ${leadCount}, search failures ${searchFailures}${browseText}${extractionText}${cancelledText}${timedOutText}`;
     }
-    return `${result.tool} ok, added ${added ?? 0}, total leads ${leadCount}${browseText}${extractionText}${cancelledText}`;
+    return `${result.tool} ok, added ${added ?? 0}, total leads ${leadCount}${browseText}${extractionText}${cancelledText}${timedOutText}`;
   }
 
   if (typeof output.resultCount === "number") {
@@ -406,6 +408,36 @@ function computeDiminishingReturns(history: LeadAgentObservation[], threshold: n
   const lastTwo = history.slice(-2);
   return lastTwo.every((item) => item.newLeadCount < threshold);
 }
+
+const MIN_LEAD_PIPELINE_START_MS = 90_000;
+
+function applyLeadPipelineTimeBudget(input: Record<string, unknown>, remainingMs: number): Record<string, unknown> {
+  const adjusted = { ...input };
+  if (remainingMs < 180_000) {
+    const maxPages = typeof adjusted.maxPages === "number" ? adjusted.maxPages : 12;
+    adjusted.maxPages = Math.min(12, Math.max(1, Math.round(maxPages)));
+    const llmMaxCalls = typeof adjusted.llmMaxCalls === "number" ? adjusted.llmMaxCalls : 4;
+    adjusted.llmMaxCalls = Math.min(4, Math.max(1, Math.round(llmMaxCalls)));
+    const browseConcurrency = typeof adjusted.browseConcurrency === "number" ? adjusted.browseConcurrency : 2;
+    adjusted.browseConcurrency = Math.min(2, Math.max(1, Math.round(browseConcurrency)));
+    const extractionBatchSize = typeof adjusted.extractionBatchSize === "number" ? adjusted.extractionBatchSize : 3;
+    adjusted.extractionBatchSize = Math.min(3, Math.max(1, Math.round(extractionBatchSize)));
+  }
+
+  if (remainingMs < 120_000) {
+    const maxPages = typeof adjusted.maxPages === "number" ? adjusted.maxPages : 8;
+    adjusted.maxPages = Math.min(8, Math.max(1, Math.round(maxPages)));
+    const llmMaxCalls = typeof adjusted.llmMaxCalls === "number" ? adjusted.llmMaxCalls : 3;
+    adjusted.llmMaxCalls = Math.min(3, Math.max(1, Math.round(llmMaxCalls)));
+  }
+
+  return adjusted;
+}
+
+export const budgetGuardrailsForTests = {
+  applyLeadPipelineTimeBudget,
+  MIN_LEAD_PIPELINE_START_MS
+};
 
 function highDeficitThreshold(requestedLeadCount: number): number {
   return Math.max(6, Math.ceil(requestedLeadCount * 0.35));
@@ -634,6 +666,8 @@ async function recordToolCall(runStore: RunStore, runId: string, call: Omit<Tool
 export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<RunOutcome> {
   const availableTools = await discoverLeadAgentTools();
   const targetLeadCount = parseRequestedLeadCount(options.message);
+  const startMs = Date.now();
+  const deadlineAtMs = startMs + options.maxDurationMs;
   const state: LeadAgentState = {
     leads: [],
     artifacts: [],
@@ -678,6 +712,7 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
     runId: options.runId,
     sessionId: options.sessionId,
     message: options.message,
+    deadlineAtMs,
     runStore: options.runStore,
     searchManager: options.searchManager,
     workspaceDir: options.workspaceDir,
@@ -689,8 +724,6 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
     addLeads,
     addArtifact
   };
-
-  const startMs = Date.now();
   const plannerBudget = new LlmBudgetManager(options.plannerMaxCalls);
   const observations: LeadAgentObservation[] = [];
   let toolCallsUsed = 0;
@@ -730,8 +763,10 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       break;
     }
 
-    const elapsedMs = Date.now() - startMs;
-    if (elapsedMs > options.maxDurationMs) {
+    const nowMs = Date.now();
+    const elapsedMs = nowMs - startMs;
+    const remainingMs = deadlineAtMs - nowMs;
+    if (remainingMs <= 0 || elapsedMs > options.maxDurationMs) {
       stop = {
         reason: "budget_exhausted",
         explanation: `Stopped after exceeding max duration (${options.maxDurationMs}ms).`
@@ -811,14 +846,42 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       });
     }
 
+    const remainingMsBeforeAction = deadlineAtMs - Date.now();
+    const actionIncludesLeadPipeline =
+      action.type === "single" ? action.tool === "lead_pipeline" : action.tools.some((item) => item.tool === "lead_pipeline");
+    if (actionIncludesLeadPipeline && remainingMsBeforeAction < MIN_LEAD_PIPELINE_START_MS) {
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "observe",
+        eventType: "budget_guardrail",
+        payload: {
+          iteration,
+          remainingMs: remainingMsBeforeAction,
+          minLeadPipelineStartMs: MIN_LEAD_PIPELINE_START_MS
+        },
+        timestamp: nowIso()
+      });
+      stop = {
+        reason: "budget_exhausted",
+        explanation: `Stopped before starting a new lead pipeline pass because remaining budget (${Math.max(
+          0,
+          remainingMsBeforeAction
+        )}ms) was below safe threshold (${MIN_LEAD_PIPELINE_START_MS}ms).`
+      };
+      break;
+    }
+
     const baseCalls = action.type === "single" ? [{ tool: action.tool, input: action.input }] : action.tools;
     const calls = baseCalls.map((call) => {
       if (call.tool !== "lead_pipeline") {
         return call;
       }
+      const remainingMsForCall = Math.max(0, deadlineAtMs - Date.now());
+      const withDefaults = applyLeadPipelineActionDefaults(call.input, iteration, state.requestedLeadCount, state.leads.length);
       return {
         ...call,
-        input: applyLeadPipelineActionDefaults(call.input, iteration, state.requestedLeadCount, state.leads.length)
+        input: applyLeadPipelineTimeBudget(withDefaults, remainingMsForCall)
       };
     });
     if (calls.length === 0) {
@@ -976,6 +1039,17 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       stop = {
         reason: "manual_cancelled",
         explanation: "Run cancelled by user request."
+      };
+      break;
+    }
+
+    const timedOutDuringAction = results.some((result) => result.output?.timedOut === true);
+    if (Date.now() > deadlineAtMs || timedOutDuringAction) {
+      stop = {
+        reason: "budget_exhausted",
+        explanation: timedOutDuringAction
+          ? "Stopped after tool execution signaled deadline exhaustion."
+          : `Stopped after exceeding max duration (${options.maxDurationMs}ms).`
       };
       break;
     }

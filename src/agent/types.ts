@@ -23,6 +23,7 @@ export interface LeadAgentToolContext {
   runId: string;
   sessionId: string;
   message: string;
+  deadlineAtMs: number;
   runStore: RunStore;
   searchManager: SearchManager;
   workspaceDir: string;

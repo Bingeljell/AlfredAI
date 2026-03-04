@@ -21,6 +21,17 @@ function compactText(input: string, max = 5000): string {
   return input.replace(/\s+/g, " ").trim().slice(0, max);
 }
 
+function computeNavigationTimeout(defaultMs: number, deadlineAtMs: number | undefined, reserveMs: number): number {
+  if (!deadlineAtMs) {
+    return defaultMs;
+  }
+  const remainingMs = deadlineAtMs - Date.now() - reserveMs;
+  if (remainingMs <= 1200) {
+    return 1200;
+  }
+  return Math.max(1200, Math.min(defaultMs, remainingMs));
+}
+
 export class BrowserPool {
   private constructor(
     private readonly browser: any,
@@ -60,13 +71,19 @@ export class BrowserPool {
     await this.browser.close();
   }
 
-  private async gotoWithFallback(page: any, url: string): Promise<void> {
+  private async gotoWithFallback(page: any, url: string, deadlineAtMs?: number): Promise<void> {
+    if (deadlineAtMs && Date.now() >= deadlineAtMs) {
+      throw new Error("deadline_exceeded_before_navigation");
+    }
+    const networkIdleTimeoutMs = computeNavigationTimeout(25000, deadlineAtMs, 1500);
+    const domContentLoadedTimeoutMs = computeNavigationTimeout(20000, deadlineAtMs, 500);
+
     try {
-      await page.goto(url, { timeout: 25000, waitUntil: "networkidle" });
+      await page.goto(url, { timeout: networkIdleTimeoutMs, waitUntil: "networkidle" });
       return;
     } catch (primaryError) {
       try {
-        await page.goto(url, { timeout: 20000, waitUntil: "domcontentloaded" });
+        await page.goto(url, { timeout: domContentLoadedTimeoutMs, waitUntil: "domcontentloaded" });
         return;
       } catch (secondaryError) {
         const first = primaryError instanceof Error ? primaryError.message : String(primaryError);
@@ -76,8 +93,8 @@ export class BrowserPool {
     }
   }
 
-  private async extractPagePayload(page: any, url: string): Promise<PagePayload> {
-    await this.gotoWithFallback(page, url);
+  private async extractPagePayload(page: any, url: string, deadlineAtMs?: number): Promise<PagePayload> {
+    await this.gotoWithFallback(page, url, deadlineAtMs);
 
     const payload = (await page.evaluate(() => {
       const bodyText = document.body?.innerText ?? "";
@@ -140,7 +157,7 @@ export class BrowserPool {
     };
   }
 
-  async collectPages(urls: string[], concurrency: number): Promise<PageCollectionResult> {
+  async collectPages(urls: string[], concurrency: number, deadlineAtMs?: number): Promise<PageCollectionResult> {
     const queue = [...urls];
     const results: PagePayload[] = [];
     const failures: PageCollectionFailure[] = [];
@@ -149,12 +166,15 @@ export class BrowserPool {
       const page = await this.context.newPage();
       try {
         while (queue.length > 0) {
+          if (deadlineAtMs && Date.now() >= deadlineAtMs) {
+            return;
+          }
           const nextUrl = queue.shift();
           if (!nextUrl) {
             return;
           }
           try {
-            const payload = await this.extractPagePayload(page, nextUrl);
+            const payload = await this.extractPagePayload(page, nextUrl, deadlineAtMs);
             results.push(payload);
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);

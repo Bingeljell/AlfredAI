@@ -11,6 +11,7 @@ import { BrowserPool, type PagePayload } from "./browserPool.js";
 import { ExtractedLeadBatchSchema, QueryExpansionSchema, type ExtractedLead } from "./schemas.js";
 import { LlmBudgetManager } from "./llmBudget.js";
 import { parseRequestedLeadCount } from "./requestIntent.js";
+import type { NormalizedLeadPipelineFilters } from "./filters.js";
 
 const QUERY_EXPANSION_JSON_SCHEMA = {
   type: "object",
@@ -185,6 +186,7 @@ interface LeadSubReactOptions {
   extractionBatchSize: number;
   llmMaxCalls: number;
   minConfidence: number;
+  filters?: NormalizedLeadPipelineFilters;
   isCancellationRequested?: () => Promise<boolean>;
 }
 
@@ -346,18 +348,53 @@ function parseTargetEmployeeRange(message: string): EmployeeSizeRange | undefine
   return undefined;
 }
 
-function fallbackQueryExpansion(message: string): string[] {
-  const location = parseLocationHint(message) ?? "USA";
+function resolveTargetEmployeeRange(
+  message: string,
+  filters: NormalizedLeadPipelineFilters | undefined
+): EmployeeSizeRange | undefined {
+  if (filters?.employeeCountMin && filters.employeeCountMax) {
+    return {
+      min: Math.min(filters.employeeCountMin, filters.employeeCountMax),
+      max: Math.max(filters.employeeCountMin, filters.employeeCountMax)
+    };
+  }
+
+  if (filters?.employeeCountMin) {
+    return {
+      min: filters.employeeCountMin,
+      max: filters.employeeCountMin
+    };
+  }
+
+  if (filters?.employeeCountMax) {
+    return {
+      min: 1,
+      max: filters.employeeCountMax
+    };
+  }
+
+  return parseTargetEmployeeRange(message);
+}
+
+function fallbackQueryExpansion(message: string, filters: NormalizedLeadPipelineFilters | undefined): string[] {
+  const location = filters?.country ?? parseLocationHint(message) ?? "USA";
+  const sizeClause = filters?.employeeCountMax ? ` under ${filters.employeeCountMax} employees` : "";
   const lower = message.toLowerCase();
   const base = new Set<string>();
-  base.add(`top managed service providers ${location} 2026`);
-  base.add(`best system integrator companies ${location}`);
-  base.add(`msp companies list site:clutch.co ${location}`);
+  base.add(`top managed service providers ${location}${sizeClause} 2026`);
+  base.add(`best system integrator companies ${location}${sizeClause}`);
+  base.add(`msp companies list site:clutch.co ${location}${sizeClause}`);
   if (/si|system integrator/.test(lower)) {
-    base.add(`system integrator directory ${location}`);
+    base.add(`system integrator directory ${location}${sizeClause}`);
   }
   if (/msp|managed service/.test(lower)) {
-    base.add(`managed service provider directory ${location}`);
+    base.add(`managed service provider directory ${location}${sizeClause}`);
+  }
+  if (filters?.requireEmail || /\bemail|emails|contact\b/i.test(message)) {
+    base.add(`managed service providers ${location} contact email`);
+  }
+  if (filters?.industryKeywords?.length) {
+    base.add(`${filters.industryKeywords.join(" ")} managed services ${location}${sizeClause}`);
   }
   return Array.from(base).slice(0, 5);
 }
@@ -645,7 +682,7 @@ function diagnosticDetails(diagnostic: StructuredChatDiagnostic<unknown>, attemp
 async function buildQueryPlan(message: string, options: LeadSubReactOptions, budget: LlmBudgetManager): Promise<QueryPlanResult> {
   if (!options.openAiApiKey || !budget.consume()) {
     return {
-      queries: fallbackQueryExpansion(message),
+      queries: fallbackQueryExpansion(message, options.filters),
       usedModelPlan: false,
       plannerFailureReason: !options.openAiApiKey ? "missing_api_key" : "llm_budget_exhausted"
     };
@@ -660,9 +697,9 @@ async function buildQueryPlan(message: string, options: LeadSubReactOptions, bud
         {
           role: "system",
           content:
-            "Rewrite user lead requests into 3-5 targeted search queries for discovering real company entities. Include vertical+location intent and directory-style queries. Also output a targetLeadCount integer when the user intent specifies quantity."
+            "Rewrite user lead requests into 3-5 targeted search queries for discovering real company entities. Include vertical+location intent and directory-style queries. Respect any explicit filter context (employee-count constraints, country, industry keywords, email intent). Also output a targetLeadCount integer when the user intent specifies quantity."
         },
-        { role: "user", content: message }
+        { role: "user", content: JSON.stringify({ request: message, filters: options.filters }) }
       ]
     },
     QueryExpansionSchema
@@ -670,7 +707,7 @@ async function buildQueryPlan(message: string, options: LeadSubReactOptions, bud
 
   if (!diagnostic.result) {
     return {
-      queries: fallbackQueryExpansion(message),
+      queries: fallbackQueryExpansion(message, options.filters),
       usedModelPlan: false,
       plannerFailureReason: formatDiagnosticReason(diagnostic),
       plannerFailureDetails: diagnostic.httpErrorDetails
@@ -705,9 +742,14 @@ function chunk<T>(items: T[], size: number): T[][] {
   return output;
 }
 
-function buildExtractionPrompt(batch: PagePayload[], requestMessage: string): string {
+function buildExtractionPrompt(
+  batch: PagePayload[],
+  requestMessage: string,
+  filters: NormalizedLeadPipelineFilters | undefined
+): string {
   return [
     `User request: ${requestMessage}`,
+    `Filters: ${JSON.stringify(filters ?? {})}`,
     "Page payloads (batched):",
     JSON.stringify(batch)
   ].join("\n");
@@ -758,7 +800,7 @@ async function extractBatch(
         },
         {
           role: "user",
-          content: buildExtractionPrompt(batch, options.message)
+          content: buildExtractionPrompt(batch, options.message, options.filters)
         }
       ]
     },
@@ -815,7 +857,7 @@ async function extractBatch(
         },
         {
           role: "user",
-          content: buildExtractionPrompt(retryBatch, options.message)
+          content: buildExtractionPrompt(retryBatch, options.message, options.filters)
         }
       ]
     },
@@ -844,7 +886,7 @@ async function extractBatch(
 export async function executeLeadSubReactPipeline(options: LeadSubReactOptions): Promise<LeadSubReactResult> {
   const budget = new LlmBudgetManager(options.llmMaxCalls);
   const fallbackRequestedLeadCount = parseRequestedLeadCount(options.message);
-  const targetEmployeeRange = parseTargetEmployeeRange(options.message);
+  const targetEmployeeRange = resolveTargetEmployeeRange(options.message, options.filters);
 
   await emitStep(options.runStore, options.runId, options.sessionId, "query_expansion", {
     status: "started",
@@ -870,6 +912,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     queryCount: queryPlan.queries.length,
     requestedLeadCount,
     requestedLeadCountSource: queryPlan.targetLeadCount ? "model_plan" : "fallback_parser",
+    filtersApplied: options.filters,
     usedModelPlan: queryPlan.usedModelPlan,
     plannerFailureReason: queryPlan.plannerFailureReason,
     plannerFailureDetails: queryPlan.plannerFailureDetails,

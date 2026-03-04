@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { LeadAgentToolDefinition } from "../../types.js";
+import { LeadPipelineFiltersSchema, normalizeLeadPipelineFilters } from "../../../tools/lead/filters.js";
 
 export const LeadPipelineToolInputSchema = z.object({
   requestMessage: z.string().min(1).max(500).optional(),
@@ -7,7 +8,8 @@ export const LeadPipelineToolInputSchema = z.object({
   browseConcurrency: z.number().int().min(1).max(6).optional(),
   extractionBatchSize: z.number().int().min(1).max(6).optional(),
   llmMaxCalls: z.number().int().min(1).max(20).optional(),
-  minConfidence: z.number().min(0).max(1).optional()
+  minConfidence: z.number().min(0).max(1).optional(),
+  filters: LeadPipelineFiltersSchema.optional()
 });
 
 export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInputSchema> = {
@@ -17,6 +19,7 @@ export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInpu
   inputHint:
     "Use when you need more validated leads. Increase maxPages for deeper crawl or tune minConfidence for stricter/looser gating.",
   async execute(input, context) {
+    const normalizedFilters = normalizeLeadPipelineFilters(input.filters);
     const outcome = await context.leadPipelineExecutor({
       runId: context.runId,
       sessionId: context.sessionId,
@@ -30,6 +33,7 @@ export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInpu
       extractionBatchSize: input.extractionBatchSize ?? context.defaults.subReactBatchSize,
       llmMaxCalls: input.llmMaxCalls ?? context.defaults.subReactLlmMaxCalls,
       minConfidence: input.minConfidence ?? context.defaults.subReactMinConfidence,
+      filters: normalizedFilters,
       isCancellationRequested: context.isCancellationRequested
     });
 
@@ -39,6 +43,7 @@ export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInpu
     return {
       addedLeadCount: merged.addedCount,
       totalLeadCount: merged.totalCount,
+      filtersApplied: normalizedFilters,
       requestedLeadCount: outcome.requestedLeadCount,
       queryCount: outcome.queryCount,
       pagesVisited: outcome.pagesVisited,

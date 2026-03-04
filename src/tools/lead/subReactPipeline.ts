@@ -1,4 +1,4 @@
-import type { LeadCandidate, SearchProviderName, SearchResult } from "../../types.js";
+import type { LeadCandidate, LeadSizeMatch, SearchProviderName, SearchResult } from "../../types.js";
 import type { RunStore } from "../../runs/runStore.js";
 import type { SearchManager } from "../search/searchManager.js";
 import {
@@ -55,12 +55,36 @@ const EXTRACTED_LEAD_BATCH_JSON_SCHEMA = {
           location: {
             anyOf: [{ type: "string" }, { type: "null" }]
           },
+          employeeSizeText: {
+            anyOf: [{ type: "string" }, { type: "null" }]
+          },
+          employeeMin: {
+            anyOf: [{ type: "integer" }, { type: "null" }]
+          },
+          employeeMax: {
+            anyOf: [{ type: "integer" }, { type: "null" }]
+          },
+          sizeSource: {
+            anyOf: [{ type: "string" }, { type: "null" }]
+          },
           shortDesc: { type: "string" },
           sourceUrl: { type: "string" },
           confidence: { type: "number" },
           evidence: { type: "string" }
         },
-        required: ["companyName", "website", "location", "shortDesc", "sourceUrl", "confidence", "evidence"]
+        required: [
+          "companyName",
+          "website",
+          "location",
+          "employeeSizeText",
+          "employeeMin",
+          "employeeMax",
+          "sizeSource",
+          "shortDesc",
+          "sourceUrl",
+          "confidence",
+          "evidence"
+        ]
       }
     }
   },
@@ -93,6 +117,17 @@ export interface LeadSubReactResult {
   queryCount: number;
   pagesVisited: number;
   deficitCount: number;
+  sizeRangeRequested?: { min: number; max: number };
+  sizeMatchBreakdown: {
+    in_range: number;
+    near_range: number;
+    unknown: number;
+    out_of_range: number;
+  };
+  relaxModeApplied: boolean;
+  strictMinConfidence: number;
+  effectiveMinConfidence: number;
+  relaxedMinConfidence?: number;
 }
 
 interface QueryPlanResult {
@@ -125,6 +160,11 @@ interface SearchOutcomeFailure {
 
 type SearchOutcome = SearchOutcomeSuccess | SearchOutcomeFailure;
 
+interface EmployeeSizeRange {
+  min: number;
+  max: number;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -132,6 +172,91 @@ function nowIso(): string {
 function parseLocationHint(message: string): string | undefined {
   const match = message.match(/\bin\s+([A-Za-z][A-Za-z\s]{1,40})$/i);
   return match?.[1]?.trim();
+}
+
+function toPositiveInt(value: number | undefined | null): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const normalized = Math.round(value);
+  if (normalized <= 0) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function parseNumericToken(value: string): number | undefined {
+  const numeric = Number(value.replaceAll(",", ""));
+  return Number.isFinite(numeric) ? Math.round(numeric) : undefined;
+}
+
+function parseEmployeeRangeFromText(text: string | undefined): EmployeeSizeRange | undefined {
+  if (!text) {
+    return undefined;
+  }
+
+  const betweenMatch = text.match(/(\d{1,3}(?:,\d{3})?)\s*(?:-|to|and)\s*(\d{1,3}(?:,\d{3})?)/i);
+  if (betweenMatch) {
+    const first = parseNumericToken(betweenMatch[1] ?? "");
+    const second = parseNumericToken(betweenMatch[2] ?? "");
+    if (first && second) {
+      return first <= second ? { min: first, max: second } : { min: second, max: first };
+    }
+  }
+
+  const plusMatch = text.match(/(\d{1,3}(?:,\d{3})?)\s*\+/i);
+  if (plusMatch) {
+    const value = parseNumericToken(plusMatch[1] ?? "");
+    if (value) {
+      return { min: value, max: value };
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeEmployeeRange(
+  employeeMin: number | undefined | null,
+  employeeMax: number | undefined | null,
+  employeeSizeText: string | undefined,
+  evidence: string
+): EmployeeSizeRange | undefined {
+  const min = toPositiveInt(employeeMin);
+  const max = toPositiveInt(employeeMax);
+
+  if (min && max) {
+    return min <= max ? { min, max } : { min: max, max: min };
+  }
+  if (min) {
+    return { min, max: min };
+  }
+  if (max) {
+    return { min: max, max };
+  }
+
+  return parseEmployeeRangeFromText(employeeSizeText) ?? parseEmployeeRangeFromText(evidence);
+}
+
+function parseTargetEmployeeRange(message: string): EmployeeSizeRange | undefined {
+  const patterns = [
+    /\bbetween\s+(\d{1,3}(?:,\d{3})?)\s+(?:and|to)\s+(\d{1,3}(?:,\d{3})?)\s+employees?\b/i,
+    /\b(\d{1,3}(?:,\d{3})?)\s*(?:-|to)\s*(\d{1,3}(?:,\d{3})?)\s+employees?\b/i,
+    /\bemployees?\s*(?:between\s*)?(\d{1,3}(?:,\d{3})?)\s*(?:and|to|-)\s*(\d{1,3}(?:,\d{3})?)\b/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = message.match(pattern);
+    if (!match) {
+      continue;
+    }
+    const first = parseNumericToken(match[1] ?? "");
+    const second = parseNumericToken(match[2] ?? "");
+    if (first && second) {
+      return first <= second ? { min: first, max: second } : { min: second, max: first };
+    }
+  }
+
+  return undefined;
 }
 
 function fallbackQueryExpansion(message: string): string[] {
@@ -176,10 +301,17 @@ function normalizeDomain(url: string | undefined): string {
 }
 
 function normalizeCandidate(item: ExtractedLead): LeadCandidate {
+  const employeeSizeText = item.employeeSizeText?.replace(/\s+/g, " ").trim() || undefined;
+  const inferredRange = normalizeEmployeeRange(item.employeeMin, item.employeeMax, employeeSizeText, item.evidence);
+
   return {
     companyName: item.companyName.replace(/\s+/g, " ").trim(),
     website: normalizeWebsite(item.website ?? undefined),
     location: item.location?.replace(/\s+/g, " ").trim(),
+    employeeSizeText,
+    employeeMin: inferredRange?.min,
+    employeeMax: inferredRange?.max,
+    sizeSource: normalizeWebsite(item.sizeSource ?? undefined),
     shortDesc: item.shortDesc.replace(/\s+/g, " ").trim(),
     sourceUrl: item.sourceUrl,
     confidence: Math.min(1, Math.max(0, item.confidence)),
@@ -206,22 +338,120 @@ function dedupeLeads(leads: LeadCandidate[]): LeadCandidate[] {
   return Array.from(map.values());
 }
 
-function scoreLead(lead: LeadCandidate): number {
-  const completeness = [lead.website, lead.location, lead.shortDesc, lead.evidence].filter(Boolean).length / 4;
-  const citationBonus = lead.evidence.length > 30 ? 0.05 : 0;
-  return Math.min(1, lead.confidence * 0.75 + completeness * 0.2 + citationBonus);
+function deriveSizeMatch(lead: LeadCandidate, targetRange: EmployeeSizeRange | undefined): LeadSizeMatch {
+  if (!targetRange) {
+    return "unknown";
+  }
+
+  const employeeMin = lead.employeeMin;
+  const employeeMax = lead.employeeMax;
+  if (!employeeMin || !employeeMax) {
+    return "unknown";
+  }
+
+  const overlaps = employeeMin <= targetRange.max && employeeMax >= targetRange.min;
+  if (overlaps) {
+    return "in_range";
+  }
+
+  const gapAbove = employeeMin > targetRange.max ? employeeMin - targetRange.max : 0;
+  const gapBelow = employeeMax < targetRange.min ? targetRange.min - employeeMax : 0;
+  const gap = Math.max(gapAbove, gapBelow);
+  const nearThreshold = Math.max(20, Math.floor((targetRange.max - targetRange.min + 1) * 0.75));
+  if (gap > 0 && gap <= nearThreshold) {
+    return "near_range";
+  }
+
+  return "out_of_range";
 }
 
-function qualityGate(leads: LeadCandidate[], requestedLeadCount: number, minConfidence: number): LeadSubReactResult {
+function scoreLead(lead: LeadCandidate, targetRange: EmployeeSizeRange | undefined): number {
+  const completeness = [lead.website, lead.location, lead.shortDesc, lead.evidence].filter(Boolean).length / 4;
+  const citationBonus = lead.evidence.length > 30 ? 0.05 : 0;
+  const sizeMatch = lead.sizeMatch ?? deriveSizeMatch(lead, targetRange);
+  const sizeAdjustment: Record<LeadSizeMatch, number> = {
+    in_range: 0.12,
+    near_range: -0.05,
+    unknown: -0.03,
+    out_of_range: -0.18
+  };
+  const sizeScoreDelta = targetRange ? sizeAdjustment[sizeMatch] : 0;
+  return Math.min(1, Math.max(0, lead.confidence * 0.75 + completeness * 0.2 + citationBonus + sizeScoreDelta));
+}
+
+function qualityGate(
+  leads: LeadCandidate[],
+  requestedLeadCount: number,
+  minConfidence: number,
+  targetEmployeeRange: EmployeeSizeRange | undefined
+): LeadSubReactResult {
   const minFinal = 15;
   const maxFinal = Math.min(25, requestedLeadCount);
 
-  const deduped = dedupeLeads(leads)
-    .map((lead) => ({ ...lead, confidence: scoreLead(lead) }))
+  const deduped: LeadCandidate[] = dedupeLeads(leads)
+    .map((lead) => {
+      const sizeMatch = deriveSizeMatch(lead, targetEmployeeRange);
+      return {
+        ...lead,
+        sizeMatch,
+        confidence: scoreLead({ ...lead, sizeMatch }, targetEmployeeRange),
+        selectionMode: "strict" as const
+      };
+    })
     .sort((a, b) => b.confidence - a.confidence);
 
-  const validated = deduped.filter((lead) => lead.confidence >= minConfidence);
-  const finalLeads = validated.slice(0, Math.max(minFinal, maxFinal));
+  const strictValidated = deduped.filter((lead) => {
+    if (lead.confidence < minConfidence) {
+      return false;
+    }
+    if (targetEmployeeRange && lead.sizeMatch === "out_of_range" && lead.confidence < 0.72) {
+      return false;
+    }
+    return true;
+  });
+
+  const targetFinalCount = Math.max(minFinal, maxFinal);
+  let validated = strictValidated;
+  let relaxModeApplied = false;
+  let relaxedMinConfidence: number | undefined;
+  let finalLeads = strictValidated.slice(0, targetFinalCount);
+
+  if (targetEmployeeRange && strictValidated.length < Math.ceil(requestedLeadCount * 0.5)) {
+    const relaxedThreshold = Math.min(minConfidence, 0.55);
+    relaxedMinConfidence = relaxedThreshold;
+    const relaxedValidated = deduped.filter((lead) => {
+      if (lead.confidence < relaxedThreshold) {
+        return false;
+      }
+      if (lead.sizeMatch === "out_of_range" && lead.confidence < 0.75) {
+        return false;
+      }
+      return true;
+    });
+
+    if (relaxedValidated.length > strictValidated.length) {
+      relaxModeApplied = true;
+      validated = relaxedValidated;
+      const strictKeys = new Set(strictValidated.map((lead) => normalizeDomain(lead.website || lead.sourceUrl) || lead.companyName.toLowerCase()));
+      finalLeads = relaxedValidated.slice(0, targetFinalCount).map((lead): LeadCandidate => {
+        const key = normalizeDomain(lead.website || lead.sourceUrl) || lead.companyName.toLowerCase();
+        return strictKeys.has(key) ? lead : { ...lead, selectionMode: "relaxed" as const };
+      });
+    }
+  }
+
+  const sizeMatchBreakdown = deduped.reduce(
+    (acc, lead) => {
+      acc[lead.sizeMatch ?? "unknown"] += 1;
+      return acc;
+    },
+    {
+      in_range: 0,
+      near_range: 0,
+      unknown: 0,
+      out_of_range: 0
+    }
+  );
 
   return {
     leads: finalLeads,
@@ -233,7 +463,13 @@ function qualityGate(leads: LeadCandidate[], requestedLeadCount: number, minConf
     finalCandidateCount: finalLeads.length,
     queryCount: 0,
     pagesVisited: 0,
-    deficitCount: Math.max(0, requestedLeadCount - finalLeads.length)
+    deficitCount: Math.max(0, requestedLeadCount - finalLeads.length),
+    sizeRangeRequested: targetEmployeeRange,
+    sizeMatchBreakdown,
+    relaxModeApplied,
+    strictMinConfidence: minConfidence,
+    effectiveMinConfidence: relaxModeApplied ? (relaxedMinConfidence ?? minConfidence) : minConfidence,
+    relaxedMinConfidence
   };
 }
 
@@ -338,6 +574,8 @@ function buildExtractionPrompt(batch: PagePayload[], requestMessage: string): st
     "You are an expert B2B lead researcher.",
     "Extract REAL companies matching the request (SI/MSP context where relevant).",
     "Never output the aggregator/listing site itself as a company lead.",
+    "When employee-size evidence exists, capture employeeSizeText and infer employeeMin/employeeMax.",
+    "If size is unavailable, return null for employeeSizeText, employeeMin, employeeMax, and sizeSource.",
     "Return strict JSON only.",
     "Use confidence 0-1.",
     `User request: ${requestMessage}`,
@@ -388,7 +626,7 @@ async function extractBatch(
         {
           role: "system",
           content:
-            "Extract company leads as strict JSON. Output only real company entities (not aggregator/list host)."
+            "Extract company leads as strict JSON. Output only real company entities (not aggregator/list host). Include employee-size fields and null them when unavailable."
         },
         {
           role: "user",
@@ -445,7 +683,7 @@ async function extractBatch(
         {
           role: "system",
           content:
-            "Retry extraction. Keep only real company entities, strict schema output, omit uncertain entities."
+            "Retry extraction. Keep only real company entities, strict schema output, include employee-size fields, and omit uncertain entities."
         },
         {
           role: "user",
@@ -478,6 +716,7 @@ async function extractBatch(
 export async function executeLeadSubReactPipeline(options: LeadSubReactOptions): Promise<LeadSubReactResult> {
   const budget = new LlmBudgetManager(options.llmMaxCalls);
   const fallbackRequestedLeadCount = parseRequestedLeadCount(options.message);
+  const targetEmployeeRange = parseTargetEmployeeRange(options.message);
 
   await emitStep(options.runStore, options.runId, options.sessionId, "query_expansion", {
     status: "started",
@@ -597,10 +836,11 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
 
   await emitStep(options.runStore, options.runId, options.sessionId, "quality_gate", {
     status: "started",
-    rawCandidateCount: extractedLeads.length
+    rawCandidateCount: extractedLeads.length,
+    targetEmployeeRange
   });
 
-  const gated = qualityGate(extractedLeads, requestedLeadCount, options.minConfidence);
+  const gated = qualityGate(extractedLeads, requestedLeadCount, options.minConfidence, targetEmployeeRange);
   gated.queryCount = queryPlan.queries.length;
   gated.pagesVisited = pagePayloads.length;
   gated.llmCallsUsed = budget.used;
@@ -613,6 +853,12 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     validatedCandidateCount: gated.validatedCandidateCount,
     finalCandidateCount: gated.finalCandidateCount,
     deficitCount: gated.deficitCount,
+    targetEmployeeRange: gated.sizeRangeRequested,
+    sizeMatchBreakdown: gated.sizeMatchBreakdown,
+    strictMinConfidence: gated.strictMinConfidence,
+    effectiveMinConfidence: gated.effectiveMinConfidence,
+    relaxedMinConfidence: gated.relaxedMinConfidence,
+    relaxModeApplied: gated.relaxModeApplied,
     llmCallsUsed: gated.llmCallsUsed,
     llmCallsRemaining: gated.llmCallsRemaining
   });

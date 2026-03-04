@@ -62,7 +62,17 @@ test("runReActLoop produces a completed outcome with artifact", async () => {
       finalCandidateCount: 1,
       queryCount: 3,
       pagesVisited: 5,
-      deficitCount: 49
+      deficitCount: 49,
+      sizeRangeRequested: { min: 5, max: 20 },
+      sizeMatchBreakdown: {
+        in_range: 1,
+        near_range: 0,
+        unknown: 0,
+        out_of_range: 0
+      },
+      relaxModeApplied: false,
+      strictMinConfidence: 0.6,
+      effectiveMinConfidence: 0.6
     })
   });
 

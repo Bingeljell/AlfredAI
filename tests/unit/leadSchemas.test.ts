@@ -18,6 +18,10 @@ test("ExtractedLeadBatchSchema accepts nullable website and location", () => {
         companyName: "Acme MSP",
         website: null,
         location: null,
+        employeeSizeText: null,
+        employeeMin: null,
+        employeeMax: null,
+        sizeSource: null,
         shortDesc: "Managed IT services and cloud operations for SMB customers.",
         sourceUrl: "https://example.com/listing/acme",
         confidence: 0.78,
@@ -29,4 +33,8 @@ test("ExtractedLeadBatchSchema accepts nullable website and location", () => {
   assert.equal(parsed.leads.length, 1);
   assert.equal(parsed.leads[0]?.website, null);
   assert.equal(parsed.leads[0]?.location, null);
+  assert.equal(parsed.leads[0]?.employeeSizeText, null);
+  assert.equal(parsed.leads[0]?.employeeMin, null);
+  assert.equal(parsed.leads[0]?.employeeMax, null);
+  assert.equal(parsed.leads[0]?.sizeSource, null);
 });

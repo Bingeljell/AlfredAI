@@ -120,6 +120,11 @@ export async function runReActLoop(
       rawCandidateCount: subReactResult.rawCandidateCount,
       validatedCandidateCount: subReactResult.validatedCandidateCount,
       finalCandidateCount: subReactResult.finalCandidateCount,
+      sizeRangeRequested: subReactResult.sizeRangeRequested,
+      sizeMatchBreakdown: subReactResult.sizeMatchBreakdown,
+      relaxModeApplied: subReactResult.relaxModeApplied,
+      strictMinConfidence: subReactResult.strictMinConfidence,
+      effectiveMinConfidence: subReactResult.effectiveMinConfidence,
       llmCallsUsed: subReactResult.llmCallsUsed,
       llmCallsRemaining: subReactResult.llmCallsRemaining,
       deficitCount: subReactResult.deficitCount

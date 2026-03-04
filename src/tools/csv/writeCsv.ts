@@ -15,12 +15,32 @@ export async function writeLeadsCsv(
   runId: string,
   candidates: LeadCandidate[]
 ): Promise<string> {
-  const headers = ["companyName", "website", "location", "shortDesc", "sourceUrl", "confidence", "evidence"];
+  const headers = [
+    "companyName",
+    "website",
+    "location",
+    "employeeSizeText",
+    "employeeMin",
+    "employeeMax",
+    "sizeMatch",
+    "sizeSource",
+    "selectionMode",
+    "shortDesc",
+    "sourceUrl",
+    "confidence",
+    "evidence"
+  ];
   const rows = candidates.map((candidate) => {
     return [
       candidate.companyName,
       candidate.website ?? "",
       candidate.location ?? "",
+      candidate.employeeSizeText ?? "",
+      candidate.employeeMin ?? "",
+      candidate.employeeMax ?? "",
+      candidate.sizeMatch ?? "",
+      candidate.sizeSource ?? "",
+      candidate.selectionMode ?? "",
       candidate.shortDesc,
       candidate.sourceUrl,
       String(candidate.confidence),

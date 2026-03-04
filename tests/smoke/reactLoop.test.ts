@@ -42,6 +42,7 @@ test("runReActLoop produces a completed outcome with artifact", async () => {
     subReactBatchSize: 4,
     subReactLlmMaxCalls: 6,
     subReactMinConfidence: 0.6,
+    isCancellationRequested: async () => false,
     leadPipelineExecutor: async () => ({
       leads: [
         {
@@ -54,6 +55,7 @@ test("runReActLoop produces a completed outcome with artifact", async () => {
           evidence: "Listed on source directory as managed service provider"
         }
       ],
+      cancelled: false,
       llmCallsUsed: 2,
       llmCallsRemaining: 4,
       requestedLeadCount: 50,
@@ -74,7 +76,9 @@ test("runReActLoop produces a completed outcome with artifact", async () => {
       strictMinConfidence: 0.6,
       effectiveMinConfidence: 0.6,
       searchFailureCount: 0,
-      searchFailureSamples: []
+      searchFailureSamples: [],
+      browseFailureCount: 0,
+      browseFailureSamples: []
     })
   });
 

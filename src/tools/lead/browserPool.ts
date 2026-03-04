@@ -7,6 +7,16 @@ export interface PagePayload {
   outboundLinks: string[];
 }
 
+export interface PageCollectionFailure {
+  url: string;
+  error: string;
+}
+
+export interface PageCollectionResult {
+  pages: PagePayload[];
+  failures: PageCollectionFailure[];
+}
+
 function compactText(input: string, max = 5000): string {
   return input.replace(/\s+/g, " ").trim().slice(0, max);
 }
@@ -50,8 +60,24 @@ export class BrowserPool {
     await this.browser.close();
   }
 
+  private async gotoWithFallback(page: any, url: string): Promise<void> {
+    try {
+      await page.goto(url, { timeout: 25000, waitUntil: "networkidle" });
+      return;
+    } catch (primaryError) {
+      try {
+        await page.goto(url, { timeout: 20000, waitUntil: "domcontentloaded" });
+        return;
+      } catch (secondaryError) {
+        const first = primaryError instanceof Error ? primaryError.message : String(primaryError);
+        const second = secondaryError instanceof Error ? secondaryError.message : String(secondaryError);
+        throw new Error(`goto_failed networkidle="${first.slice(0, 140)}" domcontentloaded="${second.slice(0, 140)}"`);
+      }
+    }
+  }
+
   private async extractPagePayload(page: any, url: string): Promise<PagePayload> {
-    await page.goto(url, { timeout: 25000, waitUntil: "networkidle" });
+    await this.gotoWithFallback(page, url);
 
     const payload = (await page.evaluate(() => {
       const bodyText = document.body?.innerText ?? "";
@@ -114,9 +140,10 @@ export class BrowserPool {
     };
   }
 
-  async collectPages(urls: string[], concurrency: number): Promise<PagePayload[]> {
+  async collectPages(urls: string[], concurrency: number): Promise<PageCollectionResult> {
     const queue = [...urls];
     const results: PagePayload[] = [];
+    const failures: PageCollectionFailure[] = [];
 
     const worker = async (): Promise<void> => {
       const page = await this.context.newPage();
@@ -129,7 +156,12 @@ export class BrowserPool {
           try {
             const payload = await this.extractPagePayload(page, nextUrl);
             results.push(payload);
-          } catch {
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            failures.push({
+              url: nextUrl,
+              error: message.slice(0, 220)
+            });
             continue;
           }
         }
@@ -141,6 +173,9 @@ export class BrowserPool {
     const workerCount = Math.max(1, Math.min(concurrency, urls.length));
     await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
-    return results;
+    return {
+      pages: results,
+      failures
+    };
   }
 }

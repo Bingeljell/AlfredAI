@@ -16,6 +16,7 @@ test("ExtractedLeadBatchSchema accepts nullable website/location and sizeEvidenc
     leads: [
       {
         companyName: "Acme MSP",
+        email: null,
         website: null,
         location: null,
         employeeSizeText: null,
@@ -32,6 +33,7 @@ test("ExtractedLeadBatchSchema accepts nullable website/location and sizeEvidenc
 
   assert.equal(parsed.leads.length, 1);
   assert.equal(parsed.leads[0]?.website, null);
+  assert.equal(parsed.leads[0]?.email, null);
   assert.equal(parsed.leads[0]?.location, null);
   assert.equal(parsed.leads[0]?.employeeSizeText, null);
   assert.equal(parsed.leads[0]?.employeeMin, null);

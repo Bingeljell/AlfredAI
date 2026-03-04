@@ -130,6 +130,15 @@ app.get("/v1/runs/:runId", async (c) => {
   return c.json({ run, events });
 });
 
+app.post("/v1/runs/:runId/cancel", async (c) => {
+  try {
+    const result = await chatService.requestRunCancellation(c.req.param("runId"));
+    return c.json(result);
+  } catch {
+    return c.json({ error: "Run not found" }, 404);
+  }
+});
+
 app.get("/v1/runs/:runId/export", async (c) => {
   try {
     const bundle = await runStore.buildDebugExport(c.req.param("runId"));
@@ -154,4 +163,4 @@ app.onError((error, c) => {
   return c.json({ error: message }, 500);
 });
 
-export { app, sessionStore };
+export { app, sessionStore, runStore };

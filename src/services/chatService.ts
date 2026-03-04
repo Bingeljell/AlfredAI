@@ -1,4 +1,4 @@
-import type { RunOutcome } from "../types.js";
+import type { RunOutcome, RunStatus } from "../types.js";
 import { runReActLoop } from "../core/runReActLoop.js";
 import type { SessionStore } from "../memory/sessionStore.js";
 import type { RunStore } from "../runs/runStore.js";
@@ -40,6 +40,26 @@ export class ChatService {
   constructor(private readonly options: ChatServiceOptions) {}
 
   private async executeRun(runId: string, sessionId: string, message: string): Promise<RunOutcome> {
+    if (await this.options.runStore.isCancellationRequested(runId)) {
+      await this.options.runStore.appendEvent({
+        runId,
+        sessionId,
+        phase: "final",
+        eventType: "cancelled",
+        payload: { reason: "cancel_requested_before_start" },
+        timestamp: new Date().toISOString()
+      });
+      await this.options.runStore.updateRun(runId, {
+        status: "cancelled",
+        cancelledAt: new Date().toISOString(),
+        assistantText: "Run cancelled before execution started."
+      });
+      return {
+        status: "cancelled",
+        assistantText: "Run cancelled before execution started."
+      };
+    }
+
     await this.options.runStore.updateRun(runId, { status: "running" });
     const startedAt = Date.now();
     const heartbeatTimer = setInterval(() => {
@@ -78,11 +98,13 @@ export class ChatService {
         agentMaxParallelTools: this.options.agentMaxParallelTools,
         agentPlannerMaxCalls: this.options.agentPlannerMaxCalls,
         agentObservationWindow: this.options.agentObservationWindow,
-        agentDiminishingThreshold: this.options.agentDiminishingThreshold
+        agentDiminishingThreshold: this.options.agentDiminishingThreshold,
+        isCancellationRequested: () => this.options.runStore.isCancellationRequested(runId)
       });
 
       await this.options.runStore.updateRun(runId, {
         status: outcome.status,
+        cancelledAt: outcome.status === "cancelled" ? new Date().toISOString() : undefined,
         assistantText: outcome.assistantText,
         artifactPaths: outcome.artifactPaths,
         approvalToken: outcome.approvalToken
@@ -116,7 +138,7 @@ export class ChatService {
 
   async handleTurn(input: ChatTurnInput): Promise<{
     runId: string;
-    status: string;
+    status: RunStatus;
     assistantText?: string;
     artifactPaths?: string[];
     approvalToken?: string;
@@ -157,6 +179,46 @@ export class ChatService {
       assistantText: outcome.assistantText,
       artifactPaths: outcome.artifactPaths,
       approvalToken: outcome.approvalToken
+    };
+  }
+
+  async requestRunCancellation(runId: string): Promise<{
+    runId: string;
+    accepted: boolean;
+    status: RunStatus;
+    message: string;
+  }> {
+    const run = await this.options.runStore.getRun(runId);
+    if (!run) {
+      throw new Error(`Run ${runId} not found`);
+    }
+
+    if (run.status !== "queued" && run.status !== "running") {
+      return {
+        runId,
+        accepted: false,
+        status: run.status,
+        message: `Run is already ${run.status}.`
+      };
+    }
+
+    await this.options.runStore.requestCancellation(runId);
+    await this.options.runStore.appendEvent({
+      runId,
+      sessionId: run.sessionId,
+      phase: "observe",
+      eventType: "cancel_requested",
+      payload: {
+        runStatus: run.status
+      },
+      timestamp: new Date().toISOString()
+    });
+
+    return {
+      runId,
+      accepted: true,
+      status: run.status,
+      message: "Cancellation requested. Alfred will stop and persist partial results."
     };
   }
 }

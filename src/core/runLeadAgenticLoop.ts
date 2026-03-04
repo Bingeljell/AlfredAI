@@ -16,7 +16,8 @@ export type AgentStopReason =
   | "budget_exhausted"
   | "diminishing_returns"
   | "tool_blocked"
-  | "manual_guardrail";
+  | "manual_guardrail"
+  | "manual_cancelled";
 
 interface LeadAgentObservation {
   iteration: number;
@@ -77,7 +78,7 @@ const PlannerOutputSchema: z.ZodType<PlannerOutput> = z.object({
     )
     .max(4)
     .nullable(),
-  stopReason: z.enum(["target_met", "budget_exhausted", "diminishing_returns", "tool_blocked", "manual_guardrail"]).nullable(),
+  stopReason: z.enum(["target_met", "budget_exhausted", "diminishing_returns", "tool_blocked", "manual_guardrail", "manual_cancelled"]).nullable(),
   stopExplanation: z.string().max(320).nullable()
 });
 
@@ -121,7 +122,10 @@ const PLANNER_OUTPUT_JSON_SCHEMA = {
     },
     stopReason: {
       anyOf: [
-        { type: "string", enum: ["target_met", "budget_exhausted", "diminishing_returns", "tool_blocked", "manual_guardrail"] },
+        {
+          type: "string",
+          enum: ["target_met", "budget_exhausted", "diminishing_returns", "tool_blocked", "manual_guardrail", "manual_cancelled"]
+        },
         { type: "null" }
       ]
     },
@@ -149,6 +153,7 @@ interface AgenticLoopOptions {
   plannerMaxCalls: number;
   observationWindow: number;
   diminishingThreshold: number;
+  isCancellationRequested: () => Promise<boolean>;
 }
 
 interface PlannerDecision {
@@ -174,14 +179,24 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function normalizeCompanyName(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function leadKey(lead: { companyName: string; website?: string; sourceUrl: string }): string {
-  const fallback = lead.companyName.toLowerCase().replace(/\s+/g, " ").trim();
-  const source = lead.website || lead.sourceUrl;
-  try {
-    return new URL(source).hostname.replace(/^www\./, "").toLowerCase();
-  } catch {
-    return fallback;
+  if (lead.website) {
+    try {
+      return `domain:${new URL(lead.website).hostname.replace(/^www\./, "").toLowerCase()}`;
+    } catch {
+      // Fall through to company-name key.
+    }
   }
+
+  return `name:${normalizeCompanyName(lead.companyName)}`;
 }
 
 function summarizeToolResult(result: ToolRunResult): string {
@@ -207,10 +222,14 @@ function summarizeToolResult(result: ToolRunResult): string {
   const added = typeof output.addedLeadCount === "number" ? output.addedLeadCount : undefined;
   if (typeof leadCount === "number") {
     const searchFailures = typeof output.searchFailureCount === "number" ? output.searchFailureCount : 0;
+    const browseFailures = typeof output.browseFailureCount === "number" ? output.browseFailureCount : 0;
+    const cancelled = output.cancelled === true;
+    const cancelledText = cancelled ? ", cancelled=true" : "";
+    const browseText = browseFailures > 0 ? `, browse failures ${browseFailures}` : "";
     if (searchFailures > 0) {
-      return `${result.tool} ok, added ${added ?? 0}, total leads ${leadCount}, search failures ${searchFailures}`;
+      return `${result.tool} ok, added ${added ?? 0}, total leads ${leadCount}, search failures ${searchFailures}${browseText}${cancelledText}`;
     }
-    return `${result.tool} ok, added ${added ?? 0}, total leads ${leadCount}`;
+    return `${result.tool} ok, added ${added ?? 0}, total leads ${leadCount}${browseText}${cancelledText}`;
   }
 
   if (typeof output.resultCount === "number") {
@@ -466,6 +485,7 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
     defaults: options.defaults,
     leadPipelineExecutor: options.leadPipelineExecutor,
     state,
+    isCancellationRequested: options.isCancellationRequested,
     addLeads,
     addArtifact
   };
@@ -491,6 +511,25 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
   });
 
   for (let iteration = 1; iteration <= options.maxIterations; iteration += 1) {
+    if (await options.isCancellationRequested()) {
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "observe",
+        eventType: "cancel_acknowledged",
+        payload: {
+          iteration,
+          stage: "pre_plan"
+        },
+        timestamp: nowIso()
+      });
+      stop = {
+        reason: "manual_cancelled",
+        explanation: "Run cancelled by user request."
+      };
+      break;
+    }
+
     const elapsedMs = Date.now() - startMs;
     if (elapsedMs > options.maxDurationMs) {
       stop = {
@@ -684,6 +723,26 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       timestamp: nowIso()
     });
 
+    const actionCancelled = results.some((result) => result.output?.cancelled === true);
+    if (actionCancelled || (await options.isCancellationRequested())) {
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "observe",
+        eventType: "cancel_acknowledged",
+        payload: {
+          iteration,
+          stage: actionCancelled ? "tool_execution" : "post_action"
+        },
+        timestamp: nowIso()
+      });
+      stop = {
+        reason: "manual_cancelled",
+        explanation: "Run cancelled by user request."
+      };
+      break;
+    }
+
     if (state.leads.length >= state.requestedLeadCount) {
       stop = {
         reason: "target_met",
@@ -772,28 +831,32 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
 
   let llmSummary: string | undefined;
   if (options.openAiApiKey) {
-    llmSummary = await runOpenAiChat({
-      apiKey: options.openAiApiKey,
-      messages: [
-        {
-          role: "system",
-          content: "Summarize lead-agent outcome in 4 concise bullets with stop reason and remaining gap."
-        },
-        {
-          role: "user",
-          content: JSON.stringify(
-            redactValue({
-              requestMessage: options.message,
-              stop,
-              requestedLeadCount: state.requestedLeadCount,
-              finalLeadCount: state.leads.length,
-              observations: observations.slice(-6),
-              candidatePreview: state.leads.slice(0, 5)
-            })
-          )
-        }
-      ]
-    });
+    try {
+      llmSummary = await runOpenAiChat({
+        apiKey: options.openAiApiKey,
+        messages: [
+          {
+            role: "system",
+            content: "Summarize lead-agent outcome in 4 concise bullets with stop reason and remaining gap."
+          },
+          {
+            role: "user",
+            content: JSON.stringify(
+              redactValue({
+                requestMessage: options.message,
+                stop,
+                requestedLeadCount: state.requestedLeadCount,
+                finalLeadCount: state.leads.length,
+                observations: observations.slice(-6),
+                candidatePreview: state.leads.slice(0, 5)
+              })
+            )
+          }
+        ]
+      });
+    } catch {
+      llmSummary = undefined;
+    }
   }
 
   const deficitCount = Math.max(0, state.requestedLeadCount - state.leads.length);
@@ -824,7 +887,7 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
   });
 
   return {
-    status: "completed",
+    status: stop.reason === "manual_cancelled" ? "cancelled" : "completed",
     assistantText,
     artifactPaths: [csvPath]
   };

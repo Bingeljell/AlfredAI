@@ -17,6 +17,7 @@ export async function writeLeadsCsv(
 ): Promise<string> {
   const headers = [
     "companyName",
+    "email",
     "website",
     "location",
     "employeeSizeText",
@@ -33,6 +34,7 @@ export async function writeLeadsCsv(
   const rows = candidates.map((candidate) => {
     return [
       candidate.companyName,
+      candidate.email ?? "",
       candidate.website ?? "",
       candidate.location ?? "",
       candidate.employeeSizeText ?? "",

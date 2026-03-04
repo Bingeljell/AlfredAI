@@ -54,6 +54,26 @@ export class RunStore {
     return updated;
   }
 
+  async requestCancellation(runId: string): Promise<RunRecord> {
+    const now = new Date().toISOString();
+    const run = await this.updateRun(runId, {
+      cancelRequestedAt: now
+    });
+    return run;
+  }
+
+  async clearCancellation(runId: string): Promise<RunRecord> {
+    const run = await this.updateRun(runId, {
+      cancelRequestedAt: undefined
+    });
+    return run;
+  }
+
+  async isCancellationRequested(runId: string): Promise<boolean> {
+    const run = await this.getRun(runId);
+    return Boolean(run?.cancelRequestedAt);
+  }
+
   async addToolCall(runId: string, call: ToolCallRecord): Promise<void> {
     const current = await this.getRun(runId);
     if (!current) {

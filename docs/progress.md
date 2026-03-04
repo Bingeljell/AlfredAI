@@ -49,6 +49,9 @@
   - Agent-loop execution budgets are now configurable in `.env`, making iteration depth, parallelism, planner-call budget, observation window, and diminishing-return sensitivity tunable without code changes.
   - Planner structured-output reliability is fixed: tool inputs are now emitted as JSON strings (`inputJson`) to satisfy strict response-format schema validation, parsed before tool execution, and fallback sequencing now avoids repeated `write_csv` actions when planner calls fail.
   - Agentic recovery behavior is now enabled for search outages: Alfred can call `search_status` and `recover_search`, observe whether primary-provider restart succeeded, and replan from explicit search-failure telemetry (`searchFailureCount` and samples) instead of treating provider downtime as a static terminal condition.
+  - Lead extraction/output now includes optional `email` as a first-class field across structured extraction, normalized candidate mapping, and CSV export.
+  - User-initiated run cancellation is now supported end-to-end: backend cancel API, persisted cancel requests, cooperative stop checks through lead loops, partial-result persistence, and a UI `Cancel Run` action.
+  - Lead-quality hotfixes now reduce false dedupe collapse (company-identity keying instead of `sourceUrl` domain fallback), and browse-stage diagnostics now include per-URL failure telemetry plus a Playwright navigation fallback path to improve scrape coverage on difficult pages.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Additional resiliency and production hardening tasks remain for later iterations.

@@ -28,6 +28,7 @@ interface RunReActLoopOptions {
   agentPlannerMaxCalls?: number;
   agentObservationWindow?: number;
   agentDiminishingThreshold?: number;
+  isCancellationRequested: () => Promise<boolean>;
 }
 
 function nowIso(): string {
@@ -104,7 +105,8 @@ export async function runReActLoop(
     maxParallelTools: options.agentMaxParallelTools ?? 3,
     plannerMaxCalls: options.agentPlannerMaxCalls ?? Math.max(3, options.maxSteps),
     observationWindow: options.agentObservationWindow ?? 8,
-    diminishingThreshold: options.agentDiminishingThreshold ?? 2
+    diminishingThreshold: options.agentDiminishingThreshold ?? 2,
+    isCancellationRequested: options.isCancellationRequested
   });
 
   await appendDailyNote(options.workspaceDir, sessionId, "assistant", outcome.assistantText ?? "");

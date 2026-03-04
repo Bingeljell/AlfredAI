@@ -17,6 +17,7 @@ const els = {
   assistantOutput: document.getElementById("assistant-output"),
   runIdInput: document.getElementById("run-id-input"),
   loadRun: document.getElementById("load-run"),
+  cancelRun: document.getElementById("cancel-run"),
   exportRun: document.getElementById("export-run"),
   timeline: document.getElementById("timeline")
 };
@@ -26,7 +27,7 @@ function pretty(obj) {
 }
 
 function isTerminalStatus(status) {
-  return status === "completed" || status === "failed" || status === "needs_approval";
+  return status === "completed" || status === "cancelled" || status === "failed" || status === "needs_approval";
 }
 
 function formatElapsedMs(value) {
@@ -261,6 +262,25 @@ els.loadRun.addEventListener("click", async () => {
   }
   const payload = await loadRun(runId);
   if (!isTerminalStatus(payload.run.status)) {
+    startRunPolling(runId);
+  }
+});
+
+els.cancelRun.addEventListener("click", async () => {
+  const runId = els.runIdInput.value.trim() || state.activeRunId;
+  if (!runId) {
+    alert("Run ID required");
+    return;
+  }
+
+  const payload = await api(`/v1/runs/${runId}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+
+  els.assistantOutput.textContent = payload.message;
+  await loadRun(runId);
+  if (payload.accepted) {
     startRunPolling(runId);
   }
 });

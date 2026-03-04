@@ -49,6 +49,9 @@ const EXTRACTED_LEAD_BATCH_JSON_SCHEMA = {
         additionalProperties: false,
         properties: {
           companyName: { type: "string" },
+          email: {
+            anyOf: [{ type: "string" }, { type: "null" }]
+          },
           website: {
             anyOf: [{ type: "string" }, { type: "null" }]
           },
@@ -74,6 +77,7 @@ const EXTRACTED_LEAD_BATCH_JSON_SCHEMA = {
         },
         required: [
           "companyName",
+          "email",
           "website",
           "location",
           "employeeSizeText",
@@ -111,6 +115,7 @@ Return ONLY a valid JSON object with this exact structure:
   "leads": [
     {
       "companyName": string,
+      "email": string | null,
       "website": string | null,
       "location": string | null,
       "employeeSizeText": string | null,
@@ -127,6 +132,7 @@ Return ONLY a valid JSON object with this exact structure:
 
 Field rules:
 - companyName: exact name as shown on the page.
+- email: valid work email if explicitly present on the page, otherwise null.
 - website: full valid URL if clearly present, otherwise null.
 - location: city + state if mentioned (for example "San Ramon, CA"), otherwise null.
 - employeeSizeText: raw text from the page (for example "11-50 employees", "201-500", "small team").
@@ -169,10 +175,12 @@ interface LeadSubReactOptions {
   extractionBatchSize: number;
   llmMaxCalls: number;
   minConfidence: number;
+  isCancellationRequested?: () => Promise<boolean>;
 }
 
 export interface LeadSubReactResult {
   leads: LeadCandidate[];
+  cancelled: boolean;
   llmCallsUsed: number;
   llmCallsRemaining: number;
   requestedLeadCount: number;
@@ -195,6 +203,8 @@ export interface LeadSubReactResult {
   relaxedMinConfidence?: number;
   searchFailureCount: number;
   searchFailureSamples: Array<{ query: string; error: string }>;
+  browseFailureCount: number;
+  browseFailureSamples: Array<{ url: string; error: string }>;
 }
 
 interface QueryPlanResult {
@@ -367,12 +377,43 @@ function normalizeDomain(url: string | undefined): string {
   }
 }
 
+function normalizeCompanyName(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function dedupeKeyForLead(lead: LeadCandidate): string {
+  const websiteDomain = normalizeDomain(lead.website);
+  if (websiteDomain) {
+    return `domain:${websiteDomain}`;
+  }
+
+  const company = normalizeCompanyName(lead.companyName);
+  const location = (lead.location ?? "").toLowerCase().trim();
+  return `name:${company}|loc:${location}`;
+}
+
+function normalizeEmail(value: string | null | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.replace(/^mailto:/i, "").replace(/\s+/g, "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+    return undefined;
+  }
+  return normalized;
+}
+
 function normalizeCandidate(item: ExtractedLead): LeadCandidate {
   const employeeSizeText = item.employeeSizeText?.replace(/\s+/g, " ").trim() || undefined;
   const inferredRange = normalizeEmployeeRange(item.employeeMin, item.employeeMax, employeeSizeText, item.evidence);
 
   return {
     companyName: item.companyName.replace(/\s+/g, " ").trim(),
+    email: normalizeEmail(item.email),
     website: normalizeWebsite(item.website ?? undefined),
     location: item.location?.replace(/\s+/g, " ").trim(),
     employeeSizeText,
@@ -390,7 +431,7 @@ function dedupeLeads(leads: LeadCandidate[]): LeadCandidate[] {
   const map = new Map<string, LeadCandidate>();
 
   for (const lead of leads) {
-    const key = normalizeDomain(lead.website || lead.sourceUrl) || lead.companyName.toLowerCase();
+    const key = dedupeKeyForLead(lead);
     const existing = map.get(key);
     if (!existing) {
       map.set(key, lead);
@@ -499,9 +540,9 @@ function qualityGate(
     if (relaxedValidated.length > strictValidated.length) {
       relaxModeApplied = true;
       validated = relaxedValidated;
-      const strictKeys = new Set(strictValidated.map((lead) => normalizeDomain(lead.website || lead.sourceUrl) || lead.companyName.toLowerCase()));
+      const strictKeys = new Set(strictValidated.map((lead) => dedupeKeyForLead(lead)));
       finalLeads = relaxedValidated.slice(0, targetFinalCount).map((lead): LeadCandidate => {
-        const key = normalizeDomain(lead.website || lead.sourceUrl) || lead.companyName.toLowerCase();
+        const key = dedupeKeyForLead(lead);
         return strictKeys.has(key) ? lead : { ...lead, selectionMode: "relaxed" as const };
       });
     }
@@ -522,6 +563,7 @@ function qualityGate(
 
   return {
     leads: finalLeads,
+    cancelled: false,
     llmCallsUsed: 0,
     llmCallsRemaining: 0,
     requestedLeadCount,
@@ -538,8 +580,17 @@ function qualityGate(
     effectiveMinConfidence: relaxModeApplied ? (relaxedMinConfidence ?? minConfidence) : minConfidence,
     relaxedMinConfidence,
     searchFailureCount: 0,
-    searchFailureSamples: []
+    searchFailureSamples: [],
+    browseFailureCount: 0,
+    browseFailureSamples: []
   };
+}
+
+async function isCancelled(options: LeadSubReactOptions): Promise<boolean> {
+  if (!options.isCancellationRequested) {
+    return false;
+  }
+  return options.isCancellationRequested();
 }
 
 async function emitStep(
@@ -789,6 +840,15 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   const queryPlan = await buildQueryPlan(options.message, options, budget);
   const requestedLeadCount = queryPlan.targetLeadCount ?? fallbackRequestedLeadCount;
 
+  if (await isCancelled(options)) {
+    const cancelledEarly = qualityGate([], requestedLeadCount, options.minConfidence, targetEmployeeRange);
+    cancelledEarly.queryCount = queryPlan.queries.length;
+    cancelledEarly.llmCallsUsed = budget.used;
+    cancelledEarly.llmCallsRemaining = budget.remaining;
+    cancelledEarly.cancelled = true;
+    return cancelledEarly;
+  }
+
   await emitStep(options.runStore, options.runId, options.sessionId, "query_expansion", {
     status: "completed",
     queryCount: queryPlan.queries.length,
@@ -834,6 +894,17 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     options.maxPages
   );
 
+  if (await isCancelled(options)) {
+    const cancelledDuringSearch = qualityGate([], requestedLeadCount, options.minConfidence, targetEmployeeRange);
+    cancelledDuringSearch.queryCount = queryPlan.queries.length;
+    cancelledDuringSearch.llmCallsUsed = budget.used;
+    cancelledDuringSearch.llmCallsRemaining = budget.remaining;
+    cancelledDuringSearch.searchFailureCount = failedSearches.length;
+    cancelledDuringSearch.searchFailureSamples = failedSearches.slice(0, 5);
+    cancelledDuringSearch.cancelled = true;
+    return cancelledDuringSearch;
+  }
+
   await emitStep(options.runStore, options.runId, options.sessionId, "browse_batch", {
     status: "started",
     queryCount: queryPlan.queries.length,
@@ -851,11 +922,14 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
 
   const browserPool = await BrowserPool.create();
   let pagePayloads: PagePayload[] = [];
+  let browseFailures: Array<{ url: string; error: string }> = [];
   try {
-    pagePayloads = await browserPool.collectPages(
+    const collection = await browserPool.collectPages(
       mergedResults.map((item) => item.url),
       options.browseConcurrency
     );
+    pagePayloads = collection.pages;
+    browseFailures = collection.failures;
   } finally {
     await browserPool.close();
   }
@@ -863,13 +937,20 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   await emitStep(options.runStore, options.runId, options.sessionId, "browse_batch", {
     status: "completed",
     urlCount: mergedResults.length,
-    pagesVisited: pagePayloads.length
+    pagesVisited: pagePayloads.length,
+    failedUrlCount: browseFailures.length,
+    failedUrlSamples: browseFailures.slice(0, 8)
   });
 
   const batches = chunk(pagePayloads, options.extractionBatchSize);
   const extractedLeads: LeadCandidate[] = [];
+  let cancelledDuringExtraction = false;
 
   for (let index = 0; index < batches.length; index += 1) {
+    if (await isCancelled(options)) {
+      cancelledDuringExtraction = true;
+      break;
+    }
     const batch = batches[index];
     await emitStep(options.runStore, options.runId, options.sessionId, "extraction", {
       status: "started",
@@ -908,6 +989,9 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   gated.llmCallsRemaining = budget.remaining;
   gated.searchFailureCount = failedSearches.length;
   gated.searchFailureSamples = failedSearches.slice(0, 5);
+  gated.browseFailureCount = browseFailures.length;
+  gated.browseFailureSamples = browseFailures.slice(0, 8);
+  gated.cancelled = cancelledDuringExtraction || (await isCancelled(options));
 
   await emitStep(options.runStore, options.runId, options.sessionId, "quality_gate", {
     status: "completed",

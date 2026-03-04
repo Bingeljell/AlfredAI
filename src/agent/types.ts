@@ -30,6 +30,7 @@ export interface LeadAgentToolContext {
   defaults: LeadAgentDefaults;
   leadPipelineExecutor: typeof executeLeadSubReactPipeline;
   state: LeadAgentState;
+  isCancellationRequested: () => Promise<boolean>;
   addLeads: (leads: LeadCandidate[]) => { addedCount: number; totalCount: number };
   addArtifact: (artifactPath: string) => void;
 }

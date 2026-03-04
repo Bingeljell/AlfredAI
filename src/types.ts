@@ -1,6 +1,6 @@
 export type PolicyMode = "trusted" | "balanced";
 
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "needs_approval";
+export type RunStatus = "queued" | "running" | "completed" | "cancelled" | "failed" | "needs_approval";
 
 export type SearchProviderName = "searxng" | "brave";
 
@@ -26,6 +26,7 @@ export type LeadSelectionMode = "strict" | "relaxed";
 
 export interface LeadCandidate {
   companyName: string;
+  email?: string;
   website?: string;
   location?: string;
   employeeSizeText?: string;
@@ -76,6 +77,8 @@ export interface RunRecord {
   status: RunStatus;
   createdAt: string;
   updatedAt: string;
+  cancelRequestedAt?: string;
+  cancelledAt?: string;
   assistantText?: string;
   artifactPaths?: string[];
   approvalToken?: string;

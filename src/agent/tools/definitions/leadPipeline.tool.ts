@@ -29,7 +29,8 @@ export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInpu
       browseConcurrency: input.browseConcurrency ?? context.defaults.subReactBrowseConcurrency,
       extractionBatchSize: input.extractionBatchSize ?? context.defaults.subReactBatchSize,
       llmMaxCalls: input.llmMaxCalls ?? context.defaults.subReactLlmMaxCalls,
-      minConfidence: input.minConfidence ?? context.defaults.subReactMinConfidence
+      minConfidence: input.minConfidence ?? context.defaults.subReactMinConfidence,
+      isCancellationRequested: context.isCancellationRequested
     });
 
     const merged = context.addLeads(outcome.leads);
@@ -52,8 +53,11 @@ export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInpu
       relaxModeApplied: outcome.relaxModeApplied,
       strictMinConfidence: outcome.strictMinConfidence,
       effectiveMinConfidence: outcome.effectiveMinConfidence,
+      cancelled: outcome.cancelled,
       searchFailureCount: outcome.searchFailureCount,
-      searchFailureSamples: outcome.searchFailureSamples
+      searchFailureSamples: outcome.searchFailureSamples,
+      browseFailureCount: outcome.browseFailureCount,
+      browseFailureSamples: outcome.browseFailureSamples
     };
   }
 };

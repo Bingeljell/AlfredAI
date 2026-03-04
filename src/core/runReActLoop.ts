@@ -1,12 +1,10 @@
-import type { PolicyMode, RunOutcome, ToolCallRecord } from "../types.js";
+import type { PolicyMode, RunOutcome } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
-import { writeLeadsCsv } from "../tools/csv/writeCsv.js";
 import { evaluateApprovalNeed } from "./approvalPolicy.js";
-import { runOpenAiChat } from "../services/openAiClient.js";
 import { appendDailyNote } from "../memory/dailyNotes.js";
-import { redactValue } from "../utils/redact.js";
 import { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
+import { runLeadAgenticLoop } from "./runLeadAgenticLoop.js";
 
 interface RunReActLoopOptions {
   runStore: RunStore;
@@ -24,21 +22,16 @@ interface RunReActLoopOptions {
   subReactLlmMaxCalls: number;
   subReactMinConfidence: number;
   leadPipelineExecutor?: typeof executeLeadSubReactPipeline;
+  agentMaxDurationMs?: number;
+  agentMaxToolCalls?: number;
+  agentMaxParallelTools?: number;
+  agentPlannerMaxCalls?: number;
+  agentObservationWindow?: number;
+  agentDiminishingThreshold?: number;
 }
 
 function nowIso(): string {
   return new Date().toISOString();
-}
-
-async function recordToolCall(
-  runStore: RunStore,
-  runId: string,
-  call: Omit<ToolCallRecord, "timestamp">
-): Promise<void> {
-  await runStore.addToolCall(runId, {
-    ...call,
-    timestamp: nowIso()
-  });
 }
 
 export async function runReActLoop(
@@ -83,153 +76,37 @@ export async function runReActLoop(
     sessionId,
     phase: "thought",
     eventType: "intent_identified",
-    payload: { intent: "lead_generation_sub_react" },
+    payload: { intent: "lead_generation_agentic" },
     timestamp: nowIso()
   });
 
-  const pipelineStart = Date.now();
   const leadPipelineExecutor = options.leadPipelineExecutor ?? executeLeadSubReactPipeline;
-  const subReactResult = await leadPipelineExecutor({
-    runId,
-    sessionId,
-    message,
+  const outcome = await runLeadAgenticLoop({
     runStore,
     searchManager: options.searchManager,
+    workspaceDir: options.workspaceDir,
+    message,
+    runId,
+    sessionId,
     openAiApiKey: options.openAiApiKey,
-    searchMaxResults: options.searchMaxResults,
-    maxPages: options.subReactMaxPages,
-    browseConcurrency: options.subReactBrowseConcurrency,
-    extractionBatchSize: options.subReactBatchSize,
-    llmMaxCalls: options.subReactLlmMaxCalls,
-    minConfidence: options.subReactMinConfidence
-  });
-
-  await recordToolCall(runStore, runId, {
-    toolName: "lead_pipeline",
-    inputRedacted: {
-      message,
-      maxPages: options.subReactMaxPages,
-      browseConcurrency: options.subReactBrowseConcurrency,
-      extractionBatchSize: options.subReactBatchSize,
-      llmMaxCalls: options.subReactLlmMaxCalls,
-      minConfidence: options.subReactMinConfidence
+    defaults: {
+      searchMaxResults: options.searchMaxResults,
+      subReactMaxPages: options.subReactMaxPages,
+      subReactBrowseConcurrency: options.subReactBrowseConcurrency,
+      subReactBatchSize: options.subReactBatchSize,
+      subReactLlmMaxCalls: options.subReactLlmMaxCalls,
+      subReactMinConfidence: options.subReactMinConfidence
     },
-    outputRedacted: {
-      queryCount: subReactResult.queryCount,
-      pagesVisited: subReactResult.pagesVisited,
-      rawCandidateCount: subReactResult.rawCandidateCount,
-      validatedCandidateCount: subReactResult.validatedCandidateCount,
-      finalCandidateCount: subReactResult.finalCandidateCount,
-      sizeRangeRequested: subReactResult.sizeRangeRequested,
-      sizeMatchBreakdown: subReactResult.sizeMatchBreakdown,
-      relaxModeApplied: subReactResult.relaxModeApplied,
-      strictMinConfidence: subReactResult.strictMinConfidence,
-      effectiveMinConfidence: subReactResult.effectiveMinConfidence,
-      llmCallsUsed: subReactResult.llmCallsUsed,
-      llmCallsRemaining: subReactResult.llmCallsRemaining,
-      deficitCount: subReactResult.deficitCount
-    },
-    durationMs: Date.now() - pipelineStart,
-    status: "ok"
+    leadPipelineExecutor,
+    maxIterations: options.maxSteps,
+    maxDurationMs: options.agentMaxDurationMs ?? 240000,
+    maxToolCalls: options.agentMaxToolCalls ?? Math.max(8, options.maxSteps * 3),
+    maxParallelTools: options.agentMaxParallelTools ?? 3,
+    plannerMaxCalls: options.agentPlannerMaxCalls ?? Math.max(3, options.maxSteps),
+    observationWindow: options.agentObservationWindow ?? 8,
+    diminishingThreshold: options.agentDiminishingThreshold ?? 2
   });
 
-  const csvStart = Date.now();
-  const csvPath = await writeLeadsCsv(options.workspaceDir, runId, subReactResult.leads);
-
-  await recordToolCall(runStore, runId, {
-    toolName: "write_csv",
-    inputRedacted: { candidateCount: subReactResult.leads.length },
-    outputRedacted: { csvPath },
-    durationMs: Date.now() - csvStart,
-    status: "ok"
-  });
-
-  await runStore.appendEvent({
-    runId,
-    sessionId,
-    phase: "persist",
-    eventType: "artifact_written",
-    payload: {
-      csvPath,
-      candidateCount: subReactResult.leads.length,
-      llmCallsUsed: subReactResult.llmCallsUsed,
-      llmCallsRemaining: subReactResult.llmCallsRemaining
-    },
-    timestamp: nowIso()
-  });
-
-  let llmSummary: string | undefined;
-  let summaryLlmCallUsed = 0;
-  if (options.openAiApiKey && subReactResult.llmCallsRemaining > 0) {
-    llmSummary = await runOpenAiChat({
-      apiKey: options.openAiApiKey,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are Alfred. Summarize lead extraction outcome in 4 concise bullets with quality notes and explicit deficit if present."
-        },
-        {
-          role: "user",
-          content: JSON.stringify(
-            redactValue({
-              requestMessage: message,
-              requestedLeadCount: subReactResult.requestedLeadCount,
-              queryCount: subReactResult.queryCount,
-              pagesVisited: subReactResult.pagesVisited,
-              rawCandidateCount: subReactResult.rawCandidateCount,
-              validatedCandidateCount: subReactResult.validatedCandidateCount,
-              finalCandidateCount: subReactResult.finalCandidateCount,
-              deficitCount: subReactResult.deficitCount,
-              candidatePreview: subReactResult.leads.slice(0, 5)
-            })
-          )
-        }
-      ]
-    });
-    if (llmSummary) {
-      summaryLlmCallUsed = 1;
-    }
-  }
-
-  const totalLlmCallsUsed = subReactResult.llmCallsUsed + summaryLlmCallUsed;
-  const totalLlmCallsRemaining = Math.max(0, options.subReactLlmMaxCalls - totalLlmCallsUsed);
-
-  const deficitMessage =
-    subReactResult.deficitCount > 0
-      ? `Requested ${subReactResult.requestedLeadCount}, returned ${subReactResult.finalCandidateCount} validated leads (deficit ${subReactResult.deficitCount}).`
-      : `Returned ${subReactResult.finalCandidateCount} validated leads.`;
-
-  const assistantText =
-    llmSummary ??
-    [
-      `Lead sub-ReAct completed with ${subReactResult.finalCandidateCount} validated leads.`,
-      `Visited ${subReactResult.pagesVisited} pages across ${subReactResult.queryCount} queries.`,
-      `LLM calls used: ${totalLlmCallsUsed}/${options.subReactLlmMaxCalls}.`,
-      deficitMessage
-    ].join("\n");
-
-  await appendDailyNote(options.workspaceDir, sessionId, "assistant", assistantText);
-
-  await runStore.appendEvent({
-    runId,
-    sessionId,
-    phase: "final",
-    eventType: "final_answer",
-    payload: {
-      candidateCount: subReactResult.finalCandidateCount,
-      requestedLeadCount: subReactResult.requestedLeadCount,
-      deficitCount: subReactResult.deficitCount,
-      csvPath,
-      llmCallsUsed: totalLlmCallsUsed,
-      llmCallsRemaining: totalLlmCallsRemaining
-    },
-    timestamp: nowIso()
-  });
-
-  return {
-    status: "completed",
-    assistantText,
-    artifactPaths: [csvPath]
-  };
+  await appendDailyNote(options.workspaceDir, sessionId, "assistant", outcome.assistantText ?? "");
+  return outcome;
 }

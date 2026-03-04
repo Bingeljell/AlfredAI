@@ -52,15 +52,16 @@ const EXTRACTED_LEAD_BATCH_JSON_SCHEMA = {
           email: {
             anyOf: [{ type: "string" }, { type: "null" }]
           },
+          emailEvidence: {
+            anyOf: [{ type: "string" }, { type: "null" }]
+          },
           website: {
             anyOf: [{ type: "string" }, { type: "null" }]
           },
           location: {
             anyOf: [{ type: "string" }, { type: "null" }]
           },
-          employeeSizeText: {
-            anyOf: [{ type: "string" }, { type: "null" }]
-          },
+          employeeSizeText: { type: "string" },
           employeeMin: {
             anyOf: [{ type: "integer" }, { type: "null" }]
           },
@@ -78,6 +79,7 @@ const EXTRACTED_LEAD_BATCH_JSON_SCHEMA = {
         required: [
           "companyName",
           "email",
+          "emailEvidence",
           "website",
           "location",
           "employeeSizeText",
@@ -107,6 +109,7 @@ Hard rules:
 - NEVER use ranking labels (for example "#3 provider") as company names.
 - Use ONLY information explicitly visible in the provided page payloads.
 - Do NOT invent any data.
+- When present on the page, extract business emails from contact sections, footers, and explicit mailto links.
 
 Employee size parsing rules (CRITICAL):
 - Always attempt to extract the employee count range from the page.
@@ -117,6 +120,9 @@ Employee size parsing rules (CRITICAL):
   - "50+" -> employeeMin=50, employeeMax=50
   - "~25" or "about 25 employees" -> employeeMin=25, employeeMax=25
 - If no employee information is found or it cannot be parsed, set both to null.
+- employeeSizeText is required:
+  - if size text is found, use the exact snippet (for example "11-50 employees")
+  - if not found, set employeeSizeText to "unknown"
 - Be conservative: only set numbers when the page clearly states a range or exact number.
 
 Schema contract (strict):
@@ -126,9 +132,10 @@ Return ONLY a valid JSON object with this exact structure:
     {
       "companyName": string,
       "email": string | null,
+      "emailEvidence": string | null,
       "website": string | null,
       "location": string | null,
-      "employeeSizeText": string | null,
+      "employeeSizeText": string,
       "employeeMin": number | null,
       "employeeMax": number | null,
       "sizeEvidence": string | null,
@@ -143,6 +150,7 @@ Return ONLY a valid JSON object with this exact structure:
 Field rules:
 - companyName: exact name as shown on the page.
 - email: valid work email only if explicitly present on the page, otherwise null.
+- emailEvidence: where the email was found (for example "contact page", "footer", "mailto link", "unknown"), otherwise null.
 - website: full valid URL if clearly present, otherwise null.
 - location: city + state if mentioned, otherwise null.
 - employeeSizeText: raw text from the page (for example "11-50 employees").
@@ -410,12 +418,13 @@ function normalizeEmail(value: string | null | undefined): string | undefined {
 }
 
 function normalizeCandidate(item: ExtractedLead): LeadCandidate {
-  const employeeSizeText = item.employeeSizeText?.replace(/\s+/g, " ").trim() || undefined;
+  const employeeSizeText = item.employeeSizeText.replace(/\s+/g, " ").trim() || "unknown";
   const inferredRange = normalizeEmployeeRange(item.employeeMin, item.employeeMax, employeeSizeText, item.evidence);
 
   return {
     companyName: item.companyName.replace(/\s+/g, " ").trim(),
     email: normalizeEmail(item.email),
+    emailEvidence: item.emailEvidence?.replace(/\s+/g, " ").trim() || undefined,
     website: normalizeWebsite(item.website ?? undefined),
     location: item.location?.replace(/\s+/g, " ").trim(),
     employeeSizeText,

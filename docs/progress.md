@@ -54,6 +54,7 @@
   - Lead-quality hotfixes now reduce false dedupe collapse (company-identity keying instead of `sourceUrl` domain fallback), and browse-stage diagnostics now include per-URL failure telemetry plus a Playwright navigation fallback path to improve scrape coverage on difficult pages.
   - Extraction prompt quality is now further tightened for employee-size normalization with explicit numeric parsing rules, conservative null behavior, and anti-aggregator naming constraints to improve size-aware lead scoring outcomes.
   - `.env.example` now includes a usable default `SEARXNG_START_CMD` so local SearXNG auto-recovery can be exercised without extra manual wiring.
+  - Extraction contract now requires `employeeSizeText` with explicit `"unknown"` fallback and captures `emailEvidence`, improving structured completeness for size-aware gating and downstream outreach analysis.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Additional resiliency and production hardening tasks remain for later iterations.

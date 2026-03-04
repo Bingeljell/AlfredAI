@@ -8,9 +8,10 @@ export const QueryExpansionSchema = z.object({
 export const ExtractedLeadSchema = z.object({
   companyName: z.string().min(2),
   email: z.string().min(3).max(200).nullable().optional(),
+  emailEvidence: z.string().min(2).max(260).nullable().optional(),
   website: z.string().url().nullable().optional(),
   location: z.string().min(2).max(120).nullable().optional(),
-  employeeSizeText: z.string().min(2).max(120).nullable().optional(),
+  employeeSizeText: z.string().min(2).max(120),
   employeeMin: z.number().int().min(1).max(100000).nullable().optional(),
   employeeMax: z.number().int().min(1).max(100000).nullable().optional(),
   sizeEvidence: z.string().min(2).max(260).nullable().optional(),

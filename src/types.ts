@@ -27,6 +27,7 @@ export type LeadSelectionMode = "strict" | "relaxed";
 export interface LeadCandidate {
   companyName: string;
   email?: string;
+  emailEvidence?: string;
   website?: string;
   location?: string;
   employeeSizeText?: string;

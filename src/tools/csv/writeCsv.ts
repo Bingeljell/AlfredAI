@@ -18,6 +18,7 @@ export async function writeLeadsCsv(
   const headers = [
     "companyName",
     "email",
+    "emailEvidence",
     "website",
     "location",
     "employeeSizeText",
@@ -35,6 +36,7 @@ export async function writeLeadsCsv(
     return [
       candidate.companyName,
       candidate.email ?? "",
+      candidate.emailEvidence ?? "",
       candidate.website ?? "",
       candidate.location ?? "",
       candidate.employeeSizeText ?? "",

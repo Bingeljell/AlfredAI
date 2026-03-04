@@ -31,7 +31,7 @@ export interface LeadCandidate {
   employeeSizeText?: string;
   employeeMin?: number;
   employeeMax?: number;
-  sizeSource?: string;
+  sizeEvidence?: string;
   sizeMatch?: LeadSizeMatch;
   selectionMode?: LeadSelectionMode;
   shortDesc: string;

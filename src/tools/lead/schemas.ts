@@ -12,7 +12,7 @@ export const ExtractedLeadSchema = z.object({
   employeeSizeText: z.string().min(2).max(120).nullable().optional(),
   employeeMin: z.number().int().min(1).max(100000).nullable().optional(),
   employeeMax: z.number().int().min(1).max(100000).nullable().optional(),
-  sizeSource: z.string().url().nullable().optional(),
+  sizeEvidence: z.string().min(2).max(260).nullable().optional(),
   shortDesc: z.string().min(10).max(300),
   sourceUrl: z.string().url(),
   confidence: z.number().min(0).max(1),

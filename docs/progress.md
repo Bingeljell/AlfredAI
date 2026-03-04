@@ -42,6 +42,7 @@
   - Strict JSON-schema compatibility fixes are in place for query/extraction structured outputs (nullable required fields), and search-stage events now include per-query failure detail so `urlCount: 0` runs are diagnosable from timeline data.
   - Live progress visibility is now improved with periodic backend heartbeat events (`observe:heartbeat` every 10s) and UI polling that streams run-state/timeline updates while queued/running.
   - Lead quality gate now applies employee-size-aware soft matching (in-range/near/unknown/out-of-range), includes conditional relax mode for high-deficit size-filtered runs, and exports size/selection metadata in CSV and run telemetry for clearer evaluation.
+  - Size metadata extraction is now resilient: `sizeSource` was replaced with free-text `sizeEvidence` to avoid URL-format validation drops that previously zeroed entire extraction batches.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Additional resiliency and production hardening tasks remain for later iterations.

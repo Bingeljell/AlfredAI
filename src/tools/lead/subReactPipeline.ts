@@ -64,7 +64,7 @@ const EXTRACTED_LEAD_BATCH_JSON_SCHEMA = {
           employeeMax: {
             anyOf: [{ type: "integer" }, { type: "null" }]
           },
-          sizeSource: {
+          sizeEvidence: {
             anyOf: [{ type: "string" }, { type: "null" }]
           },
           shortDesc: { type: "string" },
@@ -79,7 +79,7 @@ const EXTRACTED_LEAD_BATCH_JSON_SCHEMA = {
           "employeeSizeText",
           "employeeMin",
           "employeeMax",
-          "sizeSource",
+          "sizeEvidence",
           "shortDesc",
           "sourceUrl",
           "confidence",
@@ -311,7 +311,7 @@ function normalizeCandidate(item: ExtractedLead): LeadCandidate {
     employeeSizeText,
     employeeMin: inferredRange?.min,
     employeeMax: inferredRange?.max,
-    sizeSource: normalizeWebsite(item.sizeSource ?? undefined),
+    sizeEvidence: item.sizeEvidence?.replace(/\s+/g, " ").trim() || undefined,
     shortDesc: item.shortDesc.replace(/\s+/g, " ").trim(),
     sourceUrl: item.sourceUrl,
     confidence: Math.min(1, Math.max(0, item.confidence)),
@@ -575,7 +575,8 @@ function buildExtractionPrompt(batch: PagePayload[], requestMessage: string): st
     "Extract REAL companies matching the request (SI/MSP context where relevant).",
     "Never output the aggregator/listing site itself as a company lead.",
     "When employee-size evidence exists, capture employeeSizeText and infer employeeMin/employeeMax.",
-    "If size is unavailable, return null for employeeSizeText, employeeMin, employeeMax, and sizeSource.",
+    "Capture sizeEvidence as a short human-readable note (not a URL), or null when unavailable.",
+    "If size is unavailable, return null for employeeSizeText, employeeMin, employeeMax, and sizeEvidence.",
     "Return strict JSON only.",
     "Use confidence 0-1.",
     `User request: ${requestMessage}`,

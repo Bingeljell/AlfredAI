@@ -11,7 +11,7 @@ test("QueryExpansionSchema accepts null targetLeadCount for strict JSON-schema c
   assert.equal(parsed.targetLeadCount, null);
 });
 
-test("ExtractedLeadBatchSchema accepts nullable website and location", () => {
+test("ExtractedLeadBatchSchema accepts nullable website/location and sizeEvidence text", () => {
   const parsed = ExtractedLeadBatchSchema.parse({
     leads: [
       {
@@ -21,7 +21,7 @@ test("ExtractedLeadBatchSchema accepts nullable website and location", () => {
         employeeSizeText: null,
         employeeMin: null,
         employeeMax: null,
-        sizeSource: null,
+        sizeEvidence: null,
         shortDesc: "Managed IT services and cloud operations for SMB customers.",
         sourceUrl: "https://example.com/listing/acme",
         confidence: 0.78,
@@ -36,5 +36,5 @@ test("ExtractedLeadBatchSchema accepts nullable website and location", () => {
   assert.equal(parsed.leads[0]?.employeeSizeText, null);
   assert.equal(parsed.leads[0]?.employeeMin, null);
   assert.equal(parsed.leads[0]?.employeeMax, null);
-  assert.equal(parsed.leads[0]?.sizeSource, null);
+  assert.equal(parsed.leads[0]?.sizeEvidence, null);
 });

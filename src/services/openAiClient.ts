@@ -37,6 +37,98 @@ export interface StructuredChatDiagnostic<T> {
   failureCode?: StructuredChatFailureCode;
   failureMessage?: string;
   statusCode?: number;
+  httpErrorDetails?: StructuredChatHttpErrorDetails;
+}
+
+export interface StructuredChatHttpErrorDetails {
+  statusCode: number;
+  requestId?: string;
+  retryAfter?: string;
+  rateLimitRemainingRequests?: string;
+  rateLimitRemainingTokens?: string;
+  errorType?: string;
+  errorCode?: string;
+  errorParam?: string;
+  errorMessage?: string;
+  bodySnippet?: string;
+}
+
+interface OpenAiHttpErrorPayload {
+  error?: {
+    message?: unknown;
+    type?: unknown;
+    param?: unknown;
+    code?: unknown;
+  };
+}
+
+function optionalString(value: unknown, maxLength = 220): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.slice(0, maxLength);
+}
+
+async function buildHttpErrorDetails(response: Response): Promise<StructuredChatHttpErrorDetails> {
+  const details: StructuredChatHttpErrorDetails = {
+    statusCode: response.status,
+    requestId: optionalString(response.headers.get("x-request-id") ?? response.headers.get("request-id"), 120),
+    retryAfter: optionalString(response.headers.get("retry-after"), 32),
+    rateLimitRemainingRequests: optionalString(response.headers.get("x-ratelimit-remaining-requests"), 32),
+    rateLimitRemainingTokens: optionalString(response.headers.get("x-ratelimit-remaining-tokens"), 32)
+  };
+
+  let responseText = "";
+  try {
+    responseText = (await response.text()).trim();
+  } catch {
+    return details;
+  }
+
+  if (!responseText) {
+    return details;
+  }
+
+  try {
+    const payload = JSON.parse(responseText) as OpenAiHttpErrorPayload;
+    details.errorType = optionalString(payload.error?.type, 120);
+    details.errorCode = optionalString(payload.error?.code, 120);
+    details.errorParam = optionalString(payload.error?.param, 120);
+    details.errorMessage = optionalString(payload.error?.message, 220);
+    if (!details.errorMessage && !details.errorType && !details.errorCode) {
+      details.bodySnippet = optionalString(responseText, 220);
+    }
+  } catch {
+    details.bodySnippet = optionalString(responseText, 220);
+  }
+
+  return details;
+}
+
+function formatHttpFailureMessage(details: StructuredChatHttpErrorDetails): string {
+  const fragments = [`OpenAI returned status ${details.statusCode}`];
+
+  const parts: string[] = [];
+  if (details.errorType) {
+    parts.push(`type=${details.errorType}`);
+  }
+  if (details.errorCode) {
+    parts.push(`code=${details.errorCode}`);
+  }
+  if (parts.length > 0) {
+    fragments.push(parts.join(", "));
+  }
+  if (details.errorMessage) {
+    fragments.push(details.errorMessage);
+  } else if (details.bodySnippet) {
+    fragments.push(details.bodySnippet);
+  }
+
+  return fragments.join(" | ");
 }
 
 async function parseResponse(response: Response): Promise<string | undefined> {
@@ -119,10 +211,12 @@ export async function runOpenAiStructuredChatWithDiagnostics<T>(
   }
 
   if (!response.ok) {
+    const httpErrorDetails = await buildHttpErrorDetails(response);
     return {
       failureCode: "http_error",
-      failureMessage: `OpenAI returned status ${response.status}`,
-      statusCode: response.status
+      failureMessage: formatHttpFailureMessage(httpErrorDetails),
+      statusCode: response.status,
+      httpErrorDetails
     };
   }
 

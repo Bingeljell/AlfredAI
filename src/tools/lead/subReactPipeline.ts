@@ -4,7 +4,8 @@ import type { SearchManager } from "../search/searchManager.js";
 import {
   runOpenAiStructuredChat,
   runOpenAiStructuredChatWithDiagnostics,
-  type StructuredChatDiagnostic
+  type StructuredChatDiagnostic,
+  type StructuredChatHttpErrorDetails
 } from "../../services/openAiClient.js";
 import { BrowserPool, type PagePayload } from "./browserPool.js";
 import { ExtractedLeadBatchSchema, QueryExpansionSchema, type ExtractedLead } from "./schemas.js";
@@ -87,6 +88,7 @@ interface QueryPlanResult {
   queries: string[];
   targetLeadCount?: number;
   plannerFailureReason?: string;
+  plannerFailureDetails?: StructuredChatHttpErrorDetails;
   usedModelPlan: boolean;
 }
 
@@ -94,6 +96,7 @@ interface ExtractBatchResult {
   leads: LeadCandidate[];
   attemptsUsed: number;
   failureReasons: string[];
+  failureDetails: Array<Record<string, unknown>>;
 }
 
 function nowIso(): string {
@@ -231,6 +234,16 @@ function formatDiagnosticReason(diagnostic: StructuredChatDiagnostic<unknown>): 
   return message ? `${code}: ${message}` : code;
 }
 
+function diagnosticDetails(diagnostic: StructuredChatDiagnostic<unknown>, attempt: number): Record<string, unknown> {
+  return {
+    attempt,
+    failureCode: diagnostic.failureCode ?? "unknown",
+    failureMessage: diagnostic.failureMessage?.slice(0, 220),
+    statusCode: diagnostic.statusCode,
+    ...(diagnostic.httpErrorDetails ? { httpErrorDetails: diagnostic.httpErrorDetails } : {})
+  };
+}
+
 async function buildQueryPlan(message: string, options: LeadSubReactOptions, budget: LlmBudgetManager): Promise<QueryPlanResult> {
   if (!options.openAiApiKey || !budget.consume()) {
     return {
@@ -261,7 +274,8 @@ async function buildQueryPlan(message: string, options: LeadSubReactOptions, bud
     return {
       queries: fallbackQueryExpansion(message),
       usedModelPlan: false,
-      plannerFailureReason: formatDiagnosticReason(diagnostic)
+      plannerFailureReason: formatDiagnosticReason(diagnostic),
+      plannerFailureDetails: diagnostic.httpErrorDetails
     };
   }
 
@@ -312,12 +326,14 @@ async function extractBatch(
   budget: LlmBudgetManager
 ): Promise<ExtractBatchResult> {
   const failureReasons: string[] = [];
+  const failureDetails: Array<Record<string, unknown>> = [];
 
   if (!options.openAiApiKey) {
     return {
       leads: [],
       attemptsUsed: 0,
-      failureReasons: ["missing_api_key"]
+      failureReasons: ["missing_api_key"],
+      failureDetails: [{ attempt: 0, failureCode: "missing_api_key", failureMessage: "OpenAI API key is not configured" }]
     };
   }
 
@@ -325,7 +341,14 @@ async function extractBatch(
     return {
       leads: [],
       attemptsUsed: 0,
-      failureReasons: ["llm_budget_exhausted_before_first_attempt"]
+      failureReasons: ["llm_budget_exhausted_before_first_attempt"],
+      failureDetails: [
+        {
+          attempt: 0,
+          failureCode: "llm_budget_exhausted",
+          failureMessage: "LLM budget exhausted before first extraction attempt"
+        }
+      ]
     };
   }
 
@@ -354,18 +377,26 @@ async function extractBatch(
     return {
       leads: firstAttempt.result.leads.map(normalizeCandidate),
       attemptsUsed,
-      failureReasons
+      failureReasons,
+      failureDetails
     };
   }
 
   failureReasons.push(`attempt_1:${formatDiagnosticReason(firstAttempt)}`);
+  failureDetails.push(diagnosticDetails(firstAttempt, 1));
 
   if (!budget.consume()) {
     failureReasons.push("retry_skipped:llm_budget_exhausted");
+    failureDetails.push({
+      attempt: attemptsUsed + 1,
+      failureCode: "llm_budget_exhausted",
+      failureMessage: "Retry skipped because LLM budget was exhausted"
+    });
     return {
       leads: [],
       attemptsUsed,
-      failureReasons
+      failureReasons,
+      failureDetails
     };
   }
 
@@ -403,15 +434,18 @@ async function extractBatch(
     return {
       leads: retryAttempt.result.leads.map(normalizeCandidate),
       attemptsUsed,
-      failureReasons
+      failureReasons,
+      failureDetails
     };
   }
 
   failureReasons.push(`attempt_2:${formatDiagnosticReason(retryAttempt)}`);
+  failureDetails.push(diagnosticDetails(retryAttempt, 2));
   return {
     leads: [],
     attemptsUsed,
-    failureReasons
+    failureReasons,
+    failureDetails
   };
 }
 
@@ -436,6 +470,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     requestedLeadCountSource: queryPlan.targetLeadCount ? "model_plan" : "fallback_parser",
     usedModelPlan: queryPlan.usedModelPlan,
     plannerFailureReason: queryPlan.plannerFailureReason,
+    plannerFailureDetails: queryPlan.plannerFailureDetails,
     llmCallsUsed: budget.used,
     llmCallsRemaining: budget.remaining
   });
@@ -493,6 +528,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
       extractedCount: extraction.leads.length,
       attemptsUsed: extraction.attemptsUsed,
       failureReasons: extraction.failureReasons,
+      failureDetails: extraction.failureDetails,
       llmCallsUsed: budget.used,
       llmCallsRemaining: budget.remaining
     });

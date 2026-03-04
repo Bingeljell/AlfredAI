@@ -1,11 +1,15 @@
-import { z } from "zod";
 import type { LeadCandidate, SearchResult } from "../../types.js";
 import type { RunStore } from "../../runs/runStore.js";
 import type { SearchManager } from "../search/searchManager.js";
-import { runOpenAiStructuredChat } from "../../services/openAiClient.js";
+import {
+  runOpenAiStructuredChat,
+  runOpenAiStructuredChatWithDiagnostics,
+  type StructuredChatDiagnostic
+} from "../../services/openAiClient.js";
 import { BrowserPool, type PagePayload } from "./browserPool.js";
 import { ExtractedLeadBatchSchema, QueryExpansionSchema, type ExtractedLead } from "./schemas.js";
 import { LlmBudgetManager } from "./llmBudget.js";
+import { parseRequestedLeadCount } from "./requestIntent.js";
 
 const QUERY_EXPANSION_JSON_SCHEMA = {
   type: "object",
@@ -16,6 +20,11 @@ const QUERY_EXPANSION_JSON_SCHEMA = {
       minItems: 3,
       maxItems: 5,
       items: { type: "string" }
+    },
+    targetLeadCount: {
+      type: "integer",
+      minimum: 10,
+      maximum: 100
     }
   },
   required: ["queries"]
@@ -74,20 +83,21 @@ export interface LeadSubReactResult {
   deficitCount: number;
 }
 
-function nowIso(): string {
-  return new Date().toISOString();
+interface QueryPlanResult {
+  queries: string[];
+  targetLeadCount?: number;
+  plannerFailureReason?: string;
+  usedModelPlan: boolean;
 }
 
-function parseRequestedLeadCount(message: string): number {
-  const match = message.match(/\b(?:find|generate|get)\s+(\d{1,3})\s+.*?\bleads?\b/i);
-  if (!match) {
-    return 50;
-  }
-  const parsed = Number(match[1]);
-  if (!Number.isFinite(parsed)) {
-    return 50;
-  }
-  return Math.min(100, Math.max(10, parsed));
+interface ExtractBatchResult {
+  leads: LeadCandidate[];
+  attemptsUsed: number;
+  failureReasons: string[];
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
 }
 
 function parseLocationHint(message: string): string | undefined {
@@ -215,12 +225,22 @@ async function emitStep(
   });
 }
 
-async function expandQueries(message: string, options: LeadSubReactOptions, budget: LlmBudgetManager): Promise<string[]> {
+function formatDiagnosticReason(diagnostic: StructuredChatDiagnostic<unknown>): string {
+  const code = diagnostic.failureCode ?? "unknown";
+  const message = diagnostic.failureMessage?.slice(0, 220);
+  return message ? `${code}: ${message}` : code;
+}
+
+async function buildQueryPlan(message: string, options: LeadSubReactOptions, budget: LlmBudgetManager): Promise<QueryPlanResult> {
   if (!options.openAiApiKey || !budget.consume()) {
-    return fallbackQueryExpansion(message);
+    return {
+      queries: fallbackQueryExpansion(message),
+      usedModelPlan: false,
+      plannerFailureReason: !options.openAiApiKey ? "missing_api_key" : "llm_budget_exhausted"
+    };
   }
 
-  const expansion = await runOpenAiStructuredChat(
+  const diagnostic = await runOpenAiStructuredChatWithDiagnostics(
     {
       apiKey: options.openAiApiKey,
       schemaName: "lead_query_expansion",
@@ -229,7 +249,7 @@ async function expandQueries(message: string, options: LeadSubReactOptions, budg
         {
           role: "system",
           content:
-            "Rewrite user lead requests into 3-5 targeted search queries for discovering real company entities. Include vertical+location intent and directory-style queries."
+            "Rewrite user lead requests into 3-5 targeted search queries for discovering real company entities. Include vertical+location intent and directory-style queries. Also output a targetLeadCount integer when the user intent specifies quantity."
         },
         { role: "user", content: message }
       ]
@@ -237,11 +257,19 @@ async function expandQueries(message: string, options: LeadSubReactOptions, budg
     QueryExpansionSchema
   );
 
-  if (!expansion) {
-    return fallbackQueryExpansion(message);
+  if (!diagnostic.result) {
+    return {
+      queries: fallbackQueryExpansion(message),
+      usedModelPlan: false,
+      plannerFailureReason: formatDiagnosticReason(diagnostic)
+    };
   }
 
-  return expansion.queries.map((query) => query.trim()).filter(Boolean).slice(0, 5);
+  return {
+    queries: diagnostic.result.queries.map((query) => query.trim()).filter(Boolean).slice(0, 5),
+    targetLeadCount: diagnostic.result.targetLeadCount,
+    usedModelPlan: true
+  };
 }
 
 function mergeSearchResults(searchResults: SearchResult[][], maxPages: number): SearchResult[] {
@@ -282,12 +310,27 @@ async function extractBatch(
   batch: PagePayload[],
   options: LeadSubReactOptions,
   budget: LlmBudgetManager
-): Promise<LeadCandidate[]> {
-  if (!options.openAiApiKey || !budget.consume()) {
-    return [];
+): Promise<ExtractBatchResult> {
+  const failureReasons: string[] = [];
+
+  if (!options.openAiApiKey) {
+    return {
+      leads: [],
+      attemptsUsed: 0,
+      failureReasons: ["missing_api_key"]
+    };
   }
 
-  const result = await runOpenAiStructuredChat(
+  if (!budget.consume()) {
+    return {
+      leads: [],
+      attemptsUsed: 0,
+      failureReasons: ["llm_budget_exhausted_before_first_attempt"]
+    };
+  }
+
+  let attemptsUsed = 1;
+  const firstAttempt = await runOpenAiStructuredChatWithDiagnostics(
     {
       apiKey: options.openAiApiKey,
       schemaName: "lead_extraction_batch",
@@ -307,14 +350,26 @@ async function extractBatch(
     ExtractedLeadBatchSchema
   );
 
-  if (result) {
-    return result.leads.map(normalizeCandidate);
+  if (firstAttempt.result) {
+    return {
+      leads: firstAttempt.result.leads.map(normalizeCandidate),
+      attemptsUsed,
+      failureReasons
+    };
   }
+
+  failureReasons.push(`attempt_1:${formatDiagnosticReason(firstAttempt)}`);
 
   if (!budget.consume()) {
-    return [];
+    failureReasons.push("retry_skipped:llm_budget_exhausted");
+    return {
+      leads: [],
+      attemptsUsed,
+      failureReasons
+    };
   }
 
+  attemptsUsed = 2;
   const retryBatch = batch.map((item) => ({
     url: item.url,
     title: item.title,
@@ -324,7 +379,7 @@ async function extractBatch(
     text: item.text.slice(0, 2500)
   }));
 
-  const retry = await runOpenAiStructuredChat(
+  const retryAttempt = await runOpenAiStructuredChatWithDiagnostics(
     {
       apiKey: options.openAiApiKey,
       schemaName: "lead_extraction_batch_retry",
@@ -344,30 +399,49 @@ async function extractBatch(
     ExtractedLeadBatchSchema
   );
 
-  return retry ? retry.leads.map(normalizeCandidate) : [];
+  if (retryAttempt.result) {
+    return {
+      leads: retryAttempt.result.leads.map(normalizeCandidate),
+      attemptsUsed,
+      failureReasons
+    };
+  }
+
+  failureReasons.push(`attempt_2:${formatDiagnosticReason(retryAttempt)}`);
+  return {
+    leads: [],
+    attemptsUsed,
+    failureReasons
+  };
 }
 
 export async function executeLeadSubReactPipeline(options: LeadSubReactOptions): Promise<LeadSubReactResult> {
   const budget = new LlmBudgetManager(options.llmMaxCalls);
-  const requestedLeadCount = parseRequestedLeadCount(options.message);
+  const fallbackRequestedLeadCount = parseRequestedLeadCount(options.message);
 
   await emitStep(options.runStore, options.runId, options.sessionId, "query_expansion", {
     status: "started",
+    fallbackRequestedLeadCount,
     llmCallsUsed: budget.used,
     llmCallsRemaining: budget.remaining
   });
 
-  const queries = await expandQueries(options.message, options, budget);
+  const queryPlan = await buildQueryPlan(options.message, options, budget);
+  const requestedLeadCount = queryPlan.targetLeadCount ?? fallbackRequestedLeadCount;
 
   await emitStep(options.runStore, options.runId, options.sessionId, "query_expansion", {
     status: "completed",
-    queryCount: queries.length,
+    queryCount: queryPlan.queries.length,
+    requestedLeadCount,
+    requestedLeadCountSource: queryPlan.targetLeadCount ? "model_plan" : "fallback_parser",
+    usedModelPlan: queryPlan.usedModelPlan,
+    plannerFailureReason: queryPlan.plannerFailureReason,
     llmCallsUsed: budget.used,
     llmCallsRemaining: budget.remaining
   });
 
   const searchOutputs = await Promise.all(
-    queries.map((query) => options.searchManager.search(query, options.searchMaxResults).catch(() => undefined))
+    queryPlan.queries.map((query) => options.searchManager.search(query, options.searchMaxResults).catch(() => undefined))
   );
   const mergedResults = mergeSearchResults(
     searchOutputs.filter(Boolean).map((item) => item!.results),
@@ -409,14 +483,16 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
       llmCallsRemaining: budget.remaining
     });
 
-    const extracted = await extractBatch(batch, options, budget);
-    extractedLeads.push(...extracted);
+    const extraction = await extractBatch(batch, options, budget);
+    extractedLeads.push(...extraction.leads);
 
     await emitStep(options.runStore, options.runId, options.sessionId, "extraction", {
       status: "completed",
       batchIndex: index + 1,
       totalBatches: batches.length,
-      extractedCount: extracted.length,
+      extractedCount: extraction.leads.length,
+      attemptsUsed: extraction.attemptsUsed,
+      failureReasons: extraction.failureReasons,
       llmCallsUsed: budget.used,
       llmCallsRemaining: budget.remaining
     });
@@ -428,13 +504,14 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   });
 
   const gated = qualityGate(extractedLeads, requestedLeadCount, options.minConfidence);
-  gated.queryCount = queries.length;
+  gated.queryCount = queryPlan.queries.length;
   gated.pagesVisited = pagePayloads.length;
   gated.llmCallsUsed = budget.used;
   gated.llmCallsRemaining = budget.remaining;
 
   await emitStep(options.runStore, options.runId, options.sessionId, "quality_gate", {
     status: "completed",
+    requestedLeadCount,
     rawCandidateCount: gated.rawCandidateCount,
     validatedCandidateCount: gated.validatedCandidateCount,
     finalCandidateCount: gated.finalCandidateCount,

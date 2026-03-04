@@ -1,7 +1,8 @@
 import { z } from "zod";
 
 export const QueryExpansionSchema = z.object({
-  queries: z.array(z.string().min(3)).min(3).max(5)
+  queries: z.array(z.string().min(3)).min(3).max(5),
+  targetLeadCount: z.number().int().min(10).max(100).optional()
 });
 
 export const ExtractedLeadSchema = z.object({

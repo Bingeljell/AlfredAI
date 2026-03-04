@@ -74,7 +74,7 @@ export class ChatService {
         },
         timestamp: new Date().toISOString()
       });
-    }, 10_000);
+    }, 30_000);
     heartbeatTimer.unref?.();
 
     try {

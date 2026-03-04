@@ -1,7 +1,8 @@
 const state = {
   activeSessionId: null,
   activeRunId: null,
-  sessions: []
+  sessions: [],
+  runPollTimer: null
 };
 
 const els = {
@@ -24,6 +25,59 @@ function pretty(obj) {
   return JSON.stringify(obj, null, 2);
 }
 
+function isTerminalStatus(status) {
+  return status === "completed" || status === "failed" || status === "needs_approval";
+}
+
+function formatElapsedMs(value) {
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return "0s";
+  }
+  return `${Math.round(ms / 1000)}s`;
+}
+
+function summarizeEvent(event) {
+  const payload = event.payload || {};
+  if (event.phase === "observe" && event.eventType === "heartbeat") {
+    return `still running, elapsed ${formatElapsedMs(payload.elapsedMs)}`;
+  }
+
+  if (event.phase === "sub_react_step") {
+    const step = payload.step || "unknown";
+    const status = payload.status || "n/a";
+    if (step === "browse_batch" && status === "started") {
+      return `step=${step} status=${status} queries=${payload.queryCount ?? "?"} urls=${payload.urlCount ?? "?"}`;
+    }
+    if (step === "browse_batch" && status === "completed") {
+      return `step=${step} status=${status} visited=${payload.pagesVisited ?? "?"}/${payload.urlCount ?? "?"}`;
+    }
+    if (step === "extraction" && status === "completed") {
+      return `step=${step} status=${status} batch=${payload.batchIndex ?? "?"}/${payload.totalBatches ?? "?"} extracted=${payload.extractedCount ?? 0}`;
+    }
+    if (step === "quality_gate" && status === "completed") {
+      return `step=${step} status=${status} final=${payload.finalCandidateCount ?? 0} deficit=${payload.deficitCount ?? 0}`;
+    }
+    return `step=${step} status=${status}`;
+  }
+
+  return `${event.phase}:${event.eventType}`;
+}
+
+function latestProgressMessage(payload) {
+  const events = Array.isArray(payload?.events) ? payload.events : [];
+  const reversed = [...events].reverse();
+  for (const event of reversed) {
+    if (event.phase === "observe" && event.eventType === "heartbeat") {
+      return `Still running (${formatElapsedMs(event.payload?.elapsedMs)} elapsed)`;
+    }
+    if (event.phase === "sub_react_step") {
+      return `Progress: ${summarizeEvent(event)}`;
+    }
+  }
+  return "Run is in progress...";
+}
+
 function renderTimelineView(payload) {
   if (!payload || !payload.run || !Array.isArray(payload.events)) {
     return pretty(payload);
@@ -41,6 +95,10 @@ function renderTimelineView(payload) {
       const step = event.payload?.step || "unknown";
       const status = event.payload?.status || "n/a";
       lines.push(`- [${event.timestamp}] ${event.phase}:${step} (${status})`);
+      continue;
+    }
+    if (event.phase === "observe" && event.eventType === "heartbeat") {
+      lines.push(`- [${event.timestamp}] observe:heartbeat (${formatElapsedMs(event.payload?.elapsedMs)} elapsed)`);
       continue;
     }
     lines.push(`- [${event.timestamp}] ${event.phase}:${event.eventType}`);
@@ -106,7 +164,41 @@ async function loadRun(runId) {
   const payload = await api(`/v1/runs/${runId}`);
   state.activeRunId = runId;
   els.runIdInput.value = runId;
+  els.runMeta.textContent = `Run ${payload.run.runId} | status ${payload.run.status}`;
   els.timeline.textContent = renderTimelineView(payload);
+  return payload;
+}
+
+function stopRunPolling() {
+  if (state.runPollTimer) {
+    clearInterval(state.runPollTimer);
+    state.runPollTimer = null;
+  }
+}
+
+function startRunPolling(runId) {
+  stopRunPolling();
+
+  const tick = async () => {
+    try {
+      const payload = await loadRun(runId);
+      if (isTerminalStatus(payload.run.status)) {
+        els.assistantOutput.textContent =
+          payload.run.assistantText || `Run finished with status ${payload.run.status}.`;
+        stopRunPolling();
+        return;
+      }
+      els.assistantOutput.textContent = latestProgressMessage(payload);
+    } catch (error) {
+      stopRunPolling();
+      els.assistantOutput.textContent = `Polling error: ${error.message}`;
+    }
+  };
+
+  void tick();
+  state.runPollTimer = setInterval(() => {
+    void tick();
+  }, 2000);
 }
 
 els.createSession.addEventListener("click", async () => {
@@ -131,7 +223,8 @@ els.send.addEventListener("click", async () => {
     return;
   }
 
-  els.assistantOutput.textContent = "Running...";
+  stopRunPolling();
+  els.assistantOutput.textContent = "Starting run...";
   const payload = await api("/v1/chat/turn", {
     method: "POST",
     body: JSON.stringify({
@@ -142,7 +235,20 @@ els.send.addEventListener("click", async () => {
   });
 
   els.runMeta.textContent = `Run ${payload.runId} | status ${payload.status}`;
-  els.assistantOutput.textContent = payload.assistantText || "Queued. Open Run Timeline after completion.";
+  if (payload.runId) {
+    state.activeRunId = payload.runId;
+    els.runIdInput.value = payload.runId;
+  }
+
+  if (payload.status === "queued" || payload.status === "running") {
+    els.assistantOutput.textContent = "Run queued. Loading live progress...";
+    if (payload.runId) {
+      startRunPolling(payload.runId);
+    }
+    return;
+  }
+
+  els.assistantOutput.textContent = payload.assistantText || "Run finished.";
   if (payload.runId) {
     await loadRun(payload.runId);
   }
@@ -153,7 +259,10 @@ els.loadRun.addEventListener("click", async () => {
   if (!runId) {
     return;
   }
-  await loadRun(runId);
+  const payload = await loadRun(runId);
+  if (!isTerminalStatus(payload.run.status)) {
+    startRunPolling(runId);
+  }
 });
 
 els.exportRun.addEventListener("click", async () => {
@@ -175,3 +284,9 @@ els.exportRun.addEventListener("click", async () => {
 Promise.all([refreshSessions(), refreshProviderStatus()]).catch((error) => {
   els.assistantOutput.textContent = `Initialization error: ${error.message}`;
 });
+
+window.addEventListener("beforeunload", () => {
+  stopRunPolling();
+});
+
+els.requestJob.checked = true;

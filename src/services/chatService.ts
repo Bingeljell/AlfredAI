@@ -35,6 +35,21 @@ export class ChatService {
 
   private async executeRun(runId: string, sessionId: string, message: string): Promise<RunOutcome> {
     await this.options.runStore.updateRun(runId, { status: "running" });
+    const startedAt = Date.now();
+    const heartbeatTimer = setInterval(() => {
+      void this.options.runStore.appendEvent({
+        runId,
+        sessionId,
+        phase: "observe",
+        eventType: "heartbeat",
+        payload: {
+          status: "running",
+          elapsedMs: Date.now() - startedAt
+        },
+        timestamp: new Date().toISOString()
+      });
+    }, 10_000);
+    heartbeatTimer.unref?.();
 
     try {
       const outcome = await runReActLoop(sessionId, message, runId, {
@@ -82,6 +97,8 @@ export class ChatService {
         status: "failed",
         assistantText: `Run failed: ${messageText}`
       };
+    } finally {
+      clearInterval(heartbeatTimer);
     }
   }
 

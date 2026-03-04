@@ -38,15 +38,59 @@ function formatElapsedMs(value) {
   return `${Math.round(ms / 1000)}s`;
 }
 
+function formatTokenUsage(value) {
+  const usage = value || {};
+  const total = Number(usage.totalTokens || 0);
+  const prompt = Number(usage.promptTokens || 0);
+  const completion = Number(usage.completionTokens || 0);
+  const calls = Number(usage.callCount || 0);
+  return `${total} tokens (p:${prompt}, c:${completion}, calls:${calls})`;
+}
+
+function toShortText(value, max = 140) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) {
+    return "";
+  }
+  return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
 function summarizeEvent(event) {
   const payload = event.payload || {};
   if (event.phase === "observe" && event.eventType === "heartbeat") {
     return `still running, elapsed ${formatElapsedMs(payload.elapsedMs)}`;
   }
 
+  if (event.phase === "observe" && event.eventType === "llm_usage") {
+    return `llm usage delta ${formatTokenUsage({
+      ...payload.usageDelta,
+      callCount: payload.callCountDelta || 0
+    })} via ${payload.source || "unknown"}`;
+  }
+
+  if (event.phase === "thought" && event.eventType === "agent_plan_created") {
+    const thought = toShortText(payload.thought, 180) || "no planner thought";
+    const actionType = payload.action?.type || payload.stop?.reason || "unknown";
+    const fallback = payload.usedFallback ? "fallback" : "model";
+    return `plan (${fallback}) ${actionType}: ${thought}`;
+  }
+
+  if (event.phase === "observe" && event.eventType === "agent_action_result") {
+    return `observe new=${payload.newLeadCount ?? 0} total=${payload.totalLeadCount ?? 0} failedTools=${payload.failedToolCount ?? 0} failures(search=${payload.searchFailureCount ?? 0}, browse=${payload.browseFailureCount ?? 0}, extraction=${payload.extractionFailureCount ?? 0})`;
+  }
+
+  if (event.phase === "final" && event.eventType === "agent_stop") {
+    return `agent_stop ${payload.reason || "unknown"}: ${toShortText(payload.explanation, 160)}`;
+  }
+
   if (event.phase === "sub_react_step") {
     const step = payload.step || "unknown";
     const status = payload.status || "n/a";
+    if (step === "query_expansion" && status === "completed") {
+      const source = payload.usedModelPlan ? "model_plan" : "fallback_plan";
+      const failure = payload.plannerFailureReason ? ` plannerFailure=${payload.plannerFailureReason}` : "";
+      return `step=${step} status=${status} queryCount=${payload.queryCount ?? "?"} source=${source}${failure}`;
+    }
     if (step === "browse_batch" && status === "started") {
       return `step=${step} status=${status} queries=${payload.queryCount ?? "?"} urls=${payload.urlCount ?? "?"}`;
     }
@@ -54,10 +98,13 @@ function summarizeEvent(event) {
       return `step=${step} status=${status} visited=${payload.pagesVisited ?? "?"}/${payload.urlCount ?? "?"}`;
     }
     if (step === "extraction" && status === "completed") {
-      return `step=${step} status=${status} batch=${payload.batchIndex ?? "?"}/${payload.totalBatches ?? "?"} extracted=${payload.extractedCount ?? 0}`;
+      return `step=${step} status=${status} batch=${payload.batchIndex ?? "?"}/${payload.totalBatches ?? "?"} extracted=${payload.extractedCount ?? 0} failures=${Array.isArray(payload.failureReasons) ? payload.failureReasons.length : 0}`;
+    }
+    if (step === "email_enrichment" && status === "completed") {
+      return `step=${step} status=${status} attempted=${Boolean(payload.attempted)} updated=${payload.updatedLeadCount ?? 0} failures=${payload.failureCount ?? 0}`;
     }
     if (step === "quality_gate" && status === "completed") {
-      return `step=${step} status=${status} final=${payload.finalCandidateCount ?? 0} deficit=${payload.deficitCount ?? 0}`;
+      return `step=${step} status=${status} final=${payload.finalCandidateCount ?? 0} deficit=${payload.deficitCount ?? 0} llm=${formatTokenUsage(payload.llmUsage || {})}`;
     }
     return `step=${step} status=${status}`;
   }
@@ -88,21 +135,41 @@ function renderTimelineView(payload) {
   lines.push(`Run: ${payload.run.runId}`);
   lines.push(`Status: ${payload.run.status}`);
   lines.push(`Message: ${payload.run.message}`);
+  lines.push(`LLM Usage: ${formatTokenUsage(payload.run.llmUsage || {})}`);
   lines.push("");
   lines.push("Timeline:");
 
   for (const event of payload.events) {
-    if (event.phase === "sub_react_step") {
-      const step = event.payload?.step || "unknown";
-      const status = event.payload?.status || "n/a";
-      lines.push(`- [${event.timestamp}] ${event.phase}:${step} (${status})`);
-      continue;
+    lines.push(`- [${event.timestamp}] ${event.phase}:${event.eventType} | ${summarizeEvent(event)}`);
+    if (event.phase === "thought" && event.eventType === "agent_plan_created") {
+      if (event.payload?.plannerFailureReason) {
+        lines.push(`    plannerFailureReason: ${toShortText(event.payload.plannerFailureReason, 220)}`);
+      }
+      if (event.payload?.action) {
+        lines.push(`    action: ${pretty(event.payload.action)}`);
+      }
     }
-    if (event.phase === "observe" && event.eventType === "heartbeat") {
-      lines.push(`- [${event.timestamp}] observe:heartbeat (${formatElapsedMs(event.payload?.elapsedMs)} elapsed)`);
-      continue;
+    if (event.phase === "observe" && event.eventType === "agent_action_result") {
+      if (Array.isArray(event.payload?.results)) {
+        lines.push(`    resultSummary: ${toShortText(pretty(event.payload.results), 320)}`);
+      }
     }
-    lines.push(`- [${event.timestamp}] ${event.phase}:${event.eventType}`);
+    if (event.phase === "sub_react_step" && event.payload?.step === "extraction" && event.payload?.status === "completed") {
+      const reasons = Array.isArray(event.payload?.failureReasons) ? event.payload.failureReasons : [];
+      if (reasons.length > 0) {
+        lines.push(`    failureReasons: ${reasons.map((item) => toShortText(item, 120)).join(" | ")}`);
+      }
+      const details = Array.isArray(event.payload?.failureDetails) ? event.payload.failureDetails : [];
+      if (details.length > 0) {
+        lines.push(`    failureDetails: ${toShortText(pretty(details), 320)}`);
+      }
+    }
+    if (event.phase === "sub_react_step" && event.payload?.step === "email_enrichment" && event.payload?.status === "completed") {
+      const failureSamples = Array.isArray(event.payload?.failureSamples) ? event.payload.failureSamples : [];
+      if (failureSamples.length > 0) {
+        lines.push(`    enrichmentFailures: ${toShortText(pretty(failureSamples), 320)}`);
+      }
+    }
   }
 
   lines.push("");

@@ -107,7 +107,7 @@ Example tone:
 - **Source of truth**: Plain `.md` files only (no heavy DB).  
 - Daily raw transcripts: `knowledge/Daily/2026/03/03.md`  
 - Nightly job: creates short summaries with citations back to raw files.  
-- Retrieval: **QMD** (lightweight keyword + semantic search) — fast, human-readable, git-friendly.  
+- Retrieval: **QMD** (lightweight keyword + semantic search) — fast, human-readable, git-friendly.  https://github.com/tobi/qmd <-- src for QMD
 - Per-session isolation.  
 - You can open the entire knowledge base in Obsidian or any editor.
 

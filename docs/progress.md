@@ -37,7 +37,7 @@
   - Playwright setup is now mandatory for the lead pipeline path with one-time browser bootstrap support.
   - Run timeline UX now renders `sub_react_step` phases in a readable stepwise view while retaining raw JSON for debugging.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
-  - Test/build script wrappers were migrated from `npm` to `pnpm`; lockfile conversion to `pnpm-lock.yaml` is pending a registry DNS recovery.
+  - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Additional resiliency and production hardening tasks remain for later iterations.
 
 ## Remaining Follow-ups

@@ -56,6 +56,7 @@
   - `.env.example` now includes a usable default `SEARXNG_START_CMD` so local SearXNG auto-recovery can be exercised without extra manual wiring.
   - Extraction contract now requires `employeeSizeText` with explicit `"unknown"` fallback and captures `emailEvidence`, improving structured completeness for size-aware gating and downstream outreach analysis.
   - Quality-gate scoring now treats `unknown` employee size as neutral and gives `near_range` a small positive boost, reducing unnecessary filtering pressure for close-fit leads while preserving stronger penalties for clearly out-of-range companies.
+  - Agent loop now injects adaptive `lead_pipeline.minConfidence` defaults when absent (`0.70` first pass, `0.65` second pass, and `0.60` from third pass onward when deficit remains high) to improve recall without discarding early precision.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Additional resiliency and production hardening tasks remain for later iterations.

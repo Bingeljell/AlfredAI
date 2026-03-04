@@ -248,6 +248,43 @@ function computeDiminishingReturns(history: LeadAgentObservation[], threshold: n
   return lastTwo.every((item) => item.newLeadCount < threshold);
 }
 
+function highDeficitThreshold(requestedLeadCount: number): number {
+  return Math.max(6, Math.ceil(requestedLeadCount * 0.35));
+}
+
+export function determineAdaptiveMinConfidence(
+  iteration: number,
+  requestedLeadCount: number,
+  currentLeadCount: number
+): number {
+  if (iteration <= 1) {
+    return 0.7;
+  }
+
+  if (iteration === 2) {
+    return 0.65;
+  }
+
+  const deficit = Math.max(0, requestedLeadCount - currentLeadCount);
+  return deficit >= highDeficitThreshold(requestedLeadCount) ? 0.6 : 0.65;
+}
+
+function applyLeadPipelineActionDefaults(
+  input: Record<string, unknown>,
+  iteration: number,
+  requestedLeadCount: number,
+  currentLeadCount: number
+): Record<string, unknown> {
+  if (typeof input.minConfidence === "number") {
+    return input;
+  }
+
+  return {
+    ...input,
+    minConfidence: determineAdaptiveMinConfidence(iteration, requestedLeadCount, currentLeadCount)
+  };
+}
+
 function fallbackPlan(iteration: number, defaults: LeadAgentDefaults, leadCount: number, targetLeadCount: number): PlannerDecision {
   if (leadCount >= targetLeadCount) {
     return {
@@ -260,7 +297,11 @@ function fallbackPlan(iteration: number, defaults: LeadAgentDefaults, leadCount:
   if (iteration === 1) {
     return {
       thought: "Run baseline lead pipeline first.",
-      action: { type: "single", tool: "lead_pipeline", input: {} },
+      action: {
+        type: "single",
+        tool: "lead_pipeline",
+        input: { minConfidence: determineAdaptiveMinConfidence(iteration, targetLeadCount, leadCount) }
+      },
       usedFallback: true
     };
   }
@@ -273,7 +314,7 @@ function fallbackPlan(iteration: number, defaults: LeadAgentDefaults, leadCount:
         tool: "lead_pipeline",
         input: {
           maxPages: Math.min(20, defaults.subReactMaxPages + 5),
-          minConfidence: Math.max(0.55, defaults.subReactMinConfidence - 0.05)
+          minConfidence: determineAdaptiveMinConfidence(iteration, targetLeadCount, leadCount)
         }
       },
       usedFallback: true
@@ -592,7 +633,16 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       break;
     }
 
-    const calls = action.type === "single" ? [{ tool: action.tool, input: action.input }] : action.tools;
+    const baseCalls = action.type === "single" ? [{ tool: action.tool, input: action.input }] : action.tools;
+    const calls = baseCalls.map((call) => {
+      if (call.tool !== "lead_pipeline") {
+        return call;
+      }
+      return {
+        ...call,
+        input: applyLeadPipelineActionDefaults(call.input, iteration, state.requestedLeadCount, state.leads.length)
+      };
+    });
     if (calls.length === 0) {
       stop = {
         reason: "tool_blocked",

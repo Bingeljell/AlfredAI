@@ -26,6 +26,10 @@ interface LeadAgentObservation {
   newLeadCount: number;
   totalLeadCount: number;
   failedToolCount: number;
+  searchFailureCount: number;
+  browseFailureCount: number;
+  extractionFailureCount: number;
+  hadLlmBudgetExhausted: boolean;
   note: string;
 }
 
@@ -237,6 +241,11 @@ export const leadDedupeForTests = {
   leadKey
 };
 
+export const plannerFailureGuardrailsForTests = {
+  applyFailureGuardrail,
+  extractObservationSignals
+};
+
 function summarizeToolResult(result: ToolRunResult): string {
   if (result.status === "error") {
     return `${result.tool} failed: ${result.error}`;
@@ -261,13 +270,15 @@ function summarizeToolResult(result: ToolRunResult): string {
   if (typeof leadCount === "number") {
     const searchFailures = typeof output.searchFailureCount === "number" ? output.searchFailureCount : 0;
     const browseFailures = typeof output.browseFailureCount === "number" ? output.browseFailureCount : 0;
+    const extractionFailures = typeof output.extractionFailureCount === "number" ? output.extractionFailureCount : 0;
     const cancelled = output.cancelled === true;
     const cancelledText = cancelled ? ", cancelled=true" : "";
     const browseText = browseFailures > 0 ? `, browse failures ${browseFailures}` : "";
+    const extractionText = extractionFailures > 0 ? `, extraction failures ${extractionFailures}` : "";
     if (searchFailures > 0) {
-      return `${result.tool} ok, added ${added ?? 0}, total leads ${leadCount}, search failures ${searchFailures}${browseText}${cancelledText}`;
+      return `${result.tool} ok, added ${added ?? 0}, total leads ${leadCount}, search failures ${searchFailures}${browseText}${extractionText}${cancelledText}`;
     }
-    return `${result.tool} ok, added ${added ?? 0}, total leads ${leadCount}${browseText}${cancelledText}`;
+    return `${result.tool} ok, added ${added ?? 0}, total leads ${leadCount}${browseText}${extractionText}${cancelledText}`;
   }
 
   if (typeof output.resultCount === "number") {
@@ -275,6 +286,82 @@ function summarizeToolResult(result: ToolRunResult): string {
   }
 
   return `${result.tool} ok`;
+}
+
+function readNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function extractObservationSignals(results: ToolRunResult[]): {
+  searchFailureCount: number;
+  browseFailureCount: number;
+  extractionFailureCount: number;
+  hadLlmBudgetExhausted: boolean;
+} {
+  let searchFailureCount = 0;
+  let browseFailureCount = 0;
+  let extractionFailureCount = 0;
+  let hadLlmBudgetExhausted = false;
+
+  for (const result of results) {
+    const output = result.output ?? {};
+    searchFailureCount += readNumber(output.searchFailureCount);
+    browseFailureCount += readNumber(output.browseFailureCount);
+    extractionFailureCount += readNumber(output.extractionFailureCount);
+
+    const extractionSamples = Array.isArray(output.extractionFailureSamples) ? output.extractionFailureSamples : [];
+    if (
+      extractionSamples.some((sample) => {
+        const reason = typeof (sample as { reason?: unknown }).reason === "string" ? (sample as { reason: string }).reason : "";
+        return reason.includes("llm_budget_exhausted");
+      })
+    ) {
+      hadLlmBudgetExhausted = true;
+    }
+  }
+
+  return {
+    searchFailureCount,
+    browseFailureCount,
+    extractionFailureCount,
+    hadLlmBudgetExhausted
+  };
+}
+
+function applyFailureGuardrail(action: AgentAction, observations: LeadAgentObservation[]): {
+  action: AgentAction;
+  adjusted: boolean;
+  reason?: string;
+} {
+  const lastObservation = observations.at(-1);
+  if (!lastObservation) {
+    return { action, adjusted: false };
+  }
+
+  const hasLeadPipelineCall =
+    action.type === "single"
+      ? action.tool === "lead_pipeline"
+      : action.tools.some((item) => item.tool === "lead_pipeline");
+
+  if (!hasLeadPipelineCall || lastObservation.searchFailureCount === 0) {
+    return { action, adjusted: false };
+  }
+
+  const alreadyCheckedSearch =
+    lastObservation.toolNames.includes("search_status") || lastObservation.toolNames.includes("recover_search");
+  if (alreadyCheckedSearch) {
+    return { action, adjusted: false };
+  }
+
+  return {
+    action: {
+      type: "single",
+      tool: "search_status",
+      input: {}
+    },
+    adjusted: true,
+    reason: "search_failures_detected_in_previous_iteration"
+  };
 }
 
 function buildDeterministicAssistantSummary(args: {
@@ -296,17 +383,11 @@ function buildDeterministicAssistantSummary(args: {
 
   let searchFailureCount = 0;
   let browseFailureCount = 0;
-  const extractionFailureCount = 0;
+  let extractionFailureCount = 0;
   for (const observation of args.observations) {
-    const note = observation.note.toLowerCase();
-    if (note.includes("search failures")) {
-      const match = note.match(/search failures\s+(\d+)/);
-      searchFailureCount += Number(match?.[1] ?? 0);
-    }
-    if (note.includes("browse failures")) {
-      const match = note.match(/browse failures\s+(\d+)/);
-      browseFailureCount += Number(match?.[1] ?? 0);
-    }
+    searchFailureCount += observation.searchFailureCount;
+    browseFailureCount += observation.browseFailureCount;
+    extractionFailureCount += observation.extractionFailureCount;
   }
 
   return [
@@ -489,7 +570,7 @@ async function decidePlannerAction(
         {
           role: "system",
           content:
-            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. If observations indicate search failures/provider outage, first use search_status, then recover_search when recovery is supported, then retry search or lead_pipeline. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
+            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, hadLlmBudgetExhausted). React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
         },
         {
           role: "user",
@@ -702,13 +783,32 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       break;
     }
 
-    const action = plannerDecision.action;
-    if (!action) {
+    const initialAction = plannerDecision.action;
+    if (!initialAction) {
       stop = {
         reason: "tool_blocked",
         explanation: "Planner did not provide a runnable action."
       };
       break;
+    }
+
+    const guardedPlan = applyFailureGuardrail(initialAction, observations);
+    const action = guardedPlan.action;
+
+    if (guardedPlan.adjusted) {
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "thought",
+        eventType: "agent_plan_adjusted",
+        payload: {
+          iteration,
+          reason: guardedPlan.reason,
+          originalAction: initialAction,
+          adjustedAction: action
+        },
+        timestamp: nowIso()
+      });
     }
 
     const baseCalls = action.type === "single" ? [{ tool: action.tool, input: action.input }] : action.tools;
@@ -823,6 +923,7 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
 
     const newLeadCount = state.leads.length - leadsBefore;
     const failedToolCount = results.filter((result) => result.status === "error").length;
+    const signals = extractObservationSignals(results);
 
     const observation: LeadAgentObservation = {
       iteration,
@@ -831,6 +932,10 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       newLeadCount,
       totalLeadCount: state.leads.length,
       failedToolCount,
+      searchFailureCount: signals.searchFailureCount,
+      browseFailureCount: signals.browseFailureCount,
+      extractionFailureCount: signals.extractionFailureCount,
+      hadLlmBudgetExhausted: signals.hadLlmBudgetExhausted,
       note: results.map(summarizeToolResult).join(" | ")
     };
     observations.push(observation);
@@ -846,6 +951,10 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
         newLeadCount,
         totalLeadCount: state.leads.length,
         failedToolCount,
+        searchFailureCount: signals.searchFailureCount,
+        browseFailureCount: signals.browseFailureCount,
+        extractionFailureCount: signals.extractionFailureCount,
+        hadLlmBudgetExhausted: signals.hadLlmBudgetExhausted,
         results
       },
       timestamp: nowIso()

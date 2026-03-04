@@ -63,6 +63,8 @@ export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInpu
       searchFailureSamples: outcome.searchFailureSamples,
       browseFailureCount: outcome.browseFailureCount,
       browseFailureSamples: outcome.browseFailureSamples,
+      extractionFailureCount: outcome.extractionFailureCount,
+      extractionFailureSamples: outcome.extractionFailureSamples,
       emailLeadCount: outcome.emailLeadCount,
       emailCoverageRatio: outcome.emailCoverageRatio,
       emailEnrichmentAttempted: outcome.emailEnrichmentAttempted,

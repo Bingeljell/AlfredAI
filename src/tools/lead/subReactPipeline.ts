@@ -217,6 +217,8 @@ export interface LeadSubReactResult {
   searchFailureSamples: Array<{ query: string; error: string }>;
   browseFailureCount: number;
   browseFailureSamples: Array<{ url: string; error: string }>;
+  extractionFailureCount?: number;
+  extractionFailureSamples?: Array<{ batchIndex: number; reason: string }>;
   emailLeadCount?: number;
   emailCoverageRatio?: number;
   emailEnrichmentAttempted?: boolean;
@@ -764,6 +766,8 @@ function qualityGate(
     searchFailureSamples: [],
     browseFailureCount: 0,
     browseFailureSamples: [],
+    extractionFailureCount: 0,
+    extractionFailureSamples: [],
     emailRequested
   };
 }
@@ -1238,6 +1242,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
 
   const batches = chunk(pagePayloads, options.extractionBatchSize);
   const extractedLeads: LeadCandidate[] = [];
+  const extractionFailureSamples: Array<{ batchIndex: number; reason: string }> = [];
   let cancelledDuringExtraction = false;
 
   for (let index = 0; index < batches.length; index += 1) {
@@ -1256,6 +1261,14 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
 
     const extraction = await extractBatch(batch, options, budget);
     extractedLeads.push(...extraction.leads);
+    if (extraction.failureReasons.length > 0) {
+      for (const reason of extraction.failureReasons) {
+        extractionFailureSamples.push({
+          batchIndex: index + 1,
+          reason: reason.slice(0, 220)
+        });
+      }
+    }
 
     await emitStep(options.runStore, options.runId, options.sessionId, "extraction", {
       status: "completed",
@@ -1303,6 +1316,8 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   gated.searchFailureSamples = failedSearches.slice(0, 5);
   gated.browseFailureCount = browseFailures.length;
   gated.browseFailureSamples = browseFailures.slice(0, 8);
+  gated.extractionFailureCount = extractionFailureSamples.length;
+  gated.extractionFailureSamples = extractionFailureSamples.slice(0, 12);
   gated.emailLeadCount = gated.leads.filter((lead) => Boolean(lead.email)).length;
   gated.emailCoverageRatio = gated.leads.length > 0 ? gated.emailLeadCount / gated.leads.length : 0;
   gated.emailEnrichmentAttempted = emailEnrichment.attempted;
@@ -1325,6 +1340,8 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     effectiveMinConfidence: gated.effectiveMinConfidence,
     relaxedMinConfidence: gated.relaxedMinConfidence,
     relaxModeApplied: gated.relaxModeApplied,
+    extractionFailureCount: gated.extractionFailureCount,
+    extractionFailureSamples: gated.extractionFailureSamples,
     emailLeadCount: gated.emailLeadCount,
     emailCoverageRatio: gated.emailCoverageRatio,
     emailEnrichmentUpdatedCount: gated.emailEnrichmentUpdatedCount,

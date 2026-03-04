@@ -15,7 +15,7 @@
 
 - **Phase 0**: Completed
   - Project scaffold created with TypeScript scripts and `.env.example`.
-  - Test script wrappers now map to real `npm run test:*` commands.
+  - Test script wrappers now map to real `pnpm run test:*` commands.
 - **Phase 1**: Completed
   - Hono gateway, session APIs, run persistence and JSONL timeline logging implemented.
 - **Phase 2**: Completed
@@ -37,6 +37,7 @@
   - Playwright setup is now mandatory for the lead pipeline path with one-time browser bootstrap support.
   - Run timeline UX now renders `sub_react_step` phases in a readable stepwise view while retaining raw JSON for debugging.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
+  - Test/build script wrappers were migrated from `npm` to `pnpm`; lockfile conversion to `pnpm-lock.yaml` is pending a registry DNS recovery.
   - Additional resiliency and production hardening tasks remain for later iterations.
 
 ## Remaining Follow-ups

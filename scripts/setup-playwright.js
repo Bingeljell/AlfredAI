@@ -20,10 +20,10 @@ try {
   }
 
   console.log("Playwright browsers missing. Installing chromium (one-time setup)...");
-  execSync("npx playwright install chromium --with-deps", { stdio: "inherit" });
+  execSync("pnpm exec playwright install chromium --with-deps", { stdio: "inherit" });
   console.log("Playwright setup complete.");
 } catch (error) {
-  console.warn("Playwright browser setup skipped or failed. Run `npm run setup:browsers` manually.");
+  console.warn("Playwright browser setup skipped or failed. Run `pnpm run setup:browsers` manually.");
   if (process.env.CI === "true") {
     process.exit(1);
   }

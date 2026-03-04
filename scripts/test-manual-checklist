@@ -3,7 +3,7 @@ set -euo pipefail
 cat <<'CHECKLIST'
 Web Console Manual Checklist
 1. Copy `.env.example` to `.env` and set required values.
-2. Start gateway: npm run dev:gateway
+2. Start gateway: pnpm run dev:gateway
 3. Open http://localhost:3000/ui
 4. Confirm `Persisted Transcript` loads prior turns for the selected Session ID after refresh/restart.
 5. Keep transcript `Day` set to today and verify only same-day entries render.
@@ -102,8 +102,8 @@ Live WhatsApp (Baileys) Manual Checklist
 19. Security check: send `POST /v1/whatsapp/baileys/inbound` without `x-baileys-inbound-token` and confirm 401.
 
 Phase 1 Manual Checklist
-1. Start gateway: npm run dev:gateway
-2. Start worker: npm run dev:worker
+1. Start gateway: pnpm run dev:gateway
+2. Start worker: pnpm run dev:worker
 3. Submit a job:
    curl -s -X POST http://localhost:3000/v1/jobs \
      -H 'content-type: application/json' \

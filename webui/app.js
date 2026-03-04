@@ -145,9 +145,6 @@ function renderTimelineView(payload) {
       if (event.payload?.plannerFailureReason) {
         lines.push(`    plannerFailureReason: ${toShortText(event.payload.plannerFailureReason, 220)}`);
       }
-      if (event.payload?.action) {
-        lines.push(`    action: ${pretty(event.payload.action)}`);
-      }
     }
     if (event.phase === "observe" && event.eventType === "agent_action_result") {
       if (Array.isArray(event.payload?.results)) {
@@ -177,10 +174,6 @@ function renderTimelineView(payload) {
   for (const call of payload.run.toolCalls || []) {
     lines.push(`- ${call.toolName} | ${call.status} | ${call.durationMs}ms`);
   }
-
-  lines.push("");
-  lines.push("Raw JSON:");
-  lines.push(pretty(payload));
   return lines.join("\n");
 }
 

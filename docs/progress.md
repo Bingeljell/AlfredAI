@@ -67,6 +67,7 @@
   - Email enrichment is now explicitly budget-aware with dynamic URL caps and diminishing-return early-stop behavior, reducing wasted crawl time while preserving useful email-fill improvements under constrained run budgets.
   - Run-level LLM usage accounting is now wired end-to-end (OpenAI response usage capture -> sub-pipeline/tool propagation -> run-state aggregation/events/final summary), and planner context now includes aggregate failure signals so replans can explicitly react to repeated tool/search/extraction failures.
   - Web UI timeline now surfaces planner thoughts, failure snippets, and incremental/token-total usage summaries directly in the readable timeline view (while preserving raw JSON), improving live-debug visibility during long runs.
+  - Timeline display is now thought-first and less noisy: planner action payload expansions and trailing raw JSON dumps were removed from the default view to keep run monitoring focused on meaningful progress/failure lines.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Additional resiliency and production hardening tasks remain for later iterations.

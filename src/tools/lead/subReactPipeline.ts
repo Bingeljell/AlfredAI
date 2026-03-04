@@ -217,6 +217,12 @@ export interface LeadSubReactResult {
   searchFailureSamples: Array<{ query: string; error: string }>;
   browseFailureCount: number;
   browseFailureSamples: Array<{ url: string; error: string }>;
+  emailLeadCount?: number;
+  emailCoverageRatio?: number;
+  emailEnrichmentAttempted?: boolean;
+  emailEnrichmentUpdatedCount?: number;
+  emailEnrichmentFailureCount?: number;
+  emailEnrichmentFailureSamples?: Array<{ url: string; error: string }>;
 }
 
 interface QueryPlanResult {
@@ -252,6 +258,16 @@ type SearchOutcome = SearchOutcomeSuccess | SearchOutcomeFailure;
 interface EmployeeSizeRange {
   min: number;
   max: number;
+}
+
+interface EmailEnrichmentResult {
+  attempted: boolean;
+  candidateLeadCount: number;
+  candidateUrlCount: number;
+  pagesVisited: number;
+  updatedLeadCount: number;
+  failureCount: number;
+  failureSamples: Array<{ url: string; error: string }>;
 }
 
 function nowIso(): string {
@@ -475,6 +491,76 @@ function normalizeCandidate(item: ExtractedLead): LeadCandidate {
   };
 }
 
+function buildEmailEnrichmentTargets(leads: LeadCandidate[], requestedLeadCount: number): LeadCandidate[] {
+  const maxTargets = Math.min(20, Math.max(8, requestedLeadCount));
+  return dedupeLeads(leads)
+    .filter((lead) => !lead.email && Boolean(lead.website))
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, maxTargets);
+}
+
+function buildEmailCandidateUrls(lead: LeadCandidate): string[] {
+  if (!lead.website) {
+    return [];
+  }
+  try {
+    const website = new URL(lead.website);
+    const origin = website.origin;
+    return [
+      origin,
+      `${origin}/contact`,
+      `${origin}/contact-us`,
+      `${origin}/about`
+    ];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeEmailCandidates(value: string): string[] {
+  const matches = value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) ?? [];
+  const normalized = matches
+    .map((item) => normalizeEmail(item.replace(/[),.;:!?]+$/g, "")))
+    .filter((item): item is string => Boolean(item))
+    .filter((item) => !item.endsWith(".png") && !item.endsWith(".jpg") && !item.endsWith(".svg"));
+  return Array.from(new Set(normalized));
+}
+
+function pickBestEmail(candidates: string[]): string | undefined {
+  const scored = candidates
+    .map((email) => {
+      let score = 0;
+      if (/^info@|^contact@|^hello@|^sales@/i.test(email)) {
+        score += 3;
+      }
+      if (/^noreply@|^no-reply@|^donotreply@/i.test(email)) {
+        score -= 5;
+      }
+      if (/example\.com$/i.test(email)) {
+        score -= 8;
+      }
+      return { email, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  return scored[0]?.email;
+}
+
+function extractEmailsFromPayload(payload: PagePayload): string[] {
+  const blob = [
+    payload.text,
+    payload.listItems.join("\n"),
+    payload.tableRows.join("\n"),
+    payload.outboundLinks.join("\n")
+  ].join("\n");
+  return normalizeEmailCandidates(blob);
+}
+
+export const emailEnrichmentForTests = {
+  normalizeEmailCandidates,
+  pickBestEmail,
+  extractEmailsFromPayload
+};
+
 function dedupeLeads(leads: LeadCandidate[]): LeadCandidate[] {
   const map = new Map<string, LeadCandidate>();
 
@@ -650,7 +736,7 @@ async function emitStep(
   runStore: RunStore,
   runId: string,
   sessionId: string,
-  step: "query_expansion" | "browse_batch" | "extraction" | "quality_gate",
+  step: "query_expansion" | "browse_batch" | "extraction" | "email_enrichment" | "quality_gate",
   payload: Record<string, unknown>
 ): Promise<void> {
   await runStore.appendEvent({
@@ -883,6 +969,111 @@ async function extractBatch(
   };
 }
 
+async function enrichLeadEmails(
+  leads: LeadCandidate[],
+  requestedLeadCount: number,
+  options: LeadSubReactOptions
+): Promise<EmailEnrichmentResult> {
+  const targets = buildEmailEnrichmentTargets(leads, requestedLeadCount);
+  if (targets.length === 0) {
+    return {
+      attempted: false,
+      candidateLeadCount: 0,
+      candidateUrlCount: 0,
+      pagesVisited: 0,
+      updatedLeadCount: 0,
+      failureCount: 0,
+      failureSamples: []
+    };
+  }
+
+  const domainToLeadIndexes = new Map<string, number[]>();
+  for (let index = 0; index < leads.length; index += 1) {
+    const lead = leads[index];
+    if (!lead || lead.email || !lead.website) {
+      continue;
+    }
+    const domain = normalizeDomain(lead.website);
+    if (!domain) {
+      continue;
+    }
+    const entries = domainToLeadIndexes.get(domain) ?? [];
+    entries.push(index);
+    domainToLeadIndexes.set(domain, entries);
+  }
+
+  const urls = Array.from(
+    new Set(targets.flatMap((lead) => buildEmailCandidateUrls(lead)))
+  ).slice(0, 80);
+
+  if (urls.length === 0) {
+    return {
+      attempted: false,
+      candidateLeadCount: targets.length,
+      candidateUrlCount: 0,
+      pagesVisited: 0,
+      updatedLeadCount: 0,
+      failureCount: 0,
+      failureSamples: []
+    };
+  }
+
+  const browserPool = await BrowserPool.create();
+  try {
+    const collection = await browserPool.collectPages(urls, options.browseConcurrency);
+    const visitedByDomain = new Set<string>();
+    let updatedLeadCount = 0;
+
+    for (const payload of collection.pages) {
+      const sourceDomain = normalizeDomain(payload.url);
+      if (!sourceDomain || visitedByDomain.has(sourceDomain)) {
+        continue;
+      }
+      const emails = extractEmailsFromPayload(payload);
+      const bestEmail = pickBestEmail(emails);
+      if (!bestEmail) {
+        continue;
+      }
+
+      const leadIndexes = domainToLeadIndexes.get(sourceDomain) ?? [];
+      if (leadIndexes.length === 0) {
+        continue;
+      }
+
+      let evidencePath = "homepage";
+      try {
+        const parsedUrl = new URL(payload.url);
+        evidencePath = parsedUrl.pathname === "/" ? "homepage" : parsedUrl.pathname;
+      } catch {
+        evidencePath = "website";
+      }
+
+      for (const leadIndex of leadIndexes) {
+        const lead = leads[leadIndex];
+        if (!lead || lead.email) {
+          continue;
+        }
+        lead.email = bestEmail;
+        lead.emailEvidence = `email enrichment: ${evidencePath}`;
+        updatedLeadCount += 1;
+      }
+      visitedByDomain.add(sourceDomain);
+    }
+
+    return {
+      attempted: true,
+      candidateLeadCount: targets.length,
+      candidateUrlCount: urls.length,
+      pagesVisited: collection.pages.length,
+      updatedLeadCount,
+      failureCount: collection.failures.length,
+      failureSamples: collection.failures.slice(0, 8)
+    };
+  } finally {
+    await browserPool.close();
+  }
+}
+
 export async function executeLeadSubReactPipeline(options: LeadSubReactOptions): Promise<LeadSubReactResult> {
   const budget = new LlmBudgetManager(options.llmMaxCalls);
   const fallbackRequestedLeadCount = parseRequestedLeadCount(options.message);
@@ -1035,6 +1226,24 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     });
   }
 
+  await emitStep(options.runStore, options.runId, options.sessionId, "email_enrichment", {
+    status: "started",
+    candidateLeadCount: buildEmailEnrichmentTargets(extractedLeads, requestedLeadCount).length
+  });
+
+  const emailEnrichment = await enrichLeadEmails(extractedLeads, requestedLeadCount, options);
+
+  await emitStep(options.runStore, options.runId, options.sessionId, "email_enrichment", {
+    status: "completed",
+    attempted: emailEnrichment.attempted,
+    candidateLeadCount: emailEnrichment.candidateLeadCount,
+    candidateUrlCount: emailEnrichment.candidateUrlCount,
+    pagesVisited: emailEnrichment.pagesVisited,
+    updatedLeadCount: emailEnrichment.updatedLeadCount,
+    failureCount: emailEnrichment.failureCount,
+    failureSamples: emailEnrichment.failureSamples
+  });
+
   await emitStep(options.runStore, options.runId, options.sessionId, "quality_gate", {
     status: "started",
     rawCandidateCount: extractedLeads.length,
@@ -1050,6 +1259,12 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   gated.searchFailureSamples = failedSearches.slice(0, 5);
   gated.browseFailureCount = browseFailures.length;
   gated.browseFailureSamples = browseFailures.slice(0, 8);
+  gated.emailLeadCount = gated.leads.filter((lead) => Boolean(lead.email)).length;
+  gated.emailCoverageRatio = gated.leads.length > 0 ? gated.emailLeadCount / gated.leads.length : 0;
+  gated.emailEnrichmentAttempted = emailEnrichment.attempted;
+  gated.emailEnrichmentUpdatedCount = emailEnrichment.updatedLeadCount;
+  gated.emailEnrichmentFailureCount = emailEnrichment.failureCount;
+  gated.emailEnrichmentFailureSamples = emailEnrichment.failureSamples;
   gated.cancelled = cancelledDuringExtraction || (await isCancelled(options));
 
   await emitStep(options.runStore, options.runId, options.sessionId, "quality_gate", {
@@ -1065,6 +1280,9 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     effectiveMinConfidence: gated.effectiveMinConfidence,
     relaxedMinConfidence: gated.relaxedMinConfidence,
     relaxModeApplied: gated.relaxModeApplied,
+    emailLeadCount: gated.emailLeadCount,
+    emailCoverageRatio: gated.emailCoverageRatio,
+    emailEnrichmentUpdatedCount: gated.emailEnrichmentUpdatedCount,
     llmCallsUsed: gated.llmCallsUsed,
     llmCallsRemaining: gated.llmCallsRemaining
   });

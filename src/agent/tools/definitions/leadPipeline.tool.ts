@@ -72,7 +72,9 @@ export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInpu
       emailEnrichmentAttempted: outcome.emailEnrichmentAttempted,
       emailEnrichmentUpdatedCount: outcome.emailEnrichmentUpdatedCount,
       emailEnrichmentFailureCount: outcome.emailEnrichmentFailureCount,
-      emailEnrichmentFailureSamples: outcome.emailEnrichmentFailureSamples
+      emailEnrichmentFailureSamples: outcome.emailEnrichmentFailureSamples,
+      emailEnrichmentUrlCap: outcome.emailEnrichmentUrlCap,
+      emailEnrichmentStoppedEarlyReason: outcome.emailEnrichmentStoppedEarlyReason
     };
   }
 };

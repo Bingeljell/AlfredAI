@@ -227,6 +227,8 @@ export interface LeadSubReactResult {
   emailEnrichmentUpdatedCount?: number;
   emailEnrichmentFailureCount?: number;
   emailEnrichmentFailureSamples?: Array<{ url: string; error: string }>;
+  emailEnrichmentUrlCap?: number;
+  emailEnrichmentStoppedEarlyReason?: string;
   emailRequested?: boolean;
 }
 
@@ -269,10 +271,12 @@ interface EmailEnrichmentResult {
   attempted: boolean;
   candidateLeadCount: number;
   candidateUrlCount: number;
+  urlCap: number;
   pagesVisited: number;
   updatedLeadCount: number;
   failureCount: number;
   failureSamples: Array<{ url: string; error: string }>;
+  stoppedEarlyReason?: string;
 }
 
 function nowIso(): string {
@@ -539,6 +543,26 @@ function buildEmailEnrichmentTargets(leads: LeadCandidate[], requestedLeadCount:
     .slice(0, maxTargets);
 }
 
+function computeEmailEnrichmentUrlCap(options: LeadSubReactOptions): number {
+  if (!options.deadlineAtMs) {
+    return 80;
+  }
+  const remainingMs = options.deadlineAtMs - Date.now();
+  if (remainingMs <= 20_000) {
+    return 0;
+  }
+  if (remainingMs <= 60_000) {
+    return 8;
+  }
+  if (remainingMs <= 120_000) {
+    return 16;
+  }
+  if (remainingMs <= 240_000) {
+    return 24;
+  }
+  return 40;
+}
+
 function buildEmailCandidateUrls(lead: LeadCandidate): string[] {
   if (!lead.website) {
     return [];
@@ -598,7 +622,8 @@ function extractEmailsFromPayload(payload: PagePayload): string[] {
 export const emailEnrichmentForTests = {
   normalizeEmailCandidates,
   pickBestEmail,
-  extractEmailsFromPayload
+  extractEmailsFromPayload,
+  computeEmailEnrichmentUrlCap
 };
 
 function dedupeLeads(leads: LeadCandidate[]): LeadCandidate[] {
@@ -1037,11 +1062,13 @@ async function enrichLeadEmails(
   options: LeadSubReactOptions
 ): Promise<EmailEnrichmentResult> {
   const targets = buildEmailEnrichmentTargets(leads, requestedLeadCount);
+  const urlCap = computeEmailEnrichmentUrlCap(options);
   if (targets.length === 0) {
     return {
       attempted: false,
       candidateLeadCount: 0,
       candidateUrlCount: 0,
+      urlCap,
       pagesVisited: 0,
       updatedLeadCount: 0,
       failureCount: 0,
@@ -1066,13 +1093,14 @@ async function enrichLeadEmails(
 
   const urls = Array.from(
     new Set(targets.flatMap((lead) => buildEmailCandidateUrls(lead)))
-  ).slice(0, 80);
+  ).slice(0, urlCap);
 
   if (urls.length === 0) {
     return {
       attempted: false,
       candidateLeadCount: targets.length,
       candidateUrlCount: 0,
+      urlCap,
       pagesVisited: 0,
       updatedLeadCount: 0,
       failureCount: 0,
@@ -1085,20 +1113,43 @@ async function enrichLeadEmails(
     const collection = await browserPool.collectPages(urls, options.browseConcurrency, options.deadlineAtMs);
     const visitedByDomain = new Set<string>();
     let updatedLeadCount = 0;
+    let pagesVisited = 0;
+    let noUpdateStreak = 0;
+    let stoppedEarlyReason: string | undefined;
 
     for (const payload of collection.pages) {
+      if (hasTimedOut(options)) {
+        stoppedEarlyReason = "deadline_exhausted";
+        break;
+      }
+      pagesVisited += 1;
       const sourceDomain = normalizeDomain(payload.url);
       if (!sourceDomain || visitedByDomain.has(sourceDomain)) {
+        noUpdateStreak += 1;
+        if (noUpdateStreak >= 12) {
+          stoppedEarlyReason = "email_diminishing_returns";
+          break;
+        }
         continue;
       }
       const emails = extractEmailsFromPayload(payload);
       const bestEmail = pickBestEmail(emails);
       if (!bestEmail) {
+        noUpdateStreak += 1;
+        if (noUpdateStreak >= 12) {
+          stoppedEarlyReason = "email_diminishing_returns";
+          break;
+        }
         continue;
       }
 
       const leadIndexes = domainToLeadIndexes.get(sourceDomain) ?? [];
       if (leadIndexes.length === 0) {
+        noUpdateStreak += 1;
+        if (noUpdateStreak >= 12) {
+          stoppedEarlyReason = "email_diminishing_returns";
+          break;
+        }
         continue;
       }
 
@@ -1120,16 +1171,19 @@ async function enrichLeadEmails(
         updatedLeadCount += 1;
       }
       visitedByDomain.add(sourceDomain);
+      noUpdateStreak = 0;
     }
 
     return {
       attempted: true,
       candidateLeadCount: targets.length,
       candidateUrlCount: urls.length,
-      pagesVisited: collection.pages.length,
+      urlCap,
+      pagesVisited,
       updatedLeadCount,
       failureCount: collection.failures.length,
-      failureSamples: collection.failures.slice(0, 8)
+      failureSamples: collection.failures.slice(0, 8),
+      stoppedEarlyReason
     };
   } finally {
     await browserPool.close();
@@ -1336,10 +1390,12 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
         attempted: false,
         candidateLeadCount: emailTargets.length,
         candidateUrlCount: 0,
+        urlCap: 0,
         pagesVisited: 0,
         updatedLeadCount: 0,
         failureCount: 0,
-        failureSamples: []
+        failureSamples: [],
+        stoppedEarlyReason: "deadline_exhausted"
       }
     : await enrichLeadEmails(extractedLeads, requestedLeadCount, options);
 
@@ -1348,10 +1404,12 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     attempted: emailEnrichment.attempted,
     candidateLeadCount: emailEnrichment.candidateLeadCount,
     candidateUrlCount: emailEnrichment.candidateUrlCount,
+    urlCap: emailEnrichment.urlCap,
     pagesVisited: emailEnrichment.pagesVisited,
     updatedLeadCount: emailEnrichment.updatedLeadCount,
     failureCount: emailEnrichment.failureCount,
-    failureSamples: emailEnrichment.failureSamples
+    failureSamples: emailEnrichment.failureSamples,
+    stoppedEarlyReason: emailEnrichment.stoppedEarlyReason
   });
 
   await emitStep(options.runStore, options.runId, options.sessionId, "quality_gate", {
@@ -1377,6 +1435,8 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   gated.emailEnrichmentUpdatedCount = emailEnrichment.updatedLeadCount;
   gated.emailEnrichmentFailureCount = emailEnrichment.failureCount;
   gated.emailEnrichmentFailureSamples = emailEnrichment.failureSamples;
+  gated.emailEnrichmentUrlCap = emailEnrichment.urlCap;
+  gated.emailEnrichmentStoppedEarlyReason = emailEnrichment.stoppedEarlyReason;
   gated.emailRequested = emailRequested;
   gated.cancelled = cancelledDuringExtraction || (await isCancelled(options));
   gated.timedOut = timedOutDuringExtraction || hasTimedOut(options);
@@ -1401,6 +1461,8 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     emailLeadCount: gated.emailLeadCount,
     emailCoverageRatio: gated.emailCoverageRatio,
     emailEnrichmentUpdatedCount: gated.emailEnrichmentUpdatedCount,
+    emailEnrichmentUrlCap: gated.emailEnrichmentUrlCap,
+    emailEnrichmentStoppedEarlyReason: gated.emailEnrichmentStoppedEarlyReason,
     llmCallsUsed: gated.llmCallsUsed,
     llmCallsRemaining: gated.llmCallsRemaining
   });

@@ -24,3 +24,14 @@ test("pickBestEmail deprioritizes noreply addresses", () => {
 
   assert.equal(picked, "hello@example.com");
 });
+
+test("computeEmailEnrichmentUrlCap shrinks under low remaining budget", () => {
+  const now = Date.now();
+  const highBudgetCap = emailEnrichmentForTests.computeEmailEnrichmentUrlCap({ deadlineAtMs: now + 500_000 } as any);
+  const mediumBudgetCap = emailEnrichmentForTests.computeEmailEnrichmentUrlCap({ deadlineAtMs: now + 100_000 } as any);
+  const lowBudgetCap = emailEnrichmentForTests.computeEmailEnrichmentUrlCap({ deadlineAtMs: now + 15_000 } as any);
+
+  assert.ok(highBudgetCap > mediumBudgetCap);
+  assert.ok(mediumBudgetCap > lowBudgetCap);
+  assert.equal(lowBudgetCap, 0);
+});

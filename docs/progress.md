@@ -64,6 +64,7 @@
   - Lead deduplication now keys by normalized company identity first (name + location, with common suffix normalization) before domain fallback, reducing duplicate rows caused by aggregator/profile URLs.
   - Planner/observe loop now has structured failure awareness (search/browse/extraction counts + LLM-budget exhaustion flag) and applies a deterministic guardrail to check `search_status` before re-running `lead_pipeline` after search-failure iterations.
   - Run budget handling is now deadline-aware end-to-end: the agent avoids launching deep lead passes when remaining time is too low, dynamically downscales crawl settings under tight budgets, and propagates deadline checks into browse/extract/enrichment so runs persist partial work and stop gracefully instead of overrunning.
+  - Email enrichment is now explicitly budget-aware with dynamic URL caps and diminishing-return early-stop behavior, reducing wasted crawl time while preserving useful email-fill improvements under constrained run budgets.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Additional resiliency and production hardening tasks remain for later iterations.

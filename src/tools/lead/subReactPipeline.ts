@@ -490,13 +490,18 @@ function scoreLead(lead: LeadCandidate, targetRange: EmployeeSizeRange | undefin
   const sizeMatch = lead.sizeMatch ?? deriveSizeMatch(lead, targetRange);
   const sizeAdjustment: Record<LeadSizeMatch, number> = {
     in_range: 0.12,
-    near_range: -0.05,
-    unknown: -0.03,
+    near_range: 0.03,
+    unknown: 0,
     out_of_range: -0.18
   };
   const sizeScoreDelta = targetRange ? sizeAdjustment[sizeMatch] : 0;
   return Math.min(1, Math.max(0, lead.confidence * 0.75 + completeness * 0.2 + citationBonus + sizeScoreDelta));
 }
+
+export const leadQualityScoringForTests = {
+  deriveSizeMatch,
+  scoreLead
+};
 
 function qualityGate(
   leads: LeadCandidate[],

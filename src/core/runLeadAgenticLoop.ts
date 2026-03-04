@@ -5,7 +5,7 @@ import type { SearchManager } from "../tools/search/searchManager.js";
 import { discoverLeadAgentTools } from "../agent/tools/registry.js";
 import type { LeadAgentDefaults, LeadAgentState, LeadAgentToolContext } from "../agent/types.js";
 import { parseRequestedLeadCount } from "../tools/lead/requestIntent.js";
-import { runOpenAiChat, runOpenAiStructuredChatWithDiagnostics } from "../services/openAiClient.js";
+import { runOpenAiStructuredChatWithDiagnostics } from "../services/openAiClient.js";
 import { LlmBudgetManager } from "../tools/lead/llmBudget.js";
 import type { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
 import { writeLeadsCsv } from "../tools/csv/writeCsv.js";
@@ -237,6 +237,46 @@ function summarizeToolResult(result: ToolRunResult): string {
   }
 
   return `${result.tool} ok`;
+}
+
+function buildDeterministicAssistantSummary(args: {
+  leadCount: number;
+  requestedLeadCount: number;
+  stopReason: AgentStopReason;
+  stopExplanation: string;
+  totalToolCalls: number;
+  maxToolCalls: number;
+  plannerCallsUsed: number;
+  plannerMaxCalls: number;
+  elapsedMs: number;
+  observations: LeadAgentObservation[];
+  stateLeads: LeadAgentState["leads"];
+}): string {
+  const deficitCount = Math.max(0, args.requestedLeadCount - args.leadCount);
+  const emailLeadCount = args.stateLeads.filter((lead) => Boolean(lead.email)).length;
+  const emailCoverageRatio = args.leadCount > 0 ? emailLeadCount / args.leadCount : 0;
+
+  let searchFailureCount = 0;
+  let browseFailureCount = 0;
+  const extractionFailureCount = 0;
+  for (const observation of args.observations) {
+    const note = observation.note.toLowerCase();
+    if (note.includes("search failures")) {
+      const match = note.match(/search failures\s+(\d+)/);
+      searchFailureCount += Number(match?.[1] ?? 0);
+    }
+    if (note.includes("browse failures")) {
+      const match = note.match(/browse failures\s+(\d+)/);
+      browseFailureCount += Number(match?.[1] ?? 0);
+    }
+  }
+
+  return [
+    `Leads collected: ${args.leadCount}/${args.requestedLeadCount} (deficit ${deficitCount}).`,
+    `Email coverage: ${emailLeadCount}/${args.leadCount} (${(emailCoverageRatio * 100).toFixed(1)}%).`,
+    `Observed failures: search ${searchFailureCount}, browse ${browseFailureCount}, extraction ${extractionFailureCount}.`,
+    `Stop: ${args.stopReason} (${args.stopExplanation}) | Tool calls ${args.totalToolCalls}/${args.maxToolCalls}, planner calls ${args.plannerCallsUsed}/${args.plannerMaxCalls}, elapsed ${Math.round(args.elapsedMs / 1000)}s.`
+  ].join("\n");
 }
 
 function computeDiminishingReturns(history: LeadAgentObservation[], threshold: number): boolean {
@@ -879,45 +919,22 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
     timestamp: nowIso()
   });
 
-  let llmSummary: string | undefined;
-  if (options.openAiApiKey) {
-    try {
-      llmSummary = await runOpenAiChat({
-        apiKey: options.openAiApiKey,
-        messages: [
-          {
-            role: "system",
-            content: "Summarize lead-agent outcome in 4 concise bullets with stop reason and remaining gap."
-          },
-          {
-            role: "user",
-            content: JSON.stringify(
-              redactValue({
-                requestMessage: options.message,
-                stop,
-                requestedLeadCount: state.requestedLeadCount,
-                finalLeadCount: state.leads.length,
-                observations: observations.slice(-6),
-                candidatePreview: state.leads.slice(0, 5)
-              })
-            )
-          }
-        ]
-      });
-    } catch {
-      llmSummary = undefined;
-    }
-  }
-
   const deficitCount = Math.max(0, state.requestedLeadCount - state.leads.length);
-  const assistantText =
-    llmSummary ??
-    [
-      `Lead agent completed with ${state.leads.length} validated leads.`,
-      `Stop reason: ${stop.reason}. ${stop.explanation}`,
-      `Tool calls used: ${toolCallsUsed}/${options.maxToolCalls}; planner calls: ${plannerBudget.used}/${options.plannerMaxCalls}.`,
-      `Requested ${state.requestedLeadCount}, deficit ${deficitCount}.`
-    ].join("\n");
+  const emailLeadCount = state.leads.filter((lead) => Boolean(lead.email)).length;
+  const emailCoverageRatio = state.leads.length > 0 ? emailLeadCount / state.leads.length : 0;
+  const assistantText = buildDeterministicAssistantSummary({
+    leadCount: state.leads.length,
+    requestedLeadCount: state.requestedLeadCount,
+    stopReason: stop.reason,
+    stopExplanation: stop.explanation,
+    totalToolCalls: toolCallsUsed,
+    maxToolCalls: options.maxToolCalls,
+    plannerCallsUsed: plannerBudget.used,
+    plannerMaxCalls: options.plannerMaxCalls,
+    elapsedMs: Date.now() - startMs,
+    observations,
+    stateLeads: state.leads
+  });
 
   await options.runStore.appendEvent({
     runId: options.runId,
@@ -928,6 +945,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       candidateCount: state.leads.length,
       requestedLeadCount: state.requestedLeadCount,
       deficitCount,
+      emailLeadCount,
+      emailCoverageRatio,
       csvPath,
       stopReason: stop.reason,
       totalToolCalls: toolCallsUsed,

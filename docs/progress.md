@@ -60,6 +60,7 @@
   - Planner-provided lead filters are now wired end-to-end (tool schema -> normalization -> sub-pipeline), so employee-size/country/industry/email-intent constraints are no longer silently discarded before query planning.
   - Lead pipeline now runs a dedicated `email_enrichment` browse pass on extracted company sites (`/`, `/contact`, `/contact-us`, `/about`) to fill missing `email`/`emailEvidence` and expose enrichment coverage/failure telemetry in run outputs.
   - Quality ranking now applies explicit email-aware scoring (email bonus + no-email penalty, stronger when email is requested), so outreach-ready leads are prioritized ahead of equally matched records missing contact data.
+  - End-of-run assistant summaries are now deterministic and metric-based (no LLM narration), with explicit lead/email/failure/budget numbers to avoid optimistic wording that diverges from actual CSV/run telemetry.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Additional resiliency and production hardening tasks remain for later iterations.

@@ -49,11 +49,11 @@ interface PlannerOutput {
   actionType: "single" | "parallel" | "stop";
   singleAction: {
     tool: string;
-    input: Record<string, unknown>;
+    inputJson: string;
   } | null;
   parallelActions: Array<{
     tool: string;
-    input: Record<string, unknown>;
+    inputJson: string;
   }> | null;
   stopReason: AgentStopReason | null;
   stopExplanation: string | null;
@@ -65,14 +65,14 @@ const PlannerOutputSchema: z.ZodType<PlannerOutput> = z.object({
   singleAction: z
     .object({
       tool: z.string().min(1).max(80),
-      input: z.record(z.string(), z.unknown())
+      inputJson: z.string().min(2).max(1200)
     })
     .nullable(),
   parallelActions: z
     .array(
       z.object({
         tool: z.string().min(1).max(80),
-        input: z.record(z.string(), z.unknown())
+        inputJson: z.string().min(2).max(1200)
       })
     )
     .max(4)
@@ -94,9 +94,9 @@ const PLANNER_OUTPUT_JSON_SCHEMA = {
           additionalProperties: false,
           properties: {
             tool: { type: "string", minLength: 1, maxLength: 80 },
-            input: { type: "object", additionalProperties: true }
+            inputJson: { type: "string", minLength: 2, maxLength: 1200 }
           },
-          required: ["tool", "input"]
+          required: ["tool", "inputJson"]
         },
         { type: "null" }
       ]
@@ -111,9 +111,9 @@ const PLANNER_OUTPUT_JSON_SCHEMA = {
             additionalProperties: false,
             properties: {
               tool: { type: "string", minLength: 1, maxLength: 80 },
-              input: { type: "object", additionalProperties: true }
+              inputJson: { type: "string", minLength: 2, maxLength: 1200 }
             },
-            required: ["tool", "input"]
+            required: ["tool", "inputJson"]
           }
         },
         { type: "null" }
@@ -244,11 +244,34 @@ function fallbackPlan(iteration: number, defaults: LeadAgentDefaults, leadCount:
     };
   }
 
+  if (iteration === 3) {
+    return {
+      thought: "Persist current leads.",
+      action: { type: "single", tool: "write_csv", input: {} },
+      usedFallback: true
+    };
+  }
+
   return {
-    thought: "Persist current leads and stop.",
-    action: { type: "single", tool: "write_csv", input: {} },
+    thought: "Fallback planner completed baseline/deeper passes.",
+    stop: {
+      reason: "diminishing_returns",
+      explanation: "Fallback planner stopped after baseline, deep pass, and persistence checkpoint."
+    },
     usedFallback: true
   };
+}
+
+function parseToolInputJson(inputJson: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(inputJson) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
 }
 
 function normalizePlannerAction(output: PlannerOutput, maxParallelTools: number): AgentAction | undefined {
@@ -256,15 +279,27 @@ function normalizePlannerAction(output: PlannerOutput, maxParallelTools: number)
     if (!output.singleAction) {
       return undefined;
     }
+    const input = parseToolInputJson(output.singleAction.inputJson);
+    if (!input) {
+      return undefined;
+    }
     return {
       type: "single",
       tool: output.singleAction.tool,
-      input: output.singleAction.input
+      input
     };
   }
 
   if (output.actionType === "parallel") {
-    const tools = (output.parallelActions ?? []).slice(0, Math.max(1, maxParallelTools));
+    const tools = (output.parallelActions ?? [])
+      .slice(0, Math.max(1, maxParallelTools))
+      .flatMap((item) => {
+        const input = parseToolInputJson(item.inputJson);
+        if (!input) {
+          return [];
+        }
+        return [{ tool: item.tool, input }];
+      });
     if (tools.length === 0) {
       return undefined;
     }
@@ -299,7 +334,7 @@ async function decidePlannerAction(
         {
           role: "system",
           content:
-            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls."
+            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
         },
         {
           role: "user",

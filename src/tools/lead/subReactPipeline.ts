@@ -91,6 +91,71 @@ const EXTRACTED_LEAD_BATCH_JSON_SCHEMA = {
   required: ["leads"]
 } as const;
 
+const EXTRACTION_SYSTEM_PROMPT = `
+You are an expert B2B lead researcher focused on USA-based System Integrators (SI) and Managed Service Providers (MSP).
+
+Task:
+Extract REAL company leads from the provided page payloads (one or more pages may be given).
+
+Hard rules:
+- Only return companies that are clearly SI, MSP, or very close IT services providers.
+- NEVER return the aggregator, directory, or listing site itself as a lead.
+- Use ONLY information present in the provided page payloads.
+- Do NOT invent websites, locations, employee counts, or any other details.
+- If any field cannot be grounded in the provided payloads, set it to null.
+- Prefer companies inside the requested employee range, but allow near-range candidates with lower confidence.
+
+Schema contract (strict):
+Return ONLY a valid JSON object with this exact structure:
+{
+  "leads": [
+    {
+      "companyName": string,
+      "website": string | null,
+      "location": string | null,
+      "employeeSizeText": string | null,
+      "employeeMin": number | null,
+      "employeeMax": number | null,
+      "sizeEvidence": string | null,
+      "shortDesc": string,
+      "sourceUrl": string,
+      "confidence": number,
+      "evidence": string
+    }
+  ]
+}
+
+Field rules:
+- companyName: exact name as shown on the page.
+- website: full valid URL if clearly present, otherwise null.
+- location: city + state if mentioned (for example "San Ramon, CA"), otherwise null.
+- employeeSizeText: raw text from the page (for example "11-50 employees", "201-500", "small team").
+- employeeMin / employeeMax: parse numeric bounds when possible:
+  - "11-50" -> employeeMin=11, employeeMax=50
+  - "201-500 employees" -> employeeMin=201, employeeMax=500
+  - "50+" -> employeeMin=50, employeeMax=50
+  - if uncertain, set both to null
+- sizeEvidence: short note where size info came from (for example "about page", "team section", "provider profile", "unknown").
+- shortDesc: one concise sentence, max 25 words.
+- sourceUrl: the exact page URL this company came from.
+- confidence: 0.0 to 1.0
+  - 0.80-1.00 = very strong fit with clear evidence
+  - 0.60-0.79 = good fit
+  - 0.55-0.59 = near-range or partial fit (allowed)
+  - <0.55 = do not include
+- evidence: 1-2 short sentences explaining why this is a good lead.
+
+Near-range guidance:
+- Treat requested employee range as soft:
+  - in range -> higher confidence
+  - near range -> lower confidence
+  - clearly far out of range -> exclude unless exceptionally strong SI/MSP evidence
+
+Output requirements:
+- Return valid JSON only. No markdown, no explanations, no extra text.
+- If no good leads are found, return { "leads": [] }.
+`;
+
 interface LeadSubReactOptions {
   runId: string;
   sessionId: string;
@@ -571,16 +636,8 @@ function chunk<T>(items: T[], size: number): T[][] {
 
 function buildExtractionPrompt(batch: PagePayload[], requestMessage: string): string {
   return [
-    "You are an expert B2B lead researcher.",
-    "Extract REAL companies matching the request (SI/MSP context where relevant).",
-    "Never output the aggregator/listing site itself as a company lead.",
-    "When employee-size evidence exists, capture employeeSizeText and infer employeeMin/employeeMax.",
-    "Capture sizeEvidence as a short human-readable note (not a URL), or null when unavailable.",
-    "If size is unavailable, return null for employeeSizeText, employeeMin, employeeMax, and sizeEvidence.",
-    "Return strict JSON only.",
-    "Use confidence 0-1.",
     `User request: ${requestMessage}`,
-    "Page payloads:",
+    "Page payloads (batched):",
     JSON.stringify(batch)
   ].join("\n");
 }
@@ -626,8 +683,7 @@ async function extractBatch(
       messages: [
         {
           role: "system",
-          content:
-            "Extract company leads as strict JSON. Output only real company entities (not aggregator/list host). Include employee-size fields and null them when unavailable."
+          content: EXTRACTION_SYSTEM_PROMPT
         },
         {
           role: "user",
@@ -684,7 +740,7 @@ async function extractBatch(
         {
           role: "system",
           content:
-            "Retry extraction. Keep only real company entities, strict schema output, include employee-size fields, and omit uncertain entities."
+            `${EXTRACTION_SYSTEM_PROMPT}\n\nRetry context: previous attempt failed validation. Return a strictly schema-valid JSON object.`
         },
         {
           role: "user",

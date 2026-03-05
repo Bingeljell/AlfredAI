@@ -584,6 +584,7 @@ function buildDeterministicAssistantSummary(args: {
   observations: LeadAgentObservation[];
   stateLeads: LeadAgentState["leads"];
   llmUsageTotals: LlmUsageTotals;
+  budgetSnapshot: BudgetSnapshot;
 }): string {
   const deficitCount = Math.max(0, args.requestedLeadCount - args.leadCount);
   const emailLeadCount = args.stateLeads.filter((lead) => Boolean(lead.email)).length;
@@ -603,6 +604,11 @@ function buildDeterministicAssistantSummary(args: {
     `Email coverage: ${emailLeadCount}/${args.leadCount} (${(emailCoverageRatio * 100).toFixed(1)}%).`,
     `Observed failures: search ${searchFailureCount}, browse ${browseFailureCount}, extraction ${extractionFailureCount}.`,
     `LLM usage: ${args.llmUsageTotals.totalTokens} total tokens (${args.llmUsageTotals.promptTokens} prompt, ${args.llmUsageTotals.completionTokens} completion) across ${args.llmUsageTotals.callCount} calls.`,
+    `Budget snapshot: mode=${args.budgetSnapshot.mode}, time ${(args.budgetSnapshot.remainingTimeRatio * 100).toFixed(0)}% (${Math.round(
+      args.budgetSnapshot.remainingMs / 1000
+    )}s) left, tool ${(args.budgetSnapshot.toolCallRatio * 100).toFixed(0)}% (${args.budgetSnapshot.toolCallsRemaining}) left, planner ${(
+      args.budgetSnapshot.plannerCallRatio * 100
+    ).toFixed(0)}% (${args.budgetSnapshot.plannerCallsRemaining}) left, llm ${(args.budgetSnapshot.llmCallRatio * 100).toFixed(0)}% (${args.budgetSnapshot.llmCallsRemaining}) left.`,
     `Stop: ${args.stopReason} (${args.stopExplanation}) | Tool calls ${args.totalToolCalls}/${args.maxToolCalls}, planner calls ${args.plannerCallsUsed}/${args.plannerMaxCalls}, elapsed ${Math.round(args.elapsedMs / 1000)}s.`
   ].join("\n");
 }
@@ -1507,6 +1513,19 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
     };
   }
 
+  const finalBudgetSnapshot = buildBudgetSnapshot({
+    mode: currentBudgetMode,
+    remainingMs: deadlineAtMs - Date.now(),
+    elapsedMs: Date.now() - startMs,
+    maxDurationMs: options.maxDurationMs,
+    toolCallsUsed,
+    maxToolCalls: options.maxToolCalls,
+    plannerCallsUsed: plannerBudget.used,
+    plannerMaxCalls: options.plannerMaxCalls,
+    llmCallsUsed: llmUsageTotals.callCount,
+    llmCallBudget
+  });
+
   let csvPath = state.artifacts.find((item) => item.endsWith("/leads.csv"));
   if (!csvPath) {
     const start = Date.now();
@@ -1531,7 +1550,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       candidateCount: state.leads.length,
       totalToolCalls: toolCallsUsed,
       plannerCallsUsed: plannerBudget.used,
-      llmUsageTotals
+      llmUsageTotals,
+      budgetSnapshot: finalBudgetSnapshot
     },
     timestamp: nowIso()
   });
@@ -1550,7 +1570,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       totalToolCalls: toolCallsUsed,
       plannerCallsUsed: plannerBudget.used,
       elapsedMs: Date.now() - startMs,
-      llmUsageTotals
+      llmUsageTotals,
+      budgetSnapshot: finalBudgetSnapshot
     },
     timestamp: nowIso()
   });
@@ -1570,7 +1591,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
     elapsedMs: Date.now() - startMs,
     observations,
     stateLeads: state.leads,
-    llmUsageTotals
+    llmUsageTotals,
+    budgetSnapshot: finalBudgetSnapshot
   });
 
   await options.runStore.appendEvent({
@@ -1588,7 +1610,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       stopReason: stop.reason,
       totalToolCalls: toolCallsUsed,
       plannerCallsUsed: plannerBudget.used,
-      llmUsageTotals
+      llmUsageTotals,
+      budgetSnapshot: finalBudgetSnapshot
     },
     timestamp: nowIso()
   });

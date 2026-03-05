@@ -80,7 +80,11 @@ function summarizeEvent(event) {
   }
 
   if (event.phase === "final" && event.eventType === "agent_stop") {
-    return `agent_stop ${payload.reason || "unknown"}: ${toShortText(payload.explanation, 160)}`;
+    const budget = payload.budgetSnapshot || {};
+    const budgetText = budget.mode
+      ? ` | budget mode=${budget.mode}, time=${Math.round((Number(budget.remainingTimeRatio || 0) * 100))}% left, llm=${Math.round((Number(budget.llmCallRatio || 0) * 100))}% left`
+      : "";
+    return `agent_stop ${payload.reason || "unknown"}: ${toShortText(payload.explanation, 160)}${budgetText}`;
   }
 
   if (event.phase === "sub_react_step") {

@@ -374,6 +374,10 @@ export const plannerFailureGuardrailsForTests = {
   extractObservationSignals
 };
 
+export const plannerContextForTests = {
+  buildPastActionsSummary
+};
+
 function summarizeToolResult(result: ToolRunResult): string {
   if (result.status === "error") {
     return `${result.tool} failed: ${result.error}`;
@@ -416,6 +420,75 @@ function summarizeToolResult(result: ToolRunResult): string {
   }
 
   return `${result.tool} ok`;
+}
+
+function summarizeLeadPipelineInput(input: Record<string, unknown>): string {
+  const parts: string[] = [];
+  const maxPages = typeof input.maxPages === "number" ? Math.round(input.maxPages) : undefined;
+  const llmMaxCalls = typeof input.llmMaxCalls === "number" ? Math.round(input.llmMaxCalls) : undefined;
+  const extractionBatchSize = typeof input.extractionBatchSize === "number" ? Math.round(input.extractionBatchSize) : undefined;
+  const browseConcurrency = typeof input.browseConcurrency === "number" ? Math.round(input.browseConcurrency) : undefined;
+  const minConfidence = typeof input.minConfidence === "number" ? Number(input.minConfidence.toFixed(2)) : undefined;
+
+  if (typeof maxPages === "number") {
+    parts.push(`maxPages=${maxPages}`);
+  }
+  if (typeof llmMaxCalls === "number") {
+    parts.push(`llmMaxCalls=${llmMaxCalls}`);
+  }
+  if (typeof extractionBatchSize === "number") {
+    parts.push(`batch=${extractionBatchSize}`);
+  }
+  if (typeof browseConcurrency === "number") {
+    parts.push(`concurrency=${browseConcurrency}`);
+  }
+  if (typeof minConfidence === "number") {
+    parts.push(`minConf=${minConfidence}`);
+  }
+  return parts.length > 0 ? parts.join(", ") : "default_input";
+}
+
+function summarizeActionExecution(calls: Array<{ tool: string; input: Record<string, unknown> }>, results: ToolRunResult[]): string {
+  return calls
+    .map((call) => {
+      const result = results.find((item) => item.tool === call.tool);
+      const statusText = result?.status ?? "unknown";
+      const output = result?.output ?? {};
+      if (call.tool === "lead_pipeline") {
+        const added = readNumber(output.addedLeadCount);
+        const total = readNumber(output.totalLeadCount);
+        return `${call.tool}(${summarizeLeadPipelineInput(call.input)}) ${statusText}, added=${added}, total=${total}`;
+      }
+      if (call.tool === "search") {
+        const resultCount = readNumber(output.resultCount);
+        return `${call.tool}(${JSON.stringify(call.input)}) ${statusText}, results=${resultCount}`;
+      }
+      return `${call.tool}(${JSON.stringify(call.input)}) ${statusText}`;
+    })
+    .join(" | ");
+}
+
+function buildPastActionsSummary(observations: LeadAgentObservation[], maxChars = 2000, maxItems = 5): string[] {
+  const items = observations.slice(-Math.max(1, maxItems)).map((item) => {
+    const summary = item.note.replace(/\s+/g, " ").trim().slice(0, 360);
+    return `iteration ${item.iteration}: ${summary}`;
+  });
+
+  const output: string[] = [];
+  let used = 0;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (!item) {
+      continue;
+    }
+    if (used + item.length > maxChars) {
+      continue;
+    }
+    output.unshift(item);
+    used += item.length;
+  }
+
+  return output;
 }
 
 function readNumber(value: unknown): number {
@@ -724,6 +797,7 @@ async function decidePlannerAction(
   }
 
   const lastObservations = observations.slice(-options.observationWindow);
+  const pastActionsSummary = buildPastActionsSummary(lastObservations);
   const aggregateFailures = lastObservations.reduce(
     (acc, item) => {
       acc.failedToolCount += item.failedToolCount;
@@ -750,7 +824,7 @@ async function decidePlannerAction(
         {
           role: "system",
           content:
-            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, hadLlmBudgetExhausted). React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. If failedToolCount > 0 across recent observations, your thought must acknowledge that failure signal before choosing the next action. Budget mode is dynamic: when budgetMode is conserve or emergency, prioritize high-yield/low-cost actions (search_status/search) before deep full-pipeline runs; use smaller lead_pipeline inputs and avoid expensive retries unless signal quality is high. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
+            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, hadLlmBudgetExhausted) and a capped pastActionsSummary. React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. If failedToolCount > 0 across recent observations, your thought must acknowledge that failure signal before choosing the next action. Budget mode is dynamic: when budgetMode is conserve or emergency, prioritize high-yield/low-cost actions (search_status/search) before deep full-pipeline runs; use smaller lead_pipeline inputs and avoid expensive retries unless signal quality is high. Use pastActionsSummary to avoid repeating low-yield actions with identical inputs. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
         },
         {
           role: "user",
@@ -765,7 +839,8 @@ async function decidePlannerAction(
             },
             tools: availableTools,
             recentObservations: lastObservations,
-            aggregateFailures
+            aggregateFailures,
+            pastActionsSummary
           })
         }
       ]
@@ -1267,7 +1342,7 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       browseFailureCount: signals.browseFailureCount,
       extractionFailureCount: signals.extractionFailureCount,
       hadLlmBudgetExhausted: signals.hadLlmBudgetExhausted,
-      note: results.map(summarizeToolResult).join(" | ")
+      note: `${summarizeActionExecution(calls, results)} | ${results.map(summarizeToolResult).join(" | ")}`
     };
     observations.push(observation);
 

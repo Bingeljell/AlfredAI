@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { plannerFailureGuardrailsForTests } from "../../src/core/runLeadAgenticLoop.js";
+import { plannerContextForTests, plannerFailureGuardrailsForTests } from "../../src/core/runLeadAgenticLoop.js";
 
 test("failure guardrail forces search_status after lead_pipeline search failures", () => {
   const guarded = plannerFailureGuardrailsForTests.applyFailureGuardrail(
@@ -58,4 +58,30 @@ test("extractObservationSignals captures structured tool failure counts", () => 
   assert.equal(signals.browseFailureCount, 1);
   assert.equal(signals.extractionFailureCount, 3);
   assert.equal(signals.hadLlmBudgetExhausted, true);
+});
+
+test("past action summary stays capped and keeps most recent items", () => {
+  const baseObservation = {
+    actionType: "single" as const,
+    toolNames: ["lead_pipeline"],
+    newLeadCount: 1,
+    totalLeadCount: 1,
+    failedToolCount: 0,
+    searchFailureCount: 0,
+    browseFailureCount: 0,
+    extractionFailureCount: 0,
+    hadLlmBudgetExhausted: false
+  };
+  const observations = Array.from({ length: 8 }, (_, index) => ({
+    ...baseObservation,
+    iteration: index + 1,
+    note: `lead_pipeline(maxPages=${8 + index}) ok, added=${index}, total=${index + 1}`
+  }));
+
+  const summary = plannerContextForTests.buildPastActionsSummary(observations, 140, 8);
+  const serialized = summary.join("\n");
+
+  assert.ok(summary.length >= 1);
+  assert.ok(serialized.length <= 140);
+  assert.match(serialized, /iteration 8/);
 });

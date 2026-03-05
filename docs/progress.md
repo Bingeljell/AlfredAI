@@ -68,6 +68,7 @@
   - Run-level LLM usage accounting is now wired end-to-end (OpenAI response usage capture -> sub-pipeline/tool propagation -> run-state aggregation/events/final summary), and planner context now includes aggregate failure signals so replans can explicitly react to repeated tool/search/extraction failures.
   - Web UI timeline now surfaces planner thoughts, failure snippets, and incremental/token-total usage summaries directly in the readable timeline view (while preserving raw JSON), improving live-debug visibility during long runs.
   - Timeline display is now thought-first and less noisy: planner action payload expansions and trailing raw JSON dumps were removed from the default view to keep run monitoring focused on meaningful progress/failure lines.
+  - Agent loop now maintains dynamic budget modes (`normal`, `conserve`, `emergency`) with anti-thrashing hysteresis, emits explicit budget-mode-change events, and gives the planner budget snapshot context so low-budget replans can prefer cheaper/high-yield actions.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Additional resiliency and production hardening tasks remain for later iterations.

@@ -19,6 +19,8 @@ export type AgentStopReason =
   | "manual_guardrail"
   | "manual_cancelled";
 
+export type BudgetMode = "normal" | "conserve" | "emergency";
+
 interface LeadAgentObservation {
   iteration: number;
   actionType: "single" | "parallel";
@@ -31,6 +33,19 @@ interface LeadAgentObservation {
   extractionFailureCount: number;
   hadLlmBudgetExhausted: boolean;
   note: string;
+}
+
+interface BudgetSnapshot {
+  mode: BudgetMode;
+  remainingMs: number;
+  elapsedMs: number;
+  remainingTimeRatio: number;
+  toolCallsRemaining: number;
+  toolCallRatio: number;
+  plannerCallsRemaining: number;
+  plannerCallRatio: number;
+  llmCallsRemaining: number;
+  llmCallRatio: number;
 }
 
 interface SingleAction {
@@ -228,6 +243,73 @@ function parseLlmUsageCallCount(value: unknown): number | undefined {
   }
   return Math.max(0, Math.round(raw));
 }
+
+function clampRatio(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  if (value < 0) {
+    return 0;
+  }
+  if (value > 1) {
+    return 1;
+  }
+  return value;
+}
+
+function chooseBudgetMode(previousMode: BudgetMode, ratioFloor: number): BudgetMode {
+  if (previousMode === "normal") {
+    return ratioFloor < 0.45 ? "conserve" : "normal";
+  }
+  if (previousMode === "conserve") {
+    if (ratioFloor < 0.2) {
+      return "emergency";
+    }
+    if (ratioFloor > 0.6) {
+      return "normal";
+    }
+    return "conserve";
+  }
+  if (ratioFloor > 0.3) {
+    return "conserve";
+  }
+  return "emergency";
+}
+
+function buildBudgetSnapshot(args: {
+  mode: BudgetMode;
+  remainingMs: number;
+  elapsedMs: number;
+  maxDurationMs: number;
+  toolCallsUsed: number;
+  maxToolCalls: number;
+  plannerCallsUsed: number;
+  plannerMaxCalls: number;
+  llmCallsUsed: number;
+  llmCallBudget: number;
+}): BudgetSnapshot {
+  const toolCallsRemaining = Math.max(0, args.maxToolCalls - args.toolCallsUsed);
+  const plannerCallsRemaining = Math.max(0, args.plannerMaxCalls - args.plannerCallsUsed);
+  const llmCallsRemaining = Math.max(0, args.llmCallBudget - args.llmCallsUsed);
+
+  return {
+    mode: args.mode,
+    remainingMs: Math.max(0, Math.round(args.remainingMs)),
+    elapsedMs: Math.max(0, Math.round(args.elapsedMs)),
+    remainingTimeRatio: clampRatio(args.maxDurationMs > 0 ? args.remainingMs / args.maxDurationMs : 0),
+    toolCallsRemaining,
+    toolCallRatio: clampRatio(args.maxToolCalls > 0 ? toolCallsRemaining / args.maxToolCalls : 0),
+    plannerCallsRemaining,
+    plannerCallRatio: clampRatio(args.plannerMaxCalls > 0 ? plannerCallsRemaining / args.plannerMaxCalls : 0),
+    llmCallsRemaining,
+    llmCallRatio: clampRatio(args.llmCallBudget > 0 ? llmCallsRemaining / args.llmCallBudget : 0)
+  };
+}
+
+export const budgetModesForTests = {
+  chooseBudgetMode,
+  buildBudgetSnapshot
+};
 
 function normalizeCompanyName(value: string): string {
   return value
@@ -634,7 +716,8 @@ async function decidePlannerAction(
   availableTools: Array<{ name: string; description: string; inputHint: string }>,
   iteration: number,
   state: LeadAgentState,
-  observations: LeadAgentObservation[]
+  observations: LeadAgentObservation[],
+  budgetSnapshot: BudgetSnapshot
 ): Promise<PlannerDecision> {
   if (!options.openAiApiKey || !plannerBudget.consume()) {
     return fallbackPlan(iteration, options.defaults, state.leads.length, state.requestedLeadCount);
@@ -667,13 +750,14 @@ async function decidePlannerAction(
         {
           role: "system",
           content:
-            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, hadLlmBudgetExhausted). React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. If failedToolCount > 0 across recent observations, your thought must acknowledge that failure signal before choosing the next action. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
+            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, hadLlmBudgetExhausted). React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. If failedToolCount > 0 across recent observations, your thought must acknowledge that failure signal before choosing the next action. Budget mode is dynamic: when budgetMode is conserve or emergency, prioritize high-yield/low-cost actions (search_status/search) before deep full-pipeline runs; use smaller lead_pipeline inputs and avoid expensive retries unless signal quality is high. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
         },
         {
           role: "user",
           content: JSON.stringify({
             request: options.message,
             iteration,
+            budget: budgetSnapshot,
             leadState: {
               targetLeadCount: state.requestedLeadCount,
               currentLeadCount: state.leads.length,
@@ -797,9 +881,14 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
   const plannerBudget = new LlmBudgetManager(options.plannerMaxCalls);
   const observations: LeadAgentObservation[] = [];
   const llmUsageTotals = emptyLlmUsageTotals();
+  const llmCallBudget = Math.max(
+    options.plannerMaxCalls + 2,
+    options.maxIterations * Math.max(3, options.defaults.subReactLlmMaxCalls)
+  );
   let toolCallsUsed = 0;
   let stop: { reason: AgentStopReason; explanation: string } | undefined;
   let diminishingObservedOnce = false;
+  let currentBudgetMode: BudgetMode = "normal";
 
   const recordLlmUsage = async (args: {
     usage?: LlmUsage;
@@ -840,6 +929,50 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
     });
   };
 
+  const computeBudgetSnapshot = (stage: "pre_plan" | "pre_action" | "post_action"): BudgetSnapshot => {
+    const nowMs = Date.now();
+    const elapsedMs = nowMs - startMs;
+    const remainingMs = deadlineAtMs - nowMs;
+    const rawRatioFloor = Math.min(
+      clampRatio(options.maxDurationMs > 0 ? remainingMs / options.maxDurationMs : 0),
+      clampRatio(options.maxToolCalls > 0 ? (options.maxToolCalls - toolCallsUsed) / options.maxToolCalls : 0),
+      clampRatio(options.plannerMaxCalls > 0 ? plannerBudget.remaining / options.plannerMaxCalls : 0),
+      clampRatio(llmCallBudget > 0 ? (llmCallBudget - llmUsageTotals.callCount) / llmCallBudget : 0)
+    );
+    const nextMode = chooseBudgetMode(currentBudgetMode, rawRatioFloor);
+    const snapshot = buildBudgetSnapshot({
+      mode: nextMode,
+      remainingMs,
+      elapsedMs,
+      maxDurationMs: options.maxDurationMs,
+      toolCallsUsed,
+      maxToolCalls: options.maxToolCalls,
+      plannerCallsUsed: plannerBudget.used,
+      plannerMaxCalls: options.plannerMaxCalls,
+      llmCallsUsed: llmUsageTotals.callCount,
+      llmCallBudget
+    });
+
+    if (nextMode !== currentBudgetMode) {
+      void options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "observe",
+        eventType: "agent_budget_mode_changed",
+        payload: {
+          stage,
+          from: currentBudgetMode,
+          to: nextMode,
+          snapshot
+        },
+        timestamp: nowIso()
+      });
+    }
+
+    currentBudgetMode = nextMode;
+    return snapshot;
+  };
+
   await options.runStore.appendEvent({
     runId: options.runId,
     sessionId: options.sessionId,
@@ -848,7 +981,9 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
     payload: {
       maxIterations: options.maxIterations,
       maxDurationMs: options.maxDurationMs,
-      maxToolCalls: options.maxToolCalls
+      maxToolCalls: options.maxToolCalls,
+      llmCallBudget,
+      initialBudgetMode: currentBudgetMode
     },
     timestamp: nowIso()
   });
@@ -873,9 +1008,9 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       break;
     }
 
-    const nowMs = Date.now();
-    const elapsedMs = nowMs - startMs;
-    const remainingMs = deadlineAtMs - nowMs;
+    const budgetSnapshotBeforePlan = computeBudgetSnapshot("pre_plan");
+    const elapsedMs = budgetSnapshotBeforePlan.elapsedMs;
+    const remainingMs = budgetSnapshotBeforePlan.remainingMs;
     if (remainingMs <= 0 || elapsedMs > options.maxDurationMs) {
       stop = {
         reason: "budget_exhausted",
@@ -902,7 +1037,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       })),
       iteration,
       state,
-      observations
+      observations,
+      budgetSnapshotBeforePlan
     );
 
     await recordLlmUsage({
@@ -924,7 +1060,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
         usedFallback: plannerDecision.usedFallback,
         plannerFailureReason: plannerDecision.plannerFailureReason,
         plannerCallsUsed: plannerBudget.used,
-        plannerCallsRemaining: plannerBudget.remaining
+        plannerCallsRemaining: plannerBudget.remaining,
+        budgetSnapshot: budgetSnapshotBeforePlan
       },
       timestamp: nowIso()
     });
@@ -962,7 +1099,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       });
     }
 
-    const remainingMsBeforeAction = deadlineAtMs - Date.now();
+    const budgetSnapshotBeforeAction = computeBudgetSnapshot("pre_action");
+    const remainingMsBeforeAction = budgetSnapshotBeforeAction.remainingMs;
     const actionIncludesLeadPipeline =
       action.type === "single" ? action.tool === "lead_pipeline" : action.tools.some((item) => item.tool === "lead_pipeline");
     if (actionIncludesLeadPipeline && remainingMsBeforeAction < MIN_LEAD_PIPELINE_START_MS) {
@@ -974,7 +1112,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
         payload: {
           iteration,
           remainingMs: remainingMsBeforeAction,
-          minLeadPipelineStartMs: MIN_LEAD_PIPELINE_START_MS
+          minLeadPipelineStartMs: MIN_LEAD_PIPELINE_START_MS,
+          budgetSnapshot: budgetSnapshotBeforeAction
         },
         timestamp: nowIso()
       });
@@ -1016,7 +1155,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       payload: {
         iteration,
         actionType: action.type,
-        calls
+        calls,
+        budgetSnapshot: budgetSnapshotBeforeAction
       },
       timestamp: nowIso()
     });
@@ -1110,6 +1250,7 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
         iteration
       });
     }
+    const budgetSnapshotAfterAction = computeBudgetSnapshot("post_action");
 
     const newLeadCount = state.leads.length - leadsBefore;
     const failedToolCount = results.filter((result) => result.status === "error").length;
@@ -1146,7 +1287,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
         extractionFailureCount: signals.extractionFailureCount,
         hadLlmBudgetExhausted: signals.hadLlmBudgetExhausted,
         results,
-        llmUsageTotals
+        llmUsageTotals,
+        budgetSnapshot: budgetSnapshotAfterAction
       },
       timestamp: nowIso()
     });

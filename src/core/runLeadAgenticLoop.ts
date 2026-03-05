@@ -372,7 +372,8 @@ export const leadDedupeForTests = {
 
 export const plannerFailureGuardrailsForTests = {
   applyFailureGuardrail,
-  extractObservationSignals
+  extractObservationSignals,
+  applySearchQueryGuardrail
 };
 
 export const plannerContextForTests = {
@@ -599,6 +600,63 @@ function applyFailureGuardrail(action: AgentAction, observations: LeadAgentObser
     },
     adjusted: true,
     reason: "search_failures_detected_in_previous_iteration"
+  };
+}
+
+function fallbackSearchQueryFromMessage(message: string): string {
+  const normalized = message.replace(/\s+/g, " ").trim();
+  if (normalized.length >= 2) {
+    return normalized.slice(0, 320);
+  }
+  return "managed service providers and system integrators usa";
+}
+
+function normalizeSearchQuery(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length >= 2 ? normalized.slice(0, 320) : undefined;
+}
+
+function applySearchQueryGuardrail(
+  calls: Array<{ tool: string; input: Record<string, unknown> }>,
+  message: string
+): {
+  calls: Array<{ tool: string; input: Record<string, unknown> }>;
+  adjusted: boolean;
+  reason?: string;
+} {
+  let adjusted = false;
+  const fallbackQuery = fallbackSearchQueryFromMessage(message);
+  const nextCalls = calls.map((call) => {
+    if (call.tool !== "search") {
+      return call;
+    }
+    const query = normalizeSearchQuery(call.input.query);
+    if (query) {
+      return {
+        ...call,
+        input: {
+          ...call.input,
+          query
+        }
+      };
+    }
+    adjusted = true;
+    return {
+      ...call,
+      input: {
+        ...call.input,
+        query: fallbackQuery
+      }
+    };
+  });
+
+  return {
+    calls: nextCalls,
+    adjusted,
+    reason: adjusted ? "search_query_missing_or_invalid" : undefined
   };
 }
 
@@ -1315,7 +1373,7 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
     }
 
     const baseCalls = action.type === "single" ? [{ tool: action.tool, input: action.input }] : action.tools;
-    const calls = baseCalls.map((call) => {
+    const modeAdjustedCalls = baseCalls.map((call) => {
       if (call.tool !== "lead_pipeline") {
         return call;
       }
@@ -1326,6 +1384,23 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
         input: applyLeadPipelineTimeBudget(withDefaults, remainingMsForCall, budgetSnapshotBeforeAction.mode)
       };
     });
+    const searchGuardrail = applySearchQueryGuardrail(modeAdjustedCalls, options.message);
+    const calls = searchGuardrail.calls;
+    if (searchGuardrail.adjusted) {
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "thought",
+        eventType: "agent_plan_adjusted",
+        payload: {
+          iteration,
+          reason: searchGuardrail.reason,
+          originalCalls: modeAdjustedCalls,
+          adjustedCalls: calls
+        },
+        timestamp: nowIso()
+      });
+    }
     if (calls.length === 0) {
       stop = {
         reason: "tool_blocked",

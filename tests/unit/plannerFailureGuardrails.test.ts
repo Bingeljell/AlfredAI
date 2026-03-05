@@ -228,3 +228,20 @@ test("diminishing returns ignores diagnostic-only actions", () => {
   assert.equal(shouldNotStop, false);
   assert.equal(shouldStop, true);
 });
+
+test("search query guardrail fills missing/invalid query from user message", () => {
+  const guarded = plannerFailureGuardrailsForTests.applySearchQueryGuardrail(
+    [
+      {
+        tool: "search",
+        input: {}
+      }
+    ],
+    "Find 20 MSP/SI leads in USA with emails"
+  );
+
+  assert.equal(guarded.adjusted, true);
+  assert.equal(guarded.reason, "search_query_missing_or_invalid");
+  assert.equal(guarded.calls[0]?.tool, "search");
+  assert.equal(guarded.calls[0]?.input.query, "Find 20 MSP/SI leads in USA with emails");
+});

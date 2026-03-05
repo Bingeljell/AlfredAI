@@ -78,6 +78,7 @@
   - Planner tool-action safety now includes a `search.query` guardrail: invalid/missing query inputs are auto-corrected from the user request and logged as plan adjustments, preventing wasted iterations on schema-validation failures.
   - Added a root `README.md` with a concise project overview, high-level plan, current status snapshot, and pnpm-first local run/test instructions for faster onboarding and testing.
   - Added visual README masthead assets (`assets/alfred_masthead.jpg`, `assets/alfred_at_work.mp4`) and wired the image into the top of the root README for clearer project branding.
+  - Expanded README narrative to include the long-term “second brain” product vision and explicitly frame lead generation as the focused first use case for measurable value validation.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Additional resiliency and production hardening tasks remain for later iterations.

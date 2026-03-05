@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cat <<'CHECKLIST'
+Web Console Manual Checklist
+1. Copy `.env.example` to `.env` and set required values.
+2. Start gateway: pnpm run dev:gateway
+3. Open http://localhost:3000/ui
+4. Confirm `Persisted Transcript` loads prior turns for the selected Session ID after refresh/restart.
+5. Keep transcript `Day` set to today and verify only same-day entries render.
+6. Change transcript `Day` to a prior date and verify historical entries load for that day without rendering full multi-day history.
+7. Use `LLM Auth Mode` = `Auto (Recommended)` and send a chat message; confirm response appears in log panel and transcript updates.
+8. Switch `LLM Auth Mode` to `API key only` (without API key configured) and confirm explicit backend guidance is returned (not silent `ack:`).
+9. Send as async job and confirm jobId appears and can be checked with Job Controls.
+10. Run Memory Search/Sync/Status actions and confirm responses are shown in the log panel.
+11. Click `Checkpoint Status` and confirm `GET /v1/memory/checkpoints/status` returns runtime counters/recent entries.
+12. Send `/policy` and confirm workspace + approval policy values match your `.env`.
+13. Send `/web latest OpenAI docs` and confirm approval token is requested (default policy), then send `approve <token>` and confirm web-result text is returned.
+14. For `/web` commands, confirm an in-flight status message (for example `Working on web search ...`) appears in stream/WhatsApp before the final result on slower providers.
+15. Trigger a pending approval (`send test approval`) and reply `yes`; confirm approved action executes without token.
+16. Trigger another pending approval and reply `no`; confirm action is rejected.
+17. Trigger a pending approval and run `/approval pending`; confirm action/token/expiry are shown.
+18. Resolve a pending action via API:
+   - `GET /v1/approvals/pending?sessionId=<session>`
+   - `POST /v1/approvals/resolve` with `{ "sessionId":"<session>", "decision":"approve", "token":"<token>" }`
+   Confirm approval is executed and pending list shrinks.
+19. Run `/web --provider=searxng latest OpenAI updates` and confirm provider label + SearXNG-formatted links appear.
+20. Set `ALFRED_WEB_SEARCH_PROVIDER=searxng`, restart gateway, and run `/web latest OpenAI updates`; confirm SearXNG is used by default.
+21. Set `BRIGHTDATA_API_KEY` + `BRIGHTDATA_ZONE`, run `/web --provider=brightdata latest OpenAI updates`, and confirm provider label + BrightData-formatted links appear.
+22. Set `ALFRED_WEB_SEARCH_PROVIDER=brave` with `BRAVE_SEARCH_API_KEY`, restart gateway, run `/web --provider=brave latest OpenAI updates`, and confirm provider label + Brave-formatted links appear.
+23. Set `PERPLEXITY_API_KEY`, run `/web --provider=perplexity latest OpenAI updates`, and confirm provider label + cited output appears.
+24. Run `/web --provider=openai latest OpenAI updates` and confirm Codex/OpenAI path still works.
+25. Send `/write notes/manual.md hello` and confirm default response says file-write is disabled.
+26. Set `ALFRED_FILE_WRITE_ENABLED=true`, restart gateway, retry `/write notes/manual.md hello`, approve token, then confirm file is appended under `workspace/alfred/notes/manual.md`.
+27. Send a long research-style prompt (for example: `research best stable diffusion models and compare options`) and confirm immediate async-job acknowledgment is returned (not a long blocking turn).
+28. Wait for worker updates and confirm progress notifications appear (running/progress/succeeded) and `status?` returns latest active job state.
+29. If response is paged, send `#next` repeatedly and confirm each page is returned until completion.
+30. Send an ambiguous request (for example: `help me with models`) and confirm Alfred asks a clarifying question instead of executing uncertain work.
+31. Confirm `STREAM_PLANNER_TRACE` appears in Console Output for planner-routed turns and includes intent/confidence/chosen action metadata.
+32. Send `/policy` and confirm `approvalMode: balanced` (or your configured mode) is reported.
+33. Call `GET /v1/runs?sessionKey=<your-session>&limit=5` and confirm latest run includes phase events (`session`, `directives`, `route`, `persist`, `dispatch`) and run spec metadata.
+34. Call `GET /v1/runs/<runId>` for one run from step 33 and confirm final status/event (`completed` or `failed`) and `runSpec.stepStates` are present.
+35. In `/ui`, use `Run Timeline` controls (`List Runs`, `Run Status`) and confirm step-level statuses render for a selected run id.
+36. Send `/supervise web --providers=searxng,openai compare stable diffusion options` and confirm response includes supervisor id + child count.
+37. Call `GET /v1/supervisors` and `GET /v1/supervisors/<id>` and verify child job statuses move from queued/running to terminal.
+38. Set `WORKER_CONCURRENCY=2`, restart worker, trigger two long web jobs, and confirm both progress concurrently in stream output.
+39. Send `/calendar add <future-iso> dentist appointment`, then `/calendar list`, and confirm the event appears with a stable id.
+40. Send `/calendar cancel <id>` and confirm the event is marked cancelled and no longer listed in `/calendar list`.
+41. Enable file-write policy (`ALFRED_FILE_WRITE_ENABLED=true`), write a workspace file (`/file write notes/share.md hello`), then run `/file send notes/share.md test attachment`; approve if prompted and confirm a file notification is queued/delivered.
+42. Send one natural-language request (WhatsApp or `/ui`) like: `Research the best stable diffusion models and send me a markdown doc`. Approve if prompted, then confirm progress updates arrive and a document attachment is delivered.
+
+Heartbeat Manual Checklist
+1. Open `/ui` and use the Heartbeat section.
+2. Click `Heartbeat Status` and confirm config/runtime fields are populated.
+3. Set `Enabled=true`, `Require idle queue=true`, and click `Heartbeat Save Config`.
+4. Click `Heartbeat Run Now` and verify `HEARTBEAT_RUN` appears in console output with updated runtime counters.
+5. Add one due reminder (`/remind <past ISO> ...`) and click `Heartbeat Run Now`; confirm outcome becomes `alert`.
+6. Click `Heartbeat Run Now` again quickly and confirm identical alert is deduped (outcome `deduped`).
+7. Toggle `Alert auth disconnect` / `Alert WhatsApp disconnect` / `Alert stuck jobs` in Heartbeat settings, save config, and confirm status summary reflects those toggles.
+
+OAuth Manual Checklist
+1. Set `.env` for Codex auth path:
+   - `CODEX_APP_SERVER_ENABLED=true`
+   - `CODEX_AUTH_LOGIN_MODE=chatgpt`
+2. In `/ui`, click OAuth Connect and finish ChatGPT login in the opened browser tab.
+3. Back in `/ui`, click OAuth Status and confirm connected email/plan.
+4. Click Rate Limits and confirm limit usage payload is returned.
+5. Send `/auth status` and `/auth limits` through chat endpoint and confirm responses.
+6. Send a normal chat prompt (not slash command) and verify model output appears (not `ack:`).
+7. Send `/auth disconnect` and verify `/auth status` reports disconnected.
+8. (Optional API key fallback) set `OPENAI_API_KEY`, keep Codex auth disconnected, then send normal chat and verify model output still appears.
+
+Live WhatsApp (Baileys) Manual Checklist
+1. Set `.env` for live WhatsApp:
+   - `WHATSAPP_PROVIDER=baileys`
+   - `WHATSAPP_BAILEYS_AUTO_CONNECT=false`
+   - `WHATSAPP_BAILEYS_AUTH_DIR=./state/whatsapp/baileys_auth`
+   - `WHATSAPP_BAILEYS_INBOUND_TOKEN=<strong-random-token>`
+   - `WHATSAPP_BAILEYS_REQUIRE_PREFIX=/alfred`
+   - (Optional single-number test) `WHATSAPP_BAILEYS_ALLOW_SELF_FROM_ME=true`
+   - (Recommended safety) `WHATSAPP_BAILEYS_ALLOWED_SENDERS=<jid1,jid2>`
+   - `WHATSAPP_BAILEYS_MAX_QR_GENERATIONS=3`
+2. Start gateway + worker and open `/ui`.
+3. Verify source cards (Gateway/Auth/WhatsApp/Memory) populate and update within a few seconds without manual refresh.
+4. Toggle `Log source changes` and confirm source change entries are added to Console Output only when state changes.
+5. Verify `Log interaction stream` shows persisted `STREAM_*` entries for inbound/outbound/system activity.
+6. Confirm interaction stream updates in near real-time without manual refresh (SSE), and still works after network hiccups (poll fallback).
+7. Toggle `Include noisy stream events` and confirm additional `status`/`dedupe` style entries appear/disappear without reconnecting.
+8. Set a mapping under Identity Mapping (`WhatsApp JID -> Auth Session ID`) and verify `/alfred` chat still responds while using mapped auth profile.
+9. Click `Live Status` and confirm API is configured (not 404).
+10. Click `Live Connect`; scan the QR image shown directly in the UI (image is generated by backend live status payload, raw QR is fallback only).
+11. Verify QR/raw panel auto-refreshes without pressing `Live Status` while linking.
+12. If QR rotates more than the configured cap, confirm status shows lock and click `Live Connect` to start a fresh attempt.
+13. Scan QR in WhatsApp Linked Devices and verify `Live Status` shows connected with `meId`.
+14. Send a WhatsApp message from your phone and verify gateway logs show inbound processing.
+   - Message must start with `/alfred ` (example: `/alfred what time is it?`).
+15. Click `Live Status` and verify sync counters move as expected:
+   - `accepted` increases for valid live `/alfred ...` messages.
+   - `ignored` increases for dropped non-live traffic (history/backfill/duplicates).
+16. Trigger a reminder/job update and verify outbound text is delivered to the linked WhatsApp account.
+17. Restart gateway and verify WhatsApp remains linked (no forced logout/relink required).
+18. Click `Live Disconnect` and verify status reports disconnected.
+19. Security check: send `POST /v1/whatsapp/baileys/inbound` without `x-baileys-inbound-token` and confirm 401.
+
+Phase 1 Manual Checklist
+1. Start gateway: pnpm run dev:gateway
+2. Start worker: pnpm run dev:worker
+3. Submit a job:
+   curl -s -X POST http://localhost:3000/v1/jobs \
+     -H 'content-type: application/json' \
+     -d '{"type":"stub_task","payload":{"action":"manual-check"},"priority":5}'
+4. Fetch job until status is succeeded:
+   curl -s http://localhost:3000/v1/jobs/<jobId>
+5. Verify result.summary contains processed:manual-check
+
+Phase 2 Manual Checklist
+1. Post Baileys-style inbound async job:
+   curl -s -X POST http://localhost:3000/v1/whatsapp/baileys/inbound \
+     -H 'content-type: application/json' \
+     -d '{"key":{"id":"manual-1","remoteJid":"owner@s.whatsapp.net"},"message":{"conversation":"/job run phase2"}}'
+2. Send normal chat while job is running:
+   curl -s -X POST http://localhost:3000/v1/messages/inbound \
+     -H 'content-type: application/json' \
+     -d '{"sessionId":"owner@s.whatsapp.net","text":"are you still there?","requestJob":false}'
+3. Verify chat response is immediate and job state eventually succeeds.
+
+Phase 3 Manual Checklist
+1. Add a memory note:
+   curl -s -X POST http://localhost:3000/v1/memory/notes \
+     -H 'content-type: application/json' \
+     -d '{"text":"We chose Baileys and TypeScript for v1."}'
+2. Sync memory:
+   curl -s -X POST http://localhost:3000/v1/memory/sync
+3. Search memory:
+   curl -s "http://localhost:3000/v1/memory/search?q=what+did+we+choose+for+v1"
+4. Confirm results include source citations (`path:start:end`).
+5. Check compaction status:
+   curl -s http://localhost:3000/v1/memory/compaction/status
+6. Run compaction manually for a prior day with conversation activity:
+   curl -s -X POST http://localhost:3000/v1/memory/compaction/run \
+     -H 'content-type: application/json' \
+     -d '{"targetDate":"2026-02-24","force":true}'
+7. Confirm compaction status updates (`lastCompactedDate`) and re-running for current cursor day reports skipped/already processed.
+8. Send a related chat question via `/ui` and confirm response includes `Memory references` lines.
+9. Call `GET /v1/memory/checkpoints/status` and confirm checkpoint counters (`writeCount`, duplicate/day-limit skips) and recent checkpoint entries are present after task/approval/job activity.
+
+Phase 4 Manual Checklist
+1. Prepare a local/allowlisted skill repo with `skill.json` and runnable entrypoint.
+2. Install skill using `SkillInstaller` (dev script/REPL path) pinned to commit SHA.
+3. Run skill using `SkillRunner` with input payload and workspace dir.
+4. Verify success output contract (`output.json`) and structured failure contract (`error.json`).
+5. Confirm non-allowlisted repos and wildcard network manifests are blocked.
+
+Phase 5 Manual Checklist
+1. Add task:
+   curl -s -X POST http://localhost:3000/v1/messages/inbound \
+     -H 'content-type: application/json' \
+     -d '{"sessionId":"owner@s.whatsapp.net","text":"/task add call accountant","requestJob":false}'
+2. List tasks:
+   curl -s -X POST http://localhost:3000/v1/messages/inbound \
+     -H 'content-type: application/json' \
+     -d '{"sessionId":"owner@s.whatsapp.net","text":"/task list","requestJob":false}'
+3. Create reminder:
+   curl -s -X POST http://localhost:3000/v1/messages/inbound \
+     -H 'content-type: application/json' \
+     -d '{"sessionId":"owner@s.whatsapp.net","text":"/remind 2026-02-23T09:00:00Z standup","requestJob":false}'
+4. Add and list notes:
+   - send `/note add Bring medical records`
+   - send `/note list` and verify note appears
+5. Confirm approval gate:
+   send `send <text>` then `approve <token>` and verify approved execution response.
+6. Fail and retry a job:
+   - submit failing job fixture
+   - run `/job retry <jobId>`
+   - confirm new job is queued and completes.
+CHECKLIST

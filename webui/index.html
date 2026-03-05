@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Alfred MVP Console</title>
+    <link rel="stylesheet" href="/ui/styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <aside class="panel">
+        <h1>Alfred Sessions</h1>
+        <div class="row">
+          <input id="session-name" type="text" placeholder="New session name" />
+          <button id="create-session">Create</button>
+        </div>
+        <ul id="session-list"></ul>
+        <div class="status" id="provider-status">Provider status loading...</div>
+      </aside>
+
+      <section class="panel main-panel">
+        <h2>Chat</h2>
+        <div class="row">
+          <label><input id="request-job" type="checkbox" /> Run async</label>
+        </div>
+        <textarea id="message" rows="4" placeholder="Example: Find 50 fintech leads in India"></textarea>
+        <div class="row">
+          <button id="send">Run</button>
+          <span id="run-meta"></span>
+        </div>
+        <pre id="assistant-output"></pre>
+      </section>
+
+      <section class="panel">
+        <h2>Run Timeline</h2>
+        <div class="row">
+          <input id="run-id-input" type="text" placeholder="Run ID" />
+          <button id="load-run">Load</button>
+          <button id="cancel-run">Cancel Run</button>
+          <button id="export-run">Export JSON</button>
+        </div>
+        <pre id="timeline"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="/ui/app.js"></script>
+  </body>
+</html>

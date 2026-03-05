@@ -1,0 +1,11 @@
+.DS_Store
+node_modules/
+dist/
+.env
+workspace/alfred/runs/
+workspace/alfred/artifacts/
+workspace/alfred/debug/
+workspace/alfred/knowledge/
+workspace/alfred/sessions/
+coverage/
+*.log

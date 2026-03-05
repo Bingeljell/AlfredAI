@@ -42,7 +42,10 @@ const searchManager = new SearchManager({
   primaryStartCommand: appConfig.searxngStartCommand || undefined,
   maxResults: appConfig.searchMaxResults,
   startupTimeoutMs: appConfig.searxngStartTimeoutMs,
-  retryIntervalMs: appConfig.searxngRetryIntervalMs
+  retryIntervalMs: appConfig.searxngRetryIntervalMs,
+  primaryHealthRetries: appConfig.searxngHealthRetries,
+  primaryHealthRetryDelayMs: appConfig.searxngHealthRetryDelayMs,
+  primaryHealthGraceMs: appConfig.searxngHealthGraceMs
 });
 
 const chatService = new ChatService({

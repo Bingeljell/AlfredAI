@@ -16,7 +16,10 @@ export const toolDefinition: LeadAgentToolDefinition<typeof SearchStatusToolInpu
       primaryHealthy: status.primaryHealthy,
       fallbackHealthy: status.fallbackHealthy,
       primaryRecoverySupported: status.primaryRecoverySupported,
-      activeDefault: status.activeDefault
+      activeDefault: status.activeDefault,
+      lastPrimaryHealthyAt: status.lastPrimaryHealthyAt,
+      consecutivePrimaryFailures: status.consecutivePrimaryFailures,
+      lastPrimaryFailure: status.lastPrimaryFailure
     };
   }
 };

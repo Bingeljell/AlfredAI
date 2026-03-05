@@ -1,6 +1,7 @@
 import type { LeadCandidate, LeadSizeMatch, LlmUsage, LlmUsageTotals, SearchProviderName, SearchResult } from "../../types.js";
 import type { RunStore } from "../../runs/runStore.js";
 import type { SearchManager } from "../search/searchManager.js";
+import { SearchManagerError } from "../search/searchManager.js";
 import {
   runOpenAiStructuredChat,
   runOpenAiStructuredChatWithDiagnostics,
@@ -217,7 +218,7 @@ export interface LeadSubReactResult {
   effectiveMinConfidence: number;
   relaxedMinConfidence?: number;
   searchFailureCount: number;
-  searchFailureSamples: Array<{ query: string; error: string }>;
+  searchFailureSamples: Array<{ query: string; error: string; stage?: string; provider?: SearchProviderName; transient?: boolean }>;
   browseFailureCount: number;
   browseFailureSamples: Array<{ url: string; error: string }>;
   extractionFailureCount?: number;
@@ -262,6 +263,9 @@ interface SearchOutcomeSuccess {
 interface SearchOutcomeFailure {
   query: string;
   error: string;
+  stage?: string;
+  provider?: SearchProviderName;
+  transient?: boolean;
 }
 
 type SearchOutcome = SearchOutcomeSuccess | SearchOutcomeFailure;
@@ -1289,6 +1293,15 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
           results: searchResponse.results
         };
       } catch (error) {
+        if (error instanceof SearchManagerError) {
+          return {
+            query,
+            error: error.message.slice(0, 220),
+            stage: error.diagnostic.stage,
+            provider: error.diagnostic.provider,
+            transient: error.diagnostic.transient
+          };
+        }
         return {
           query,
           error: error instanceof Error ? error.message.slice(0, 220) : String(error).slice(0, 220)
@@ -1303,7 +1316,13 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   );
   const failedSearches = searchOutcomes
     .filter((outcome): outcome is SearchOutcomeFailure => "error" in outcome)
-    .map((outcome) => ({ query: outcome.query, error: outcome.error }));
+    .map((outcome) => ({
+      query: outcome.query,
+      error: outcome.error,
+      stage: outcome.stage,
+      provider: outcome.provider,
+      transient: outcome.transient
+    }));
 
   const mergedResults = mergeSearchResults(
     successfulSearches.map((item) => item.results),

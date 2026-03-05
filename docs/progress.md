@@ -73,6 +73,7 @@
   - Deterministic shell bounds are now budget-mode-aware: `lead_pipeline` action inputs are clamped differently for `normal`, `conserve`, and `emergency`, enabling constrained late-budget passes instead of prematurely terminating at a high fixed threshold.
   - Email-enrichment prioritization is now planner-driven: the lead tool accepts `runEmailEnrichment`, sub-pipeline honors planner skip directives, and planner context/prompt includes low-budget high-deficit hints so enrichment-vs-discovery tradeoffs remain agentic.
   - Final summaries now include a budget snapshot (mode + percent/absolute remaining time, tool, planner, and LLM headroom), and timeline stop events render this snapshot for easier budget-behavior analysis.
+  - Diminishing-return stop behavior is now yield-aware (diagnostic actions no longer count as low-yield attempts), and planner context now carries a compact recent-performance summary (`yieldAttempts`, `yieldAdded`, `yieldZeroStreak`, failure counters) to reduce repeated ineffective retries.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Additional resiliency and production hardening tasks remain for later iterations.

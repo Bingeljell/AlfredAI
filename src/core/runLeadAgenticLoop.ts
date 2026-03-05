@@ -25,6 +25,7 @@ interface LeadAgentObservation {
   iteration: number;
   actionType: "single" | "parallel";
   toolNames: string[];
+  yieldRelevant: boolean;
   newLeadCount: number;
   totalLeadCount: number;
   failedToolCount: number;
@@ -375,7 +376,8 @@ export const plannerFailureGuardrailsForTests = {
 };
 
 export const plannerContextForTests = {
-  buildPastActionsSummary
+  buildPastActionsSummary,
+  buildRecentPerformanceSummary
 };
 
 function summarizeToolResult(result: ToolRunResult): string {
@@ -420,6 +422,12 @@ function summarizeToolResult(result: ToolRunResult): string {
   }
 
   return `${result.tool} ok`;
+}
+
+const YIELD_TOOL_NAMES = new Set(["lead_pipeline"]);
+
+function isYieldRelevantAction(calls: Array<{ tool: string }>): boolean {
+  return calls.some((call) => YIELD_TOOL_NAMES.has(call.tool));
 }
 
 function summarizeLeadPipelineInput(input: Record<string, unknown>): string {
@@ -493,6 +501,29 @@ function buildPastActionsSummary(observations: LeadAgentObservation[], maxChars 
   }
 
   return output;
+}
+
+function buildRecentPerformanceSummary(observations: LeadAgentObservation[], threshold: number): string {
+  const recent = observations.slice(-6);
+  const yieldRelevant = recent.filter((item) => item.yieldRelevant);
+  const diagnostics = recent.filter((item) => !item.yieldRelevant);
+  const totalYieldAdded = yieldRelevant.reduce((sum, item) => sum + item.newLeadCount, 0);
+  const zeroYieldStreak = yieldRelevant
+    .slice()
+    .reverse()
+    .findIndex((item) => item.newLeadCount >= threshold);
+  const normalizedZeroYieldStreak = zeroYieldStreak === -1 ? yieldRelevant.length : zeroYieldStreak;
+  const searchFailures = recent.reduce((sum, item) => sum + item.searchFailureCount, 0);
+  const extractionFailures = recent.reduce((sum, item) => sum + item.extractionFailureCount, 0);
+
+  return [
+    `yieldAttempts=${yieldRelevant.length}`,
+    `yieldAdded=${totalYieldAdded}`,
+    `diagnosticActions=${diagnostics.length}`,
+    `yieldZeroStreak=${normalizedZeroYieldStreak}`,
+    `searchFailures=${searchFailures}`,
+    `extractionFailures=${extractionFailures}`
+  ].join(", ");
 }
 
 function readNumber(value: unknown): number {
@@ -614,11 +645,12 @@ function buildDeterministicAssistantSummary(args: {
 }
 
 function computeDiminishingReturns(history: LeadAgentObservation[], threshold: number): boolean {
-  if (history.length < 2) {
+  const yieldHistory = history.filter((item) => item.yieldRelevant);
+  if (yieldHistory.length < 2) {
     return false;
   }
 
-  const lastTwo = history.slice(-2);
+  const lastTwo = yieldHistory.slice(-2);
   return lastTwo.every((item) => item.newLeadCount < threshold);
 }
 
@@ -705,6 +737,10 @@ export const budgetGuardrailsForTests = {
   applyLeadPipelineTimeBudget,
   MIN_LEAD_PIPELINE_START_MS,
   leadPipelineBoundsForMode
+};
+
+export const diminishingReturnsForTests = {
+  computeDiminishingReturns
 };
 
 function highDeficitThreshold(requestedLeadCount: number): number {
@@ -863,6 +899,7 @@ async function decidePlannerAction(
 
   const lastObservations = observations.slice(-options.observationWindow);
   const pastActionsSummary = buildPastActionsSummary(lastObservations);
+  const recentPerformanceSummary = buildRecentPerformanceSummary(lastObservations, options.diminishingThreshold);
   const leadDeficit = Math.max(0, state.requestedLeadCount - state.leads.length);
   const emailStrategyHint =
     budgetSnapshot.mode === "normal"
@@ -896,7 +933,7 @@ async function decidePlannerAction(
         {
           role: "system",
           content:
-            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, hadLlmBudgetExhausted) and a capped pastActionsSummary. React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. If failedToolCount > 0 across recent observations, your thought must acknowledge that failure signal before choosing the next action. Budget mode is dynamic: when budgetMode is conserve or emergency, prioritize high-yield/low-cost actions (search_status/search) before deep full-pipeline runs; use smaller lead_pipeline inputs and avoid expensive retries unless signal quality is high. For lead_pipeline actions, you may set runEmailEnrichment=false when budget is constrained and lead deficit remains high. Use pastActionsSummary to avoid repeating low-yield actions with identical inputs. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
+            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, hadLlmBudgetExhausted), a capped pastActionsSummary, and recentPerformanceSummary. React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. If failedToolCount > 0 across recent observations, your thought must acknowledge that failure signal before choosing the next action. Budget mode is dynamic: when budgetMode is conserve or emergency, prioritize high-yield/low-cost actions (search_status/search) before deep full-pipeline runs; use smaller lead_pipeline inputs and avoid expensive retries unless signal quality is high. For lead_pipeline actions, you may set runEmailEnrichment=false when budget is constrained and lead deficit remains high. Use pastActionsSummary and recentPerformanceSummary to avoid repeating low-yield actions with nearly identical inputs. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
         },
         {
           role: "user",
@@ -914,7 +951,8 @@ async function decidePlannerAction(
             tools: availableTools,
             recentObservations: lastObservations,
             aggregateFailures,
-            pastActionsSummary
+            pastActionsSummary,
+            recentPerformanceSummary
           })
         }
       ]
@@ -1409,6 +1447,7 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       iteration,
       actionType: action.type,
       toolNames: calls.map((item) => item.tool),
+      yieldRelevant: isYieldRelevantAction(calls),
       newLeadCount,
       totalLeadCount: state.leads.length,
       failedToolCount,

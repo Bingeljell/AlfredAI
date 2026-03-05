@@ -1,7 +1,27 @@
 # Alfred v1
 
-Alfred is a local-first AI agent for lead generation.  
-Current focus: find USA SI/MSP companies, enrich them (including emails when available), and export usable CSV artifacts with full run timelines.
+![Alfred Masthead](assets/alfred_masthead.jpg)
+
+There is no Batman without Alfred. 
+
+## Long-Term Vision
+
+Alfred is intended to become a true personal second brain: a reliable agent that can reason, act, remember context over time, and execute across many workflows (research, outreach, writing, planning, operations, and more).
+
+The target end-state is not a single-purpose bot, but an always-on execution layer that can run practical tasks end-to-end with transparent logs, controlled guardrails, and durable memory.
+
+To begin with, Alfred is a local-first AI agent for lead generation. 
+
+## Why Lead Gen First
+
+Lead generation is the initial focused wedge. It gives a measurable, high-value workflow where we can validate real-world outcomes quickly:
+
+- lead quality
+- email coverage
+- cost per lead
+- reliability under real run budgets
+
+Once this workflow is consistently strong, Alfred expands outward into broader general-purpose second-brain capabilities.
 
 ## What Alfred Does Today
 

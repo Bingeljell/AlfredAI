@@ -1,5 +1,7 @@
 # Alfred v1
 
+![Alfred Masthead](assets/alfred_masthead.jpg)
+
 Alfred is a local-first AI agent for lead generation.  
 Current focus: find USA SI/MSP companies, enrich them (including emails when available), and export usable CSV artifacts with full run timelines.
 

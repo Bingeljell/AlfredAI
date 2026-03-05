@@ -612,10 +612,63 @@ function computeDiminishingReturns(history: LeadAgentObservation[], threshold: n
   return lastTwo.every((item) => item.newLeadCount < threshold);
 }
 
-const MIN_LEAD_PIPELINE_START_MS = 90_000;
+interface LeadPipelineModeBounds {
+  maxPages: number;
+  llmMaxCalls: number;
+  browseConcurrency: number;
+  extractionBatchSize: number;
+}
 
-function applyLeadPipelineTimeBudget(input: Record<string, unknown>, remainingMs: number): Record<string, unknown> {
+const MIN_LEAD_PIPELINE_START_MS = 20_000;
+
+function leadPipelineBoundsForMode(mode: BudgetMode): LeadPipelineModeBounds {
+  if (mode === "emergency") {
+    return {
+      maxPages: 5,
+      llmMaxCalls: 3,
+      browseConcurrency: 2,
+      extractionBatchSize: 2
+    };
+  }
+  if (mode === "conserve") {
+    return {
+      maxPages: 12,
+      llmMaxCalls: 6,
+      browseConcurrency: 3,
+      extractionBatchSize: 3
+    };
+  }
+  return {
+    maxPages: 25,
+    llmMaxCalls: 12,
+    browseConcurrency: 6,
+    extractionBatchSize: 6
+  };
+}
+
+function applyLeadPipelineTimeBudget(
+  input: Record<string, unknown>,
+  remainingMs: number,
+  mode: BudgetMode
+): Record<string, unknown> {
   const adjusted = { ...input };
+  const modeBounds = leadPipelineBoundsForMode(mode);
+
+  const clampByMode = () => {
+    const maxPages = typeof adjusted.maxPages === "number" ? adjusted.maxPages : modeBounds.maxPages;
+    adjusted.maxPages = Math.min(modeBounds.maxPages, Math.max(1, Math.round(maxPages)));
+    const llmMaxCalls = typeof adjusted.llmMaxCalls === "number" ? adjusted.llmMaxCalls : modeBounds.llmMaxCalls;
+    adjusted.llmMaxCalls = Math.min(modeBounds.llmMaxCalls, Math.max(1, Math.round(llmMaxCalls)));
+    const browseConcurrency =
+      typeof adjusted.browseConcurrency === "number" ? adjusted.browseConcurrency : modeBounds.browseConcurrency;
+    adjusted.browseConcurrency = Math.min(modeBounds.browseConcurrency, Math.max(1, Math.round(browseConcurrency)));
+    const extractionBatchSize =
+      typeof adjusted.extractionBatchSize === "number" ? adjusted.extractionBatchSize : modeBounds.extractionBatchSize;
+    adjusted.extractionBatchSize = Math.min(modeBounds.extractionBatchSize, Math.max(1, Math.round(extractionBatchSize)));
+  };
+
+  clampByMode();
+
   if (remainingMs < 180_000) {
     const maxPages = typeof adjusted.maxPages === "number" ? adjusted.maxPages : 12;
     adjusted.maxPages = Math.min(12, Math.max(1, Math.round(maxPages)));
@@ -634,12 +687,14 @@ function applyLeadPipelineTimeBudget(input: Record<string, unknown>, remainingMs
     adjusted.llmMaxCalls = Math.min(3, Math.max(1, Math.round(llmMaxCalls)));
   }
 
+  clampByMode();
   return adjusted;
 }
 
 export const budgetGuardrailsForTests = {
   applyLeadPipelineTimeBudget,
-  MIN_LEAD_PIPELINE_START_MS
+  MIN_LEAD_PIPELINE_START_MS,
+  leadPipelineBoundsForMode
 };
 
 function highDeficitThreshold(requestedLeadCount: number): number {
@@ -1211,7 +1266,7 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       const withDefaults = applyLeadPipelineActionDefaults(call.input, iteration, state.requestedLeadCount, state.leads.length);
       return {
         ...call,
-        input: applyLeadPipelineTimeBudget(withDefaults, remainingMsForCall)
+        input: applyLeadPipelineTimeBudget(withDefaults, remainingMsForCall, budgetSnapshotBeforeAction.mode)
       };
     });
     if (calls.length === 0) {

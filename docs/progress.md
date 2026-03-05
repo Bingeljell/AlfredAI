@@ -70,6 +70,7 @@
   - Timeline display is now thought-first and less noisy: planner action payload expansions and trailing raw JSON dumps were removed from the default view to keep run monitoring focused on meaningful progress/failure lines.
   - Agent loop now maintains dynamic budget modes (`normal`, `conserve`, `emergency`) with anti-thrashing hysteresis, emits explicit budget-mode-change events, and gives the planner budget snapshot context so low-budget replans can prefer cheaper/high-yield actions.
   - Planner context now includes a capped `pastActionsSummary` memory block (recent tool choices + outcomes + key inputs) to improve replan quality while keeping context bounded and avoiding runaway prompt growth.
+  - Deterministic shell bounds are now budget-mode-aware: `lead_pipeline` action inputs are clamped differently for `normal`, `conserve`, and `emergency`, enabling constrained late-budget passes instead of prematurely terminating at a high fixed threshold.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Additional resiliency and production hardening tasks remain for later iterations.

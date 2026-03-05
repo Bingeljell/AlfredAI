@@ -9,6 +9,7 @@ export const LeadPipelineToolInputSchema = z.object({
   extractionBatchSize: z.number().int().min(1).max(6).optional(),
   llmMaxCalls: z.number().int().min(1).max(20).optional(),
   minConfidence: z.number().min(0).max(1).optional(),
+  runEmailEnrichment: z.boolean().optional(),
   filters: LeadPipelineFiltersSchema.optional()
 });
 
@@ -33,6 +34,7 @@ export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInpu
       extractionBatchSize: input.extractionBatchSize ?? context.defaults.subReactBatchSize,
       llmMaxCalls: input.llmMaxCalls ?? context.defaults.subReactLlmMaxCalls,
       minConfidence: input.minConfidence ?? context.defaults.subReactMinConfidence,
+      runEmailEnrichment: input.runEmailEnrichment,
       filters: normalizedFilters,
       deadlineAtMs: context.deadlineAtMs,
       isCancellationRequested: context.isCancellationRequested

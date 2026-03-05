@@ -6,6 +6,7 @@ import { normalizeLeadPipelineFilters } from "../../src/tools/lead/filters.js";
 test("lead pipeline input schema accepts filters payload", () => {
   const parsed = LeadPipelineToolInputSchema.parse({
     maxPages: 12,
+    runEmailEnrichment: false,
     filters: {
       employeeCountMax: 50,
       country: "USA",
@@ -15,6 +16,7 @@ test("lead pipeline input schema accepts filters payload", () => {
   });
 
   assert.equal(parsed.maxPages, 12);
+  assert.equal(parsed.runEmailEnrichment, false);
   assert.equal(parsed.filters?.employeeCountMax, 50);
   assert.equal(parsed.filters?.country, "USA");
   assert.equal(parsed.filters?.requireEmail, true);

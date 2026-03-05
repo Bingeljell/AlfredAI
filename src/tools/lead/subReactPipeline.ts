@@ -186,6 +186,7 @@ interface LeadSubReactOptions {
   extractionBatchSize: number;
   llmMaxCalls: number;
   minConfidence: number;
+  runEmailEnrichment?: boolean;
   filters?: NormalizedLeadPipelineFilters;
   deadlineAtMs?: number;
   isCancellationRequested?: () => Promise<boolean>;
@@ -1422,13 +1423,27 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   }
 
   const emailTargets = buildEmailEnrichmentTargets(extractedLeads, requestedLeadCount);
+  const shouldRunEmailEnrichment = options.runEmailEnrichment ?? true;
   await emitStep(options.runStore, options.runId, options.sessionId, "email_enrichment", {
     status: "started",
     candidateLeadCount: emailTargets.length,
-    skippedForTimeout: hasTimedOut(options)
+    skippedForTimeout: hasTimedOut(options),
+    skippedByPlanner: !shouldRunEmailEnrichment
   });
 
-  const emailEnrichment = hasTimedOut(options)
+  const emailEnrichment = !shouldRunEmailEnrichment
+    ? {
+        attempted: false,
+        candidateLeadCount: emailTargets.length,
+        candidateUrlCount: 0,
+        urlCap: 0,
+        pagesVisited: 0,
+        updatedLeadCount: 0,
+        failureCount: 0,
+        failureSamples: [],
+        stoppedEarlyReason: "planner_disabled_email_enrichment"
+      }
+    : hasTimedOut(options)
     ? {
         attempted: false,
         candidateLeadCount: emailTargets.length,
@@ -1452,7 +1467,8 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     updatedLeadCount: emailEnrichment.updatedLeadCount,
     failureCount: emailEnrichment.failureCount,
     failureSamples: emailEnrichment.failureSamples,
-    stoppedEarlyReason: emailEnrichment.stoppedEarlyReason
+    stoppedEarlyReason: emailEnrichment.stoppedEarlyReason,
+    skippedByPlanner: !shouldRunEmailEnrichment
   });
 
   await emitStep(options.runStore, options.runId, options.sessionId, "quality_gate", {

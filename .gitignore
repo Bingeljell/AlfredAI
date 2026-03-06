@@ -7,6 +7,5 @@ workspace/alfred/artifacts/
 workspace/alfred/debug/
 workspace/alfred/knowledge/
 workspace/alfred/sessions/
-debug/
 coverage/
 *.log

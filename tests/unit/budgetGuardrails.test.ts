@@ -38,6 +38,8 @@ test("mode bounds clamp lead pipeline aggressively in emergency mode", () => {
   assert.equal(adjusted.extractionBatchSize, 2);
 });
 
-test("minimum safe lead_pipeline start threshold is 20s", () => {
-  assert.equal(budgetGuardrailsForTests.MIN_LEAD_PIPELINE_START_MS, 20_000);
+test("minimum safe lead_pipeline start threshold adapts by budget mode", () => {
+  assert.equal(budgetGuardrailsForTests.minLeadPipelineStartMsForMode("normal"), 30_000);
+  assert.equal(budgetGuardrailsForTests.minLeadPipelineStartMsForMode("conserve"), 15_000);
+  assert.equal(budgetGuardrailsForTests.minLeadPipelineStartMsForMode("emergency"), 5_000);
 });

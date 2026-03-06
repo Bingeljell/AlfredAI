@@ -1,5 +1,6 @@
 # Changelog
 
+- **2026-03-06** > src/core/runLeadAgenticLoop.ts, tests/unit/budgetGuardrails.test.ts, tests/unit/plannerFailureGuardrails.test.ts > `minLeadPipelineStartMsForMode`, planner low-time guidance, observation token tracking > Replaced fixed lead-pipeline start guardrail with budget-mode thresholds (`normal=30s`, `conserve=15s`, `emergency=5s`), added planner instruction to prefer lightweight/stop actions when `<60s` remain, and completed observation/test wiring for per-action LLM token tracking.
 - **2026-03-03** > package.json, tsconfig.json, .env.example, .gitignore > `scripts`, compiler config, env contract > Bootstrapped the Alfred MVP TypeScript project with runnable gateway/test scripts, strict config, and environment-driven runtime settings.
 - **2026-03-03** > src/core/runReActLoop.ts, src/services/chatService.ts, src/core/approvalPolicy.ts > `runReActLoop`, `handleTurn`, `evaluateApprovalNeed` > Implemented the core ReAct execution loop, async/inline turn handling, and policy-aware approval gating.
 - **2026-03-03** > src/gateway/app.ts, src/gateway/server.ts > route handlers for `/v1/sessions`, `/v1/chat/turn`, `/v1/runs`, `/v1/runs/:runId`, `/v1/runs/:runId/export`, `/v1/providers/status` > Added Hono gateway APIs for sessions, chat turns, run timelines, provider health, and redacted debug export.

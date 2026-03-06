@@ -26,6 +26,7 @@ interface LeadAgentObservation {
   actionType: "single" | "parallel";
   toolNames: string[];
   yieldRelevant: boolean;
+  llmTokensUsed: number;
   newLeadCount: number;
   totalLeadCount: number;
   failedToolCount: number;
@@ -47,6 +48,13 @@ interface BudgetSnapshot {
   plannerCallRatio: number;
   llmCallsRemaining: number;
   llmCallRatio: number;
+}
+
+interface YieldSignal {
+  status: "ok" | "low" | "insufficient";
+  averageLeadsPer1kTokens: number;
+  sampleCount: number;
+  threshold: number;
 }
 
 interface SingleAction {
@@ -719,7 +727,15 @@ interface LeadPipelineModeBounds {
   extractionBatchSize: number;
 }
 
-const MIN_LEAD_PIPELINE_START_MS = 20_000;
+function minLeadPipelineStartMsForMode(mode: BudgetMode): number {
+  if (mode === "emergency") {
+    return 5_000;
+  }
+  if (mode === "conserve") {
+    return 15_000;
+  }
+  return 30_000;
+}
 
 function leadPipelineBoundsForMode(mode: BudgetMode): LeadPipelineModeBounds {
   if (mode === "emergency") {
@@ -793,7 +809,7 @@ function applyLeadPipelineTimeBudget(
 
 export const budgetGuardrailsForTests = {
   applyLeadPipelineTimeBudget,
-  MIN_LEAD_PIPELINE_START_MS,
+  minLeadPipelineStartMsForMode,
   leadPipelineBoundsForMode
 };
 
@@ -991,7 +1007,7 @@ async function decidePlannerAction(
         {
           role: "system",
           content:
-            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, hadLlmBudgetExhausted), a capped pastActionsSummary, and recentPerformanceSummary. React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. If failedToolCount > 0 across recent observations, your thought must acknowledge that failure signal before choosing the next action. Budget mode is dynamic: when budgetMode is conserve or emergency, prioritize high-yield/low-cost actions (search_status/search) before deep full-pipeline runs; use smaller lead_pipeline inputs and avoid expensive retries unless signal quality is high. For lead_pipeline actions, you may set runEmailEnrichment=false when budget is constrained and lead deficit remains high. Use pastActionsSummary and recentPerformanceSummary to avoid repeating low-yield actions with nearly identical inputs. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
+            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, hadLlmBudgetExhausted), a capped pastActionsSummary, and recentPerformanceSummary. React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. If failedToolCount > 0 across recent observations, your thought must acknowledge that failure signal before choosing the next action. Budget mode is dynamic: when budgetMode is conserve or emergency, prioritize high-yield/low-cost actions (search_status/search) before deep full-pipeline runs; use smaller lead_pipeline inputs and avoid expensive retries unless signal quality is high. If budget.remainingMs < 60000, prefer lightweight diagnostic/retrieval actions or stop instead of launching heavy pipelines. For lead_pipeline actions, you may set runEmailEnrichment=false when budget is constrained and lead deficit remains high. Use pastActionsSummary and recentPerformanceSummary to avoid repeating low-yield actions with nearly identical inputs. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
         },
         {
           role: "user",
@@ -1346,9 +1362,10 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
 
     const budgetSnapshotBeforeAction = computeBudgetSnapshot("pre_action");
     const remainingMsBeforeAction = budgetSnapshotBeforeAction.remainingMs;
+    const minLeadPipelineStartMs = minLeadPipelineStartMsForMode(budgetSnapshotBeforeAction.mode);
     const actionIncludesLeadPipeline =
       action.type === "single" ? action.tool === "lead_pipeline" : action.tools.some((item) => item.tool === "lead_pipeline");
-    if (actionIncludesLeadPipeline && remainingMsBeforeAction < MIN_LEAD_PIPELINE_START_MS) {
+    if (actionIncludesLeadPipeline && remainingMsBeforeAction < minLeadPipelineStartMs) {
       await options.runStore.appendEvent({
         runId: options.runId,
         sessionId: options.sessionId,
@@ -1357,7 +1374,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
         payload: {
           iteration,
           remainingMs: remainingMsBeforeAction,
-          minLeadPipelineStartMs: MIN_LEAD_PIPELINE_START_MS,
+          minLeadPipelineStartMs,
+          budgetMode: budgetSnapshotBeforeAction.mode,
           budgetSnapshot: budgetSnapshotBeforeAction
         },
         timestamp: nowIso()
@@ -1367,7 +1385,7 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
         explanation: `Stopped before starting a new lead pipeline pass because remaining budget (${Math.max(
           0,
           remainingMsBeforeAction
-        )}ms) was below safe threshold (${MIN_LEAD_PIPELINE_START_MS}ms).`
+        )}ms) was below ${budgetSnapshotBeforeAction.mode} mode threshold (${minLeadPipelineStartMs}ms).`
       };
       break;
     }
@@ -1517,12 +1535,17 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
     const newLeadCount = state.leads.length - leadsBefore;
     const failedToolCount = results.filter((result) => result.status === "error").length;
     const signals = extractObservationSignals(results);
+    const llmTokensUsed = results.reduce((sum, result) => {
+      const usage = normalizeLlmUsage(result.output?.llmUsage);
+      return sum + (usage?.totalTokens ?? 0);
+    }, 0);
 
     const observation: LeadAgentObservation = {
       iteration,
       actionType: action.type,
       toolNames: calls.map((item) => item.tool),
       yieldRelevant: isYieldRelevantAction(calls),
+      llmTokensUsed,
       newLeadCount,
       totalLeadCount: state.leads.length,
       failedToolCount,

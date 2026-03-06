@@ -1628,10 +1628,14 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       }
       const remainingMsForCall = Math.max(0, deadlineAtMs - Date.now());
       const withDefaults = applyLeadPipelineActionDefaults(call.input, iteration, state.requestedLeadCount, state.leads.length);
+      const withSoftStop = {
+        ...withDefaults,
+        softStopRemainingMs: minLeadPipelineStartMsForMode(budgetSnapshotBeforeAction.mode)
+      };
       return {
         ...call,
         input: applyLeadPipelineTimeBudget(
-          withDefaults,
+          withSoftStop,
           remainingMsForCall,
           budgetSnapshotBeforeAction.mode,
           expectedLlmCapThisIteration

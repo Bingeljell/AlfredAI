@@ -186,6 +186,7 @@ interface LeadSubReactOptions {
   browseConcurrency: number;
   extractionBatchSize: number;
   llmMaxCalls: number;
+  softStopRemainingMs?: number;
   minConfidence: number;
   runEmailEnrichment?: boolean;
   filters?: NormalizedLeadPipelineFilters;
@@ -199,6 +200,7 @@ export interface LeadSubReactResult {
   timedOut?: boolean;
   llmCallsUsed: number;
   llmCallsRemaining: number;
+  stoppedEarlyReason?: string;
   requestedLeadCount: number;
   rawCandidateCount: number;
   validatedCandidateCount: number;
@@ -846,6 +848,15 @@ function hasTimedOut(options: LeadSubReactOptions): boolean {
   return typeof remaining === "number" ? remaining <= 0 : false;
 }
 
+function isSoftStopTriggered(options: LeadSubReactOptions): boolean {
+  const threshold = options.softStopRemainingMs;
+  if (typeof threshold !== "number" || !Number.isFinite(threshold) || threshold <= 0) {
+    return false;
+  }
+  const remaining = remainingDeadlineMs(options);
+  return typeof remaining === "number" ? remaining <= threshold : false;
+}
+
 async function emitStep(
   runStore: RunStore,
   runId: string,
@@ -1396,14 +1407,21 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   const extractionFailureSamples: Array<{ batchIndex: number; reason: string }> = [];
   let cancelledDuringExtraction = false;
   let timedOutDuringExtraction = false;
+  let stoppedEarlyReason: string | undefined;
 
   for (let index = 0; index < batches.length; index += 1) {
     if (hasTimedOut(options)) {
       timedOutDuringExtraction = true;
+      stoppedEarlyReason = "deadline_exhausted";
       break;
     }
     if (await isCancelled(options)) {
       cancelledDuringExtraction = true;
+      stoppedEarlyReason = "cancelled";
+      break;
+    }
+    if (isSoftStopTriggered(options)) {
+      stoppedEarlyReason = "low_remaining_budget";
       break;
     }
     const batch = batches[index];
@@ -1441,12 +1459,25 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     });
   }
 
+  if (stoppedEarlyReason && !cancelledDuringExtraction && !timedOutDuringExtraction) {
+    await emitStep(options.runStore, options.runId, options.sessionId, "extraction", {
+      status: "stopped_early",
+      reason: stoppedEarlyReason,
+      extractedCount: extractedLeads.length,
+      totalBatches: batches.length,
+      llmCallsUsed: budget.used,
+      llmCallsRemaining: budget.remaining,
+      remainingMs: remainingDeadlineMs(options)
+    });
+  }
+
   const emailTargets = buildEmailEnrichmentTargets(extractedLeads, requestedLeadCount);
   const shouldRunEmailEnrichment = options.runEmailEnrichment ?? true;
   await emitStep(options.runStore, options.runId, options.sessionId, "email_enrichment", {
     status: "started",
     candidateLeadCount: emailTargets.length,
     skippedForTimeout: hasTimedOut(options),
+    skippedForSoftStop: isSoftStopTriggered(options) || stoppedEarlyReason === "low_remaining_budget",
     skippedByPlanner: !shouldRunEmailEnrichment
   });
 
@@ -1461,6 +1492,18 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
         failureCount: 0,
         failureSamples: [],
         stoppedEarlyReason: "planner_disabled_email_enrichment"
+      }
+    : isSoftStopTriggered(options) || stoppedEarlyReason === "low_remaining_budget"
+    ? {
+        attempted: false,
+        candidateLeadCount: emailTargets.length,
+        candidateUrlCount: 0,
+        urlCap: 0,
+        pagesVisited: 0,
+        updatedLeadCount: 0,
+        failureCount: 0,
+        failureSamples: [],
+        stoppedEarlyReason: "low_remaining_budget"
       }
     : hasTimedOut(options)
     ? {
@@ -1516,6 +1559,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   gated.emailEnrichmentFailureSamples = emailEnrichment.failureSamples;
   gated.emailEnrichmentUrlCap = emailEnrichment.urlCap;
   gated.emailEnrichmentStoppedEarlyReason = emailEnrichment.stoppedEarlyReason;
+  gated.stoppedEarlyReason = stoppedEarlyReason ?? emailEnrichment.stoppedEarlyReason;
   gated.emailRequested = emailRequested;
   gated.cancelled = cancelledDuringExtraction || (await isCancelled(options));
   gated.timedOut = timedOutDuringExtraction || hasTimedOut(options);
@@ -1537,6 +1581,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     extractionFailureCount: gated.extractionFailureCount,
     extractionFailureSamples: gated.extractionFailureSamples,
     timedOut: gated.timedOut,
+    stoppedEarlyReason: gated.stoppedEarlyReason,
     emailLeadCount: gated.emailLeadCount,
     emailCoverageRatio: gated.emailCoverageRatio,
     emailEnrichmentUpdatedCount: gated.emailEnrichmentUpdatedCount,

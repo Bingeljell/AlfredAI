@@ -8,6 +8,7 @@ export const LeadPipelineToolInputSchema = z.object({
   browseConcurrency: z.number().int().min(1).max(6).optional(),
   extractionBatchSize: z.number().int().min(1).max(6).optional(),
   llmMaxCalls: z.number().int().min(1).max(20).optional(),
+  softStopRemainingMs: z.number().int().min(0).max(120_000).optional(),
   minConfidence: z.number().min(0).max(1).optional(),
   runEmailEnrichment: z.boolean().optional(),
   filters: LeadPipelineFiltersSchema.optional()
@@ -33,6 +34,7 @@ export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInpu
       browseConcurrency: input.browseConcurrency ?? context.defaults.subReactBrowseConcurrency,
       extractionBatchSize: input.extractionBatchSize ?? context.defaults.subReactBatchSize,
       llmMaxCalls: input.llmMaxCalls ?? context.defaults.subReactLlmMaxCalls,
+      softStopRemainingMs: input.softStopRemainingMs,
       minConfidence: input.minConfidence ?? context.defaults.subReactMinConfidence,
       runEmailEnrichment: input.runEmailEnrichment,
       filters: normalizedFilters,
@@ -57,6 +59,7 @@ export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInpu
       llmCallsUsed: outcome.llmCallsUsed,
       llmCallsRemaining: outcome.llmCallsRemaining,
       llmUsage: outcome.llmUsage,
+      stoppedEarlyReason: outcome.stoppedEarlyReason,
       sizeRangeRequested: outcome.sizeRangeRequested,
       sizeMatchBreakdown: outcome.sizeMatchBreakdown,
       relaxModeApplied: outcome.relaxModeApplied,

@@ -30,10 +30,10 @@ const EnvSchema = z.object({
   ALFRED_SUBREACT_BATCH_SIZE: z.coerce.number().int().min(1).max(6).default(4),
   ALFRED_SUBREACT_LLM_MAX_CALLS: z.coerce.number().int().min(1).max(20).default(6),
   ALFRED_SUBREACT_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.6),
-  ALFRED_AGENT_MAX_DURATION_MS: z.coerce.number().int().min(60000).max(900000).default(240000),
+  ALFRED_AGENT_MAX_DURATION_MS: z.coerce.number().int().min(60000).max(900000).default(600000),
   ALFRED_AGENT_MAX_TOOL_CALLS: z.coerce.number().int().min(3).max(60).default(18),
   ALFRED_AGENT_MAX_PARALLEL_TOOLS: z.coerce.number().int().min(1).max(5).default(3),
-  ALFRED_AGENT_PLANNER_MAX_CALLS: z.coerce.number().int().min(1).max(30).default(6),
+  ALFRED_AGENT_PLANNER_MAX_CALLS: z.coerce.number().int().min(1).max(30).default(10),
   ALFRED_AGENT_OBSERVATION_WINDOW: z.coerce.number().int().min(3).max(20).default(8),
   ALFRED_AGENT_DIMINISHING_THRESHOLD: z.coerce.number().int().min(1).max(10).default(2)
 });

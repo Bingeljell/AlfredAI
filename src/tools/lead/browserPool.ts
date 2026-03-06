@@ -75,20 +75,20 @@ export class BrowserPool {
     if (deadlineAtMs && Date.now() >= deadlineAtMs) {
       throw new Error("deadline_exceeded_before_navigation");
     }
-    const networkIdleTimeoutMs = computeNavigationTimeout(25000, deadlineAtMs, 1500);
-    const domContentLoadedTimeoutMs = computeNavigationTimeout(20000, deadlineAtMs, 500);
+    const domContentLoadedTimeoutMs = computeNavigationTimeout(14000, deadlineAtMs, 800);
+    const networkIdleTimeoutMs = computeNavigationTimeout(22000, deadlineAtMs, 1200);
 
     try {
-      await page.goto(url, { timeout: networkIdleTimeoutMs, waitUntil: "networkidle" });
+      await page.goto(url, { timeout: domContentLoadedTimeoutMs, waitUntil: "domcontentloaded" });
       return;
     } catch (primaryError) {
       try {
-        await page.goto(url, { timeout: domContentLoadedTimeoutMs, waitUntil: "domcontentloaded" });
+        await page.goto(url, { timeout: networkIdleTimeoutMs, waitUntil: "networkidle" });
         return;
       } catch (secondaryError) {
         const first = primaryError instanceof Error ? primaryError.message : String(primaryError);
         const second = secondaryError instanceof Error ? secondaryError.message : String(secondaryError);
-        throw new Error(`goto_failed networkidle="${first.slice(0, 140)}" domcontentloaded="${second.slice(0, 140)}"`);
+        throw new Error(`goto_failed domcontentloaded="${first.slice(0, 140)}" networkidle="${second.slice(0, 140)}"`);
       }
     }
   }

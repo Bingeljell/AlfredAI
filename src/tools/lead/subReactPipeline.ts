@@ -13,6 +13,7 @@ import { ExtractedLeadBatchSchema, QueryExpansionSchema, type ExtractedLead } fr
 import { LlmBudgetManager } from "./llmBudget.js";
 import { parseRequestedLeadCount } from "./requestIntent.js";
 import type { NormalizedLeadPipelineFilters } from "./filters.js";
+import { load as loadHtml } from "cheerio";
 
 const QUERY_EXPANSION_JSON_SCHEMA = {
   type: "object",
@@ -232,6 +233,8 @@ export interface LeadSubReactResult {
   emailEnrichmentFailureCount?: number;
   emailEnrichmentFailureSamples?: Array<{ url: string; error: string }>;
   emailEnrichmentUrlCap?: number;
+  emailEnrichmentQuickScanAttempts?: number;
+  emailEnrichmentQuickScanHits?: number;
   emailEnrichmentStoppedEarlyReason?: string;
   emailRequested?: boolean;
   llmUsage: LlmUsageTotals;
@@ -286,6 +289,8 @@ interface EmailEnrichmentResult {
   updatedLeadCount: number;
   failureCount: number;
   failureSamples: Array<{ url: string; error: string }>;
+  quickScanAttempts?: number;
+  quickScanHits?: number;
   stoppedEarlyReason?: string;
 }
 
@@ -485,6 +490,53 @@ function normalizeDomain(url: string | undefined): string {
   }
 }
 
+const AGGREGATOR_DOMAIN_PATTERNS = [
+  "clutch.co",
+  "discovermsps.com",
+  "designrush.com",
+  "goodfirms.co",
+  "mspaa.net",
+  "upcity.com",
+  "topseos.com",
+  "g2.com",
+  "msp-seo.agency",
+  "mspseo.agency"
+];
+
+const PERSONAL_EMAIL_DOMAINS = new Set([
+  "gmail.com",
+  "yahoo.com",
+  "outlook.com",
+  "hotmail.com",
+  "aol.com",
+  "icloud.com",
+  "proton.me",
+  "protonmail.com"
+]);
+
+function isAggregatorDomain(domain: string): boolean {
+  const normalized = domain.replace(/^www\./, "").toLowerCase();
+  return AGGREGATOR_DOMAIN_PATTERNS.some((blocked) => normalized === blocked || normalized.endsWith(`.${blocked}`));
+}
+
+function domainFromEmail(email: string | undefined): string {
+  if (!email) {
+    return "";
+  }
+  const at = email.lastIndexOf("@");
+  if (at < 0) {
+    return "";
+  }
+  return email.slice(at + 1).toLowerCase();
+}
+
+function domainsRelated(left: string, right: string): boolean {
+  if (!left || !right) {
+    return false;
+  }
+  return left === right || left.endsWith(`.${right}`) || right.endsWith(`.${left}`);
+}
+
 function normalizeCompanyName(value: string): string {
   return value
     .toLowerCase()
@@ -545,12 +597,20 @@ function normalizeEmail(value: string | null | undefined): string | undefined {
 function normalizeCandidate(item: ExtractedLead): LeadCandidate {
   const employeeSizeText = item.employeeSizeText.replace(/\s+/g, " ").trim() || "unknown";
   const inferredRange = normalizeEmployeeRange(item.employeeMin, item.employeeMax, employeeSizeText, item.evidence);
+  const normalizedWebsite = normalizeWebsite(item.website ?? undefined);
+  const websiteDomain = normalizeDomain(normalizedWebsite);
+  const sourceDomain = normalizeDomain(item.sourceUrl);
+  const shouldDropWebsite = websiteDomain && isAggregatorDomain(websiteDomain) && domainsRelated(websiteDomain, sourceDomain);
+  const normalizedEmail = normalizeEmail(item.email);
+  const emailDomain = domainFromEmail(normalizedEmail);
+  const safeEmail = emailDomain && isAggregatorDomain(emailDomain) ? undefined : normalizedEmail;
+  const safeEmailEvidence = safeEmail ? item.emailEvidence?.replace(/\s+/g, " ").trim() || undefined : undefined;
 
   return {
     companyName: item.companyName.replace(/\s+/g, " ").trim(),
-    email: normalizeEmail(item.email),
-    emailEvidence: item.emailEvidence?.replace(/\s+/g, " ").trim() || undefined,
-    website: normalizeWebsite(item.website ?? undefined),
+    email: safeEmail,
+    emailEvidence: safeEmailEvidence,
+    website: shouldDropWebsite ? undefined : normalizedWebsite,
     location: item.location?.replace(/\s+/g, " ").trim(),
     employeeSizeText,
     employeeMin: inferredRange?.min,
@@ -566,7 +626,7 @@ function normalizeCandidate(item: ExtractedLead): LeadCandidate {
 function buildEmailEnrichmentTargets(leads: LeadCandidate[], requestedLeadCount: number): LeadCandidate[] {
   const maxTargets = Math.min(20, Math.max(8, requestedLeadCount));
   return dedupeLeads(leads)
-    .filter((lead) => !lead.email && Boolean(lead.website))
+    .filter((lead) => !lead.email && Boolean(lead.website) && !isAggregatorDomain(normalizeDomain(lead.website)))
     .sort((a, b) => b.confidence - a.confidence)
     .slice(0, maxTargets);
 }
@@ -618,15 +678,48 @@ function normalizeEmailCandidates(value: string): string[] {
   return Array.from(new Set(normalized));
 }
 
-function pickBestEmail(candidates: string[]): string | undefined {
+function isAcceptableBusinessEmail(email: string, sourceDomain?: string): boolean {
+  const emailDomain = domainFromEmail(email);
+  if (!emailDomain) {
+    return false;
+  }
+  if (isAggregatorDomain(emailDomain)) {
+    return false;
+  }
+  if (PERSONAL_EMAIL_DOMAINS.has(emailDomain)) {
+    return false;
+  }
+  if (sourceDomain && !domainsRelated(emailDomain, sourceDomain)) {
+    return false;
+  }
+  return true;
+}
+
+function pickBestEmail(candidates: string[], sourceDomain?: string): string | undefined {
   const scored = candidates
     .map((email) => {
       let score = 0;
+      const emailDomain = domainFromEmail(email);
+      if (!emailDomain) {
+        score -= 10;
+      }
       if (/^info@|^contact@|^hello@|^sales@/i.test(email)) {
         score += 3;
       }
+      if (/^support@/i.test(email)) {
+        score -= 1;
+      }
       if (/^noreply@|^no-reply@|^donotreply@/i.test(email)) {
         score -= 5;
+      }
+      if (isAggregatorDomain(emailDomain)) {
+        score -= 10;
+      }
+      if (PERSONAL_EMAIL_DOMAINS.has(emailDomain)) {
+        score -= 6;
+      }
+      if (sourceDomain && domainsRelated(emailDomain, sourceDomain)) {
+        score += 4;
       }
       if (/example\.com$/i.test(email)) {
         score -= 8;
@@ -635,6 +728,58 @@ function pickBestEmail(candidates: string[]): string | undefined {
     })
     .sort((a, b) => b.score - a.score);
   return scored[0]?.email;
+}
+
+function extractEmailsFromHtml(value: string): string[] {
+  const $ = loadHtml(value);
+  const mailtoValues = $("a[href^='mailto:']")
+    .map((_, element) => $(element).attr("href") ?? "")
+    .get()
+    .join("\n");
+  const hrefValues = $("a[href]")
+    .map((_, element) => $(element).attr("href") ?? "")
+    .get()
+    .join("\n");
+  const footerText = $("footer").text();
+  const bodyText = $("body").text().slice(0, 40_000);
+  return normalizeEmailCandidates([bodyText, footerText, mailtoValues, hrefValues].join("\n"));
+}
+
+function computeQuickScanTimeoutMs(deadlineAtMs?: number): number {
+  if (!deadlineAtMs) {
+    return 6000;
+  }
+  const remaining = deadlineAtMs - Date.now();
+  if (remaining <= 2000) {
+    return 1200;
+  }
+  return Math.min(6000, Math.max(1200, remaining - 500));
+}
+
+async function fetchQuickScanEmails(url: string, deadlineAtMs?: number): Promise<string[]> {
+  const controller = new AbortController();
+  const timeoutMs = computeQuickScanTimeoutMs(deadlineAtMs);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      redirect: "follow",
+      headers: {
+        "user-agent": "AlfredLeadAgent/1.0"
+      }
+    });
+    if (!response.ok) {
+      throw new Error(`http_${response.status}`);
+    }
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.toLowerCase().includes("html")) {
+      return [];
+    }
+    const html = await response.text();
+    return extractEmailsFromHtml(html.slice(0, 300_000));
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function extractEmailsFromPayload(payload: PagePayload): string[] {
@@ -650,8 +795,11 @@ function extractEmailsFromPayload(payload: PagePayload): string[] {
 export const emailEnrichmentForTests = {
   normalizeEmailCandidates,
   pickBestEmail,
+  isAcceptableBusinessEmail,
+  extractEmailsFromHtml,
   extractEmailsFromPayload,
-  computeEmailEnrichmentUrlCap
+  computeEmailEnrichmentUrlCap,
+  scrubDuplicateLeadEmails
 };
 
 function dedupeLeads(leads: LeadCandidate[]): LeadCandidate[] {
@@ -671,6 +819,57 @@ function dedupeLeads(leads: LeadCandidate[]): LeadCandidate[] {
   }
 
   return Array.from(map.values());
+}
+
+function scrubDuplicateLeadEmails(leads: LeadCandidate[]): LeadCandidate[] {
+  const byEmail = new Map<string, number[]>();
+  const output = leads.map((lead) => ({ ...lead }));
+
+  for (let index = 0; index < output.length; index += 1) {
+    const lead = output[index];
+    if (!lead?.email) {
+      continue;
+    }
+    const key = lead.email.toLowerCase();
+    const indexes = byEmail.get(key) ?? [];
+    indexes.push(index);
+    byEmail.set(key, indexes);
+  }
+
+  for (const indexes of byEmail.values()) {
+    if (indexes.length <= 1) {
+      continue;
+    }
+    const winner = indexes
+      .map((index) => ({
+        index,
+        confidence: output[index]?.confidence ?? 0,
+        websiteDomain: normalizeDomain(output[index]?.website)
+      }))
+      .sort((a, b) => {
+        const aggA = isAggregatorDomain(a.websiteDomain) ? 1 : 0;
+        const aggB = isAggregatorDomain(b.websiteDomain) ? 1 : 0;
+        if (aggA !== aggB) {
+          return aggA - aggB;
+        }
+        return b.confidence - a.confidence;
+      })[0];
+
+    for (const index of indexes) {
+      if (winner && index === winner.index) {
+        continue;
+      }
+      const lead = output[index];
+      if (!lead) {
+        continue;
+      }
+      lead.email = undefined;
+      lead.emailEvidence = undefined;
+      lead.confidence = Math.max(0, lead.confidence - 0.08);
+    }
+  }
+
+  return output;
 }
 
 function deriveSizeMatch(lead: LeadCandidate, targetRange: EmployeeSizeRange | undefined): LeadSizeMatch {
@@ -734,7 +933,8 @@ function qualityGate(
   const minFinal = 15;
   const maxFinal = Math.min(25, requestedLeadCount);
 
-  const deduped: LeadCandidate[] = dedupeLeads(leads)
+  const dedupedInput = scrubDuplicateLeadEmails(dedupeLeads(leads));
+  const deduped: LeadCandidate[] = dedupedInput
     .map((lead) => {
       const sizeMatch = deriveSizeMatch(lead, targetEmployeeRange);
       return {
@@ -1144,6 +1344,26 @@ async function enrichLeadEmails(
   const urls = Array.from(
     new Set(targets.flatMap((lead) => buildEmailCandidateUrls(lead)))
   ).slice(0, urlCap);
+  const quickScanUrls = Array.from(
+    new Set(
+      targets.flatMap((lead) => {
+        if (!lead.website) {
+          return [];
+        }
+        try {
+          const website = new URL(lead.website);
+          const origin = website.origin;
+          return [
+            `${origin}/contact`,
+            `${origin}/contact-us`,
+            origin
+          ];
+        } catch {
+          return [];
+        }
+      })
+    )
+  ).slice(0, urlCap);
 
   if (urls.length === 0) {
     return {
@@ -1158,11 +1378,109 @@ async function enrichLeadEmails(
     };
   }
 
+  const failureSamples: Array<{ url: string; error: string }> = [];
+  let failureCount = 0;
+  const resolvedDomains = new Set<string>();
+  let quickScanAttempts = 0;
+  let quickScanHits = 0;
+  let updatedLeadCount = 0;
+
+  for (const url of quickScanUrls) {
+    if (hasTimedOut(options)) {
+      return {
+        attempted: true,
+        candidateLeadCount: targets.length,
+        candidateUrlCount: urls.length,
+        urlCap,
+        pagesVisited: 0,
+        updatedLeadCount,
+        failureCount,
+        failureSamples: failureSamples.slice(0, 8),
+        quickScanAttempts,
+        quickScanHits,
+        stoppedEarlyReason: "deadline_exhausted"
+      };
+    }
+    const sourceDomain = normalizeDomain(url);
+    if (!sourceDomain || resolvedDomains.has(sourceDomain)) {
+      continue;
+    }
+    quickScanAttempts += 1;
+
+    let emails: string[] = [];
+    try {
+      emails = await fetchQuickScanEmails(url, options.deadlineAtMs);
+    } catch (error) {
+      failureCount += 1;
+      if (failureSamples.length < 8) {
+        failureSamples.push({
+          url,
+          error: error instanceof Error ? error.message.slice(0, 180) : String(error).slice(0, 180)
+        });
+      }
+      continue;
+    }
+
+    const bestEmail = pickBestEmail(emails, sourceDomain);
+    if (!bestEmail || !isAcceptableBusinessEmail(bestEmail, sourceDomain)) {
+      continue;
+    }
+
+    const leadIndexes = domainToLeadIndexes.get(sourceDomain) ?? [];
+    if (leadIndexes.length === 0) {
+      continue;
+    }
+
+    let updatedForDomain = 0;
+    let evidencePath = "quick-scan";
+    try {
+      const parsedUrl = new URL(url);
+      evidencePath = parsedUrl.pathname === "/" ? "quick-scan homepage" : `quick-scan ${parsedUrl.pathname}`;
+    } catch {
+      evidencePath = "quick-scan website";
+    }
+
+    for (const leadIndex of leadIndexes) {
+      const lead = leads[leadIndex];
+      if (!lead || lead.email) {
+        continue;
+      }
+      lead.email = bestEmail;
+      lead.emailEvidence = `email enrichment: ${evidencePath}`;
+      updatedLeadCount += 1;
+      updatedForDomain += 1;
+    }
+
+    if (updatedForDomain > 0) {
+      quickScanHits += 1;
+      resolvedDomains.add(sourceDomain);
+    }
+  }
+
+  const unresolvedUrls = urls.filter((url) => {
+    const domain = normalizeDomain(url);
+    return domain ? !resolvedDomains.has(domain) : true;
+  });
+
+  if (unresolvedUrls.length === 0) {
+    return {
+      attempted: true,
+      candidateLeadCount: targets.length,
+      candidateUrlCount: urls.length,
+      urlCap,
+      pagesVisited: 0,
+      updatedLeadCount,
+      failureCount,
+      failureSamples: failureSamples.slice(0, 8),
+      quickScanAttempts,
+      quickScanHits
+    };
+  }
+
   const browserPool = await BrowserPool.create();
   try {
-    const collection = await browserPool.collectPages(urls, options.browseConcurrency, options.deadlineAtMs);
-    const visitedByDomain = new Set<string>();
-    let updatedLeadCount = 0;
+    const collection = await browserPool.collectPages(unresolvedUrls, options.browseConcurrency, options.deadlineAtMs);
+    const visitedByDomain = new Set<string>(resolvedDomains);
     let pagesVisited = 0;
     let noUpdateStreak = 0;
     let stoppedEarlyReason: string | undefined;
@@ -1183,8 +1501,8 @@ async function enrichLeadEmails(
         continue;
       }
       const emails = extractEmailsFromPayload(payload);
-      const bestEmail = pickBestEmail(emails);
-      if (!bestEmail) {
+      const bestEmail = pickBestEmail(emails, sourceDomain);
+      if (!bestEmail || !isAcceptableBusinessEmail(bestEmail, sourceDomain)) {
         noUpdateStreak += 1;
         if (noUpdateStreak >= 12) {
           stoppedEarlyReason = "email_diminishing_returns";
@@ -1231,8 +1549,10 @@ async function enrichLeadEmails(
       urlCap,
       pagesVisited,
       updatedLeadCount,
-      failureCount: collection.failures.length,
-      failureSamples: collection.failures.slice(0, 8),
+      failureCount: failureCount + collection.failures.length,
+      failureSamples: [...failureSamples, ...collection.failures].slice(0, 8),
+      quickScanAttempts,
+      quickScanHits,
       stoppedEarlyReason
     };
   } finally {
@@ -1481,7 +1801,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     skippedByPlanner: !shouldRunEmailEnrichment
   });
 
-  const emailEnrichment = !shouldRunEmailEnrichment
+  const emailEnrichment: EmailEnrichmentResult = !shouldRunEmailEnrichment
     ? {
         attempted: false,
         candidateLeadCount: emailTargets.length,
@@ -1529,6 +1849,8 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     updatedLeadCount: emailEnrichment.updatedLeadCount,
     failureCount: emailEnrichment.failureCount,
     failureSamples: emailEnrichment.failureSamples,
+    quickScanAttempts: emailEnrichment.quickScanAttempts,
+    quickScanHits: emailEnrichment.quickScanHits,
     stoppedEarlyReason: emailEnrichment.stoppedEarlyReason,
     skippedByPlanner: !shouldRunEmailEnrichment
   });
@@ -1558,6 +1880,8 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   gated.emailEnrichmentFailureCount = emailEnrichment.failureCount;
   gated.emailEnrichmentFailureSamples = emailEnrichment.failureSamples;
   gated.emailEnrichmentUrlCap = emailEnrichment.urlCap;
+  gated.emailEnrichmentQuickScanAttempts = emailEnrichment.quickScanAttempts;
+  gated.emailEnrichmentQuickScanHits = emailEnrichment.quickScanHits;
   gated.emailEnrichmentStoppedEarlyReason = emailEnrichment.stoppedEarlyReason;
   gated.stoppedEarlyReason = stoppedEarlyReason ?? emailEnrichment.stoppedEarlyReason;
   gated.emailRequested = emailRequested;
@@ -1586,6 +1910,8 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     emailCoverageRatio: gated.emailCoverageRatio,
     emailEnrichmentUpdatedCount: gated.emailEnrichmentUpdatedCount,
     emailEnrichmentUrlCap: gated.emailEnrichmentUrlCap,
+    emailEnrichmentQuickScanAttempts: gated.emailEnrichmentQuickScanAttempts,
+    emailEnrichmentQuickScanHits: gated.emailEnrichmentQuickScanHits,
     emailEnrichmentStoppedEarlyReason: gated.emailEnrichmentStoppedEarlyReason,
     llmCallsUsed: gated.llmCallsUsed,
     llmCallsRemaining: gated.llmCallsRemaining,

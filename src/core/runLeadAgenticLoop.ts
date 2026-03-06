@@ -25,6 +25,8 @@ interface LeadAgentObservation {
   iteration: number;
   actionType: "single" | "parallel";
   toolNames: string[];
+  budgetMode?: BudgetMode;
+  expectedLlmCap?: number;
   yieldRelevant: boolean;
   llmTokensUsed: number;
   newLeadCount: number;
@@ -55,6 +57,13 @@ interface YieldSignal {
   averageLeadsPer1kTokens: number;
   sampleCount: number;
   threshold: number;
+}
+
+interface DeficitStrategy {
+  deficit: number;
+  threshold: number;
+  recommendation: "growth" | "polish_only";
+  emailRequested: boolean;
 }
 
 interface SingleAction {
@@ -386,7 +395,10 @@ export const plannerFailureGuardrailsForTests = {
 
 export const plannerContextForTests = {
   buildPastActionsSummary,
-  buildRecentPerformanceSummary
+  buildRecentPerformanceSummary,
+  computeYieldPerTokenSignal,
+  computeExpectedLlmCapForIteration,
+  computeDeficitStrategy
 };
 
 function summarizeToolResult(result: ToolRunResult): string {
@@ -524,6 +536,7 @@ function buildRecentPerformanceSummary(observations: LeadAgentObservation[], thr
   const normalizedZeroYieldStreak = zeroYieldStreak === -1 ? yieldRelevant.length : zeroYieldStreak;
   const searchFailures = recent.reduce((sum, item) => sum + item.searchFailureCount, 0);
   const extractionFailures = recent.reduce((sum, item) => sum + item.extractionFailureCount, 0);
+  const yieldSignal = computeYieldPerTokenSignal(yieldRelevant);
 
   return [
     `yieldAttempts=${yieldRelevant.length}`,
@@ -531,8 +544,100 @@ function buildRecentPerformanceSummary(observations: LeadAgentObservation[], thr
     `diagnosticActions=${diagnostics.length}`,
     `yieldZeroStreak=${normalizedZeroYieldStreak}`,
     `searchFailures=${searchFailures}`,
-    `extractionFailures=${extractionFailures}`
+    `extractionFailures=${extractionFailures}`,
+    `yieldPer1kTokens=${yieldSignal.averageLeadsPer1kTokens.toFixed(2)}`,
+    `yieldAlert=${yieldSignal.status}`
   ].join(", ");
+}
+
+function isEmailRequestedMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return /\bemails?\b|\bemail\s+addresses?\b|\bcontact\s+emails?\b/.test(normalized);
+}
+
+function computeDeficitStrategy(args: {
+  requestedLeadCount: number;
+  currentLeadCount: number;
+  mode: BudgetMode;
+  emailRequested: boolean;
+}): DeficitStrategy {
+  const deficit = Math.max(0, args.requestedLeadCount - args.currentLeadCount);
+  const threshold = args.mode === "emergency" ? 3 : 5;
+  if (deficit <= threshold) {
+    return {
+      deficit,
+      threshold,
+      recommendation: "polish_only",
+      emailRequested: args.emailRequested
+    };
+  }
+  return {
+    deficit,
+    threshold,
+    recommendation: "growth",
+    emailRequested: args.emailRequested
+  };
+}
+
+function computeExpectedLlmCapForIteration(args: {
+  mode: BudgetMode;
+  observations: LeadAgentObservation[];
+  highYieldThreshold: number;
+}): number {
+  const sequenceByMode: Record<BudgetMode, number[]> = {
+    normal: [12, 12, 12],
+    conserve: [12, 10, 8],
+    emergency: [12, 6, 3]
+  };
+  const sequence = sequenceByMode[args.mode];
+  const sameModeStreak = (() => {
+    let streak = 0;
+    for (let index = args.observations.length - 1; index >= 0; index -= 1) {
+      const item = args.observations[index];
+      if (!item || item.budgetMode !== args.mode) {
+        break;
+      }
+      streak += 1;
+    }
+    return streak;
+  })();
+
+  let cap = sequence[Math.min(sameModeStreak, sequence.length - 1)] ?? sequence[sequence.length - 1] ?? 12;
+  const last = args.observations.at(-1);
+  if (last?.yieldRelevant && last.newLeadCount >= args.highYieldThreshold) {
+    cap += args.mode === "emergency" ? 1 : 2;
+  }
+  if (last?.hadLlmBudgetExhausted) {
+    cap = Math.max(1, cap - 2);
+  }
+  return Math.max(1, Math.min(20, cap));
+}
+
+const DEFAULT_YIELD_PER_1K_TOKEN_THRESHOLD = 0.5;
+
+function computeYieldPerTokenSignal(
+  observations: LeadAgentObservation[],
+  threshold = DEFAULT_YIELD_PER_1K_TOKEN_THRESHOLD
+): YieldSignal {
+  const recent = observations.filter((item) => item.yieldRelevant).slice(-2);
+  if (recent.length < 2) {
+    return {
+      status: "insufficient",
+      averageLeadsPer1kTokens: 0,
+      sampleCount: recent.length,
+      threshold
+    };
+  }
+
+  const leads = recent.reduce((sum, item) => sum + Math.max(0, item.newLeadCount), 0);
+  const tokens = recent.reduce((sum, item) => sum + Math.max(0, item.llmTokensUsed), 0);
+  const averageLeadsPer1kTokens = tokens > 0 ? leads / (tokens / 1000) : leads > 0 ? threshold + 1 : 0;
+  return {
+    status: averageLeadsPer1kTokens < threshold ? "low" : "ok",
+    averageLeadsPer1kTokens,
+    sampleCount: recent.length,
+    threshold
+  };
 }
 
 function readNumber(value: unknown): number {
@@ -741,7 +846,7 @@ function leadPipelineBoundsForMode(mode: BudgetMode): LeadPipelineModeBounds {
   if (mode === "emergency") {
     return {
       maxPages: 5,
-      llmMaxCalls: 3,
+      llmMaxCalls: 6,
       browseConcurrency: 2,
       extractionBatchSize: 2
     };
@@ -749,7 +854,7 @@ function leadPipelineBoundsForMode(mode: BudgetMode): LeadPipelineModeBounds {
   if (mode === "conserve") {
     return {
       maxPages: 12,
-      llmMaxCalls: 6,
+      llmMaxCalls: 10,
       browseConcurrency: 3,
       extractionBatchSize: 3
     };
@@ -765,10 +870,15 @@ function leadPipelineBoundsForMode(mode: BudgetMode): LeadPipelineModeBounds {
 function applyLeadPipelineTimeBudget(
   input: Record<string, unknown>,
   remainingMs: number,
-  mode: BudgetMode
+  mode: BudgetMode,
+  expectedLlmCapThisIteration?: number
 ): Record<string, unknown> {
   const adjusted = { ...input };
   const modeBounds = leadPipelineBoundsForMode(mode);
+  const expectedLlmCap =
+    typeof expectedLlmCapThisIteration === "number" && Number.isFinite(expectedLlmCapThisIteration)
+      ? Math.max(1, Math.min(20, Math.round(expectedLlmCapThisIteration)))
+      : undefined;
 
   const clampByMode = () => {
     const maxPages = typeof adjusted.maxPages === "number" ? adjusted.maxPages : modeBounds.maxPages;
@@ -782,8 +892,16 @@ function applyLeadPipelineTimeBudget(
       typeof adjusted.extractionBatchSize === "number" ? adjusted.extractionBatchSize : modeBounds.extractionBatchSize;
     adjusted.extractionBatchSize = Math.min(modeBounds.extractionBatchSize, Math.max(1, Math.round(extractionBatchSize)));
   };
+  const clampByExpectedLlmCap = () => {
+    if (typeof expectedLlmCap !== "number") {
+      return;
+    }
+    const llmMaxCalls = typeof adjusted.llmMaxCalls === "number" ? adjusted.llmMaxCalls : expectedLlmCap;
+    adjusted.llmMaxCalls = Math.min(expectedLlmCap, Math.max(1, Math.round(llmMaxCalls)));
+  };
 
   clampByMode();
+  clampByExpectedLlmCap();
 
   if (remainingMs < 180_000) {
     const maxPages = typeof adjusted.maxPages === "number" ? adjusted.maxPages : 12;
@@ -804,6 +922,7 @@ function applyLeadPipelineTimeBudget(
   }
 
   clampByMode();
+  clampByExpectedLlmCap();
   return adjusted;
 }
 
@@ -854,8 +973,17 @@ function applyLeadPipelineActionDefaults(
   };
 }
 
-function fallbackPlan(iteration: number, defaults: LeadAgentDefaults, leadCount: number, targetLeadCount: number): PlannerDecision {
-  if (leadCount >= targetLeadCount) {
+function fallbackPlan(args: {
+  iteration: number;
+  defaults: LeadAgentDefaults;
+  leadCount: number;
+  targetLeadCount: number;
+  budgetMode: BudgetMode;
+  deficitStrategy: DeficitStrategy;
+  expectedLlmCapThisIteration: number;
+  hasPolishTools: boolean;
+}): PlannerDecision {
+  if (args.leadCount >= args.targetLeadCount) {
     return {
       thought: "Target reached.",
       stop: { reason: "target_met", explanation: "Collected enough leads to satisfy requested target." },
@@ -863,34 +991,67 @@ function fallbackPlan(iteration: number, defaults: LeadAgentDefaults, leadCount:
     };
   }
 
-  if (iteration === 1) {
+  if (args.deficitStrategy.recommendation === "polish_only" && !args.hasPolishTools) {
     return {
-      thought: "Run baseline lead pipeline first.",
-      action: {
-        type: "single",
-        tool: "lead_pipeline",
-        input: { minConfidence: determineAdaptiveMinConfidence(iteration, targetLeadCount, leadCount) }
+      thought: "No polish tools are available.",
+      stop: {
+        reason: "manual_guardrail",
+        explanation: "Deficit is small but no polish-capable tools are available, so stopping gracefully."
       },
       usedFallback: true
     };
   }
 
-  if (iteration === 2) {
+  if (args.deficitStrategy.recommendation === "polish_only") {
     return {
-      thought: "Increase crawl depth to improve recall.",
+      thought: "Deficit is small, so running polish-only refinement.",
       action: {
         type: "single",
         tool: "lead_pipeline",
         input: {
-          maxPages: Math.min(20, defaults.subReactMaxPages + 5),
-          minConfidence: determineAdaptiveMinConfidence(iteration, targetLeadCount, leadCount)
+          maxPages: args.budgetMode === "emergency" ? 5 : 8,
+          extractionBatchSize: args.budgetMode === "emergency" ? 2 : 3,
+          llmMaxCalls: Math.min(args.expectedLlmCapThisIteration, args.budgetMode === "emergency" ? 3 : 6),
+          runEmailEnrichment: true,
+          minConfidence: determineAdaptiveMinConfidence(args.iteration, args.targetLeadCount, args.leadCount)
         }
       },
       usedFallback: true
     };
   }
 
-  if (iteration === 3) {
+  if (args.iteration === 1) {
+    return {
+      thought: "Run baseline lead pipeline first.",
+      action: {
+        type: "single",
+        tool: "lead_pipeline",
+        input: {
+          minConfidence: determineAdaptiveMinConfidence(args.iteration, args.targetLeadCount, args.leadCount),
+          llmMaxCalls: args.expectedLlmCapThisIteration
+        }
+      },
+      usedFallback: true
+    };
+  }
+
+  if (args.iteration === 2) {
+    return {
+      thought: "Increase crawl depth to improve recall.",
+      action: {
+        type: "single",
+        tool: "lead_pipeline",
+        input: {
+          maxPages: Math.min(20, args.defaults.subReactMaxPages + 5),
+          minConfidence: determineAdaptiveMinConfidence(args.iteration, args.targetLeadCount, args.leadCount),
+          llmMaxCalls: args.expectedLlmCapThisIteration
+        }
+      },
+      usedFallback: true
+    };
+  }
+
+  if (args.iteration === 3) {
     return {
       thought: "Persist current leads.",
       action: { type: "single", tool: "write_csv", input: {} },
@@ -965,16 +1126,30 @@ async function decidePlannerAction(
   iteration: number,
   state: LeadAgentState,
   observations: LeadAgentObservation[],
-  budgetSnapshot: BudgetSnapshot
+  budgetSnapshot: BudgetSnapshot,
+  expectedLlmCapThisIteration: number,
+  deficitStrategy: DeficitStrategy,
+  yieldSignal: YieldSignal
 ): Promise<PlannerDecision> {
+  const toolNames = new Set(availableTools.map((tool) => tool.name));
+  const hasPolishTools = toolNames.has("lead_pipeline") || toolNames.has("write_csv");
   if (!options.openAiApiKey || !plannerBudget.consume()) {
-    return fallbackPlan(iteration, options.defaults, state.leads.length, state.requestedLeadCount);
+    return fallbackPlan({
+      iteration,
+      defaults: options.defaults,
+      leadCount: state.leads.length,
+      targetLeadCount: state.requestedLeadCount,
+      budgetMode: budgetSnapshot.mode,
+      deficitStrategy,
+      expectedLlmCapThisIteration,
+      hasPolishTools
+    });
   }
 
   const lastObservations = observations.slice(-options.observationWindow);
   const pastActionsSummary = buildPastActionsSummary(lastObservations);
   const recentPerformanceSummary = buildRecentPerformanceSummary(lastObservations, options.diminishingThreshold);
-  const leadDeficit = Math.max(0, state.requestedLeadCount - state.leads.length);
+  const leadDeficit = deficitStrategy.deficit;
   const emailStrategyHint =
     budgetSnapshot.mode === "normal"
       ? "normal_mode: email enrichment is acceptable when it improves confidence."
@@ -1007,7 +1182,7 @@ async function decidePlannerAction(
         {
           role: "system",
           content:
-            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, hadLlmBudgetExhausted), a capped pastActionsSummary, and recentPerformanceSummary. React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. If failedToolCount > 0 across recent observations, your thought must acknowledge that failure signal before choosing the next action. Budget mode is dynamic: when budgetMode is conserve or emergency, prioritize high-yield/low-cost actions (search_status/search) before deep full-pipeline runs; use smaller lead_pipeline inputs and avoid expensive retries unless signal quality is high. If budget.remainingMs < 60000, prefer lightweight diagnostic/retrieval actions or stop instead of launching heavy pipelines. For lead_pipeline actions, you may set runEmailEnrichment=false when budget is constrained and lead deficit remains high. Use pastActionsSummary and recentPerformanceSummary to avoid repeating low-yield actions with nearly identical inputs. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
+            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, hadLlmBudgetExhausted), a capped pastActionsSummary, and recentPerformanceSummary. React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. If failedToolCount > 0 across recent observations, your thought must acknowledge that failure signal before choosing the next action. Budget mode is dynamic: when budgetMode is conserve or emergency, prioritize high-yield/low-cost actions (search_status/search) before deep full-pipeline runs; use smaller lead_pipeline inputs and avoid expensive retries unless signal quality is high. If budget.remainingMs < 60000, prefer lightweight diagnostic/retrieval actions or stop instead of launching heavy pipelines. Honor expectedCapThisIteration by keeping lead_pipeline.llmMaxCalls at or below that value unless there is a strong, explicit reason. If deficitStrategy.recommendation is polish_only, choose lightweight polishing actions over broad discovery; if no polish-capable tools exist, stop with explanation. If yieldSignal.status is low, acknowledge low yield-per-token and switch strategy or stop instead of repeating the same pattern. For lead_pipeline actions, you may set runEmailEnrichment=false when budget is constrained and lead deficit remains high. Use pastActionsSummary and recentPerformanceSummary to avoid repeating low-yield actions with nearly identical inputs. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
         },
         {
           role: "user",
@@ -1016,6 +1191,9 @@ async function decidePlannerAction(
             iteration,
             budget: budgetSnapshot,
             leadDeficit,
+            deficitStrategy,
+            yieldSignal,
+            expectedCapThisIteration: expectedLlmCapThisIteration,
             emailStrategyHint,
             leadState: {
               targetLeadCount: state.requestedLeadCount,
@@ -1036,7 +1214,16 @@ async function decidePlannerAction(
 
   if (!diagnostic.result) {
     return {
-      ...fallbackPlan(iteration, options.defaults, state.leads.length, state.requestedLeadCount),
+      ...fallbackPlan({
+        iteration,
+        defaults: options.defaults,
+        leadCount: state.leads.length,
+        targetLeadCount: state.requestedLeadCount,
+        budgetMode: budgetSnapshot.mode,
+        deficitStrategy,
+        expectedLlmCapThisIteration,
+        hasPolishTools
+      }),
       plannerFailureReason: diagnostic.failureMessage,
       llmUsage: diagnostic.usage
     };
@@ -1057,7 +1244,16 @@ async function decidePlannerAction(
   const action = normalizePlannerAction(diagnostic.result, options.maxParallelTools);
   if (!action) {
     return {
-      ...fallbackPlan(iteration, options.defaults, state.leads.length, state.requestedLeadCount),
+      ...fallbackPlan({
+        iteration,
+        defaults: options.defaults,
+        leadCount: state.leads.length,
+        targetLeadCount: state.requestedLeadCount,
+        budgetMode: budgetSnapshot.mode,
+        deficitStrategy,
+        expectedLlmCapThisIteration,
+        hasPolishTools
+      }),
       plannerFailureReason: "planner_returned_empty_action",
       llmUsage: diagnostic.usage
     };
@@ -1088,6 +1284,7 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
     artifacts: [],
     requestedLeadCount: targetLeadCount
   };
+  const emailRequestedByUser = isEmailRequestedMessage(options.message);
 
   const addLeads: LeadAgentToolContext["addLeads"] = (incoming) => {
     let addedCount = 0;
@@ -1288,6 +1485,19 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       break;
     }
 
+    const expectedLlmCapForPlan = computeExpectedLlmCapForIteration({
+      mode: budgetSnapshotBeforePlan.mode,
+      observations,
+      highYieldThreshold: Math.max(3, options.diminishingThreshold * 2)
+    });
+    const deficitStrategyForPlan = computeDeficitStrategy({
+      requestedLeadCount: state.requestedLeadCount,
+      currentLeadCount: state.leads.length,
+      mode: budgetSnapshotBeforePlan.mode,
+      emailRequested: emailRequestedByUser
+    });
+    const yieldSignalForPlan = computeYieldPerTokenSignal(observations);
+
     const plannerDecision = await decidePlannerAction(
       options,
       plannerBudget,
@@ -1299,7 +1509,10 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       iteration,
       state,
       observations,
-      budgetSnapshotBeforePlan
+      budgetSnapshotBeforePlan,
+      expectedLlmCapForPlan,
+      deficitStrategyForPlan,
+      yieldSignalForPlan
     );
 
     await recordLlmUsage({
@@ -1322,6 +1535,9 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
         plannerFailureReason: plannerDecision.plannerFailureReason,
         plannerCallsUsed: plannerBudget.used,
         plannerCallsRemaining: plannerBudget.remaining,
+        expectedLlmCapThisIteration: expectedLlmCapForPlan,
+        deficitStrategy: deficitStrategyForPlan,
+        yieldSignal: yieldSignalForPlan,
         budgetSnapshot: budgetSnapshotBeforePlan
       },
       timestamp: nowIso()
@@ -1362,6 +1578,18 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
 
     const budgetSnapshotBeforeAction = computeBudgetSnapshot("pre_action");
     const remainingMsBeforeAction = budgetSnapshotBeforeAction.remainingMs;
+    const expectedLlmCapThisIteration = computeExpectedLlmCapForIteration({
+      mode: budgetSnapshotBeforeAction.mode,
+      observations,
+      highYieldThreshold: Math.max(3, options.diminishingThreshold * 2)
+    });
+    const deficitStrategy = computeDeficitStrategy({
+      requestedLeadCount: state.requestedLeadCount,
+      currentLeadCount: state.leads.length,
+      mode: budgetSnapshotBeforeAction.mode,
+      emailRequested: emailRequestedByUser
+    });
+    const yieldSignal = computeYieldPerTokenSignal(observations);
     const minLeadPipelineStartMs = minLeadPipelineStartMsForMode(budgetSnapshotBeforeAction.mode);
     const actionIncludesLeadPipeline =
       action.type === "single" ? action.tool === "lead_pipeline" : action.tools.some((item) => item.tool === "lead_pipeline");
@@ -1376,6 +1604,9 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
           remainingMs: remainingMsBeforeAction,
           minLeadPipelineStartMs,
           budgetMode: budgetSnapshotBeforeAction.mode,
+          expectedLlmCapThisIteration,
+          deficitStrategy,
+          yieldSignal,
           budgetSnapshot: budgetSnapshotBeforeAction
         },
         timestamp: nowIso()
@@ -1399,7 +1630,12 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       const withDefaults = applyLeadPipelineActionDefaults(call.input, iteration, state.requestedLeadCount, state.leads.length);
       return {
         ...call,
-        input: applyLeadPipelineTimeBudget(withDefaults, remainingMsForCall, budgetSnapshotBeforeAction.mode)
+        input: applyLeadPipelineTimeBudget(
+          withDefaults,
+          remainingMsForCall,
+          budgetSnapshotBeforeAction.mode,
+          expectedLlmCapThisIteration
+        )
       };
     });
     const searchGuardrail = applySearchQueryGuardrail(modeAdjustedCalls, options.message);
@@ -1436,6 +1672,9 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
         iteration,
         actionType: action.type,
         calls,
+        expectedLlmCapThisIteration,
+        deficitStrategy,
+        yieldSignal,
         budgetSnapshot: budgetSnapshotBeforeAction
       },
       timestamp: nowIso()
@@ -1544,6 +1783,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       iteration,
       actionType: action.type,
       toolNames: calls.map((item) => item.tool),
+      budgetMode: budgetSnapshotAfterAction.mode,
+      expectedLlmCap: expectedLlmCapThisIteration,
       yieldRelevant: isYieldRelevantAction(calls),
       llmTokensUsed,
       newLeadCount,
@@ -1573,6 +1814,9 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
         extractionFailureCount: signals.extractionFailureCount,
         hadLlmBudgetExhausted: signals.hadLlmBudgetExhausted,
         results,
+        expectedLlmCapThisIteration,
+        deficitStrategy,
+        yieldSignal,
         llmUsageTotals,
         budgetSnapshot: budgetSnapshotAfterAction
       },

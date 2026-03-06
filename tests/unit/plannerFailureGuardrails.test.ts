@@ -255,3 +255,147 @@ test("search query guardrail fills missing/invalid query from user message", () 
   assert.equal(guarded.calls[0]?.tool, "search");
   assert.equal(guarded.calls[0]?.input.query, "Find 20 MSP/SI leads in USA with emails");
 });
+
+test("yield-per-token signal uses rolling last two yield attempts", () => {
+  const signal = plannerContextForTests.computeYieldPerTokenSignal([
+    {
+      iteration: 1,
+      actionType: "single",
+      toolNames: ["lead_pipeline"],
+      budgetMode: "normal",
+      yieldRelevant: true,
+      llmTokensUsed: 1000,
+      newLeadCount: 3,
+      totalLeadCount: 3,
+      failedToolCount: 0,
+      searchFailureCount: 0,
+      browseFailureCount: 0,
+      extractionFailureCount: 0,
+      hadLlmBudgetExhausted: false,
+      note: "yield one"
+    },
+    {
+      iteration: 2,
+      actionType: "single",
+      toolNames: ["lead_pipeline"],
+      budgetMode: "normal",
+      yieldRelevant: true,
+      llmTokensUsed: 2000,
+      newLeadCount: 1,
+      totalLeadCount: 4,
+      failedToolCount: 0,
+      searchFailureCount: 0,
+      browseFailureCount: 0,
+      extractionFailureCount: 0,
+      hadLlmBudgetExhausted: false,
+      note: "yield two"
+    },
+    {
+      iteration: 3,
+      actionType: "single",
+      toolNames: ["lead_pipeline"],
+      budgetMode: "normal",
+      yieldRelevant: true,
+      llmTokensUsed: 2000,
+      newLeadCount: 0,
+      totalLeadCount: 4,
+      failedToolCount: 0,
+      searchFailureCount: 0,
+      browseFailureCount: 0,
+      extractionFailureCount: 0,
+      hadLlmBudgetExhausted: false,
+      note: "yield three"
+    }
+  ]);
+
+  assert.equal(signal.sampleCount, 2);
+  assert.equal(signal.status, "low");
+  assert.ok(signal.averageLeadsPer1kTokens < signal.threshold);
+});
+
+test("expected llm cap decays by mode and rewards high yield", () => {
+  const firstConserve = plannerContextForTests.computeExpectedLlmCapForIteration({
+    mode: "conserve",
+    observations: [],
+    highYieldThreshold: 3
+  });
+  assert.equal(firstConserve, 12);
+
+  const secondConserve = plannerContextForTests.computeExpectedLlmCapForIteration({
+    mode: "conserve",
+    observations: [
+      {
+        iteration: 1,
+        actionType: "single",
+        toolNames: ["lead_pipeline"],
+        budgetMode: "conserve",
+        expectedLlmCap: 12,
+        yieldRelevant: true,
+        llmTokensUsed: 1500,
+        newLeadCount: 0,
+        totalLeadCount: 0,
+        failedToolCount: 0,
+        searchFailureCount: 0,
+        browseFailureCount: 0,
+        extractionFailureCount: 0,
+        hadLlmBudgetExhausted: false,
+        note: "conserve one"
+      }
+    ],
+    highYieldThreshold: 3
+  });
+  assert.equal(secondConserve, 10);
+
+  const emergencyWithHighYield = plannerContextForTests.computeExpectedLlmCapForIteration({
+    mode: "emergency",
+    observations: [
+      {
+        iteration: 2,
+        actionType: "single",
+        toolNames: ["lead_pipeline"],
+        budgetMode: "emergency",
+        expectedLlmCap: 6,
+        yieldRelevant: true,
+        llmTokensUsed: 2200,
+        newLeadCount: 4,
+        totalLeadCount: 6,
+        failedToolCount: 0,
+        searchFailureCount: 0,
+        browseFailureCount: 0,
+        extractionFailureCount: 0,
+        hadLlmBudgetExhausted: false,
+        note: "emergency high yield"
+      }
+    ],
+    highYieldThreshold: 3
+  });
+  assert.equal(emergencyWithHighYield, 7);
+});
+
+test("deficit strategy switches to polish_only at mode thresholds", () => {
+  const normal = plannerContextForTests.computeDeficitStrategy({
+    requestedLeadCount: 20,
+    currentLeadCount: 15,
+    mode: "normal",
+    emailRequested: false
+  });
+  assert.equal(normal.recommendation, "polish_only");
+  assert.equal(normal.threshold, 5);
+
+  const emergencyGrowth = plannerContextForTests.computeDeficitStrategy({
+    requestedLeadCount: 20,
+    currentLeadCount: 16,
+    mode: "emergency",
+    emailRequested: true
+  });
+  assert.equal(emergencyGrowth.recommendation, "growth");
+  assert.equal(emergencyGrowth.threshold, 3);
+
+  const emergencyPolish = plannerContextForTests.computeDeficitStrategy({
+    requestedLeadCount: 20,
+    currentLeadCount: 17,
+    mode: "emergency",
+    emailRequested: true
+  });
+  assert.equal(emergencyPolish.recommendation, "polish_only");
+});

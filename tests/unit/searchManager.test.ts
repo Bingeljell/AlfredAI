@@ -146,6 +146,26 @@ test("recoverPrimary reports unsupported when start command is not configured", 
   assert.equal(status.primaryRecoverySupported, false);
 });
 
+test("recoverPrimary captures command exit diagnostics when start command fails fast", async () => {
+  const manager = new SearchManager({
+    primary: new FakeProvider("searxng", false, 0),
+    maxResults: 15,
+    startupTimeoutMs: 200,
+    retryIntervalMs: 20,
+    primaryStartCommand: "exit 7"
+  });
+
+  const recovery = await manager.recoverPrimary();
+  assert.equal(recovery.attempted, true);
+  assert.equal(recovery.recovered, false);
+  assert.equal(recovery.reason, "primary_start_command_exited");
+  assert.equal(recovery.exitCode, 7);
+
+  const status = await manager.getProviderStatus();
+  assert.equal(status.lastPrimaryRecovery?.reason, "primary_start_command_exited");
+  assert.equal(status.lastPrimaryRecovery?.exitCode, 7);
+});
+
 test("search manager retries primary healthcheck before failing over", async () => {
   const manager = new SearchManager({
     primary: new FlakyHealthProvider(1),

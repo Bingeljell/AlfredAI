@@ -81,6 +81,7 @@
   - Running `lead_pipeline` now supports soft-stop behavior: once a tool is in flight and remaining budget drops under mode threshold, queued extraction batches and optional email enrichment are skipped gracefully, partial leads are preserved, and `stoppedEarlyReason` is emitted for debugging/replanning.
   - Repository hygiene update: root `debug/` exports are now ignored in git, preventing local debug timeline dumps from polluting git status during iteration.
   - Root `debug/` ignore was reverted to allow committing and sharing exported run timeline/debug files directly from the repository root when needed.
+  - Search recovery now emits actionable diagnostics (command/exit/signal/stderr + runtime spawn errors) and surfaces `lastPrimaryRecovery` through `search_status`, while planner observation logic now treats direct `search` tool failures as search-failure signals for better outage-aware planning and stop behavior.
   - Added a root `README.md` with a concise project overview, high-level plan, current status snapshot, and pnpm-first local run/test instructions for faster onboarding and testing.
   - Added visual README masthead assets (`assets/alfred_masthead.jpg`, `assets/alfred_at_work.mp4`) and wired the image into the top of the root README for clearer project branding.
   - Expanded README narrative to include the long-term “second brain” product vision and explicitly frame lead generation as the focused first use case for measurable value validation.

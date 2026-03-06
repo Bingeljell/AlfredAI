@@ -19,7 +19,8 @@ export const toolDefinition: LeadAgentToolDefinition<typeof SearchStatusToolInpu
       activeDefault: status.activeDefault,
       lastPrimaryHealthyAt: status.lastPrimaryHealthyAt,
       consecutivePrimaryFailures: status.consecutivePrimaryFailures,
-      lastPrimaryFailure: status.lastPrimaryFailure
+      lastPrimaryFailure: status.lastPrimaryFailure,
+      lastPrimaryRecovery: status.lastPrimaryRecovery
     };
   }
 };

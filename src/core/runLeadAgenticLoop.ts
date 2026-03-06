@@ -408,15 +408,46 @@ function summarizeToolResult(result: ToolRunResult): string {
 
   const output = result.output ?? {};
   if (result.tool === "recover_search") {
-    const recovery = output.recovery as { recovered?: unknown; reason?: unknown } | undefined;
+    const recovery = output.recovery as
+      | {
+          recovered?: unknown;
+          reason?: unknown;
+          exitCode?: unknown;
+          signal?: unknown;
+          spawnError?: unknown;
+          stderrSnippet?: unknown;
+        }
+      | undefined;
     const recovered = recovery?.recovered === true;
     const reason = typeof recovery?.reason === "string" ? recovery.reason : "unknown";
-    return `recover_search ${recovered ? "recovered" : "not_recovered"} (${reason})`;
+    const details: string[] = [];
+    if (typeof recovery?.exitCode === "number") {
+      details.push(`exit=${recovery.exitCode}`);
+    }
+    if (typeof recovery?.signal === "string" && recovery.signal.length > 0) {
+      details.push(`signal=${recovery.signal}`);
+    }
+    if (typeof recovery?.spawnError === "string" && recovery.spawnError.length > 0) {
+      details.push(`spawnError=${recovery.spawnError.slice(0, 80)}`);
+    }
+    if (typeof recovery?.stderrSnippet === "string" && recovery.stderrSnippet.length > 0) {
+      details.push(`stderr=${recovery.stderrSnippet.slice(0, 80)}`);
+    }
+    const detailText = details.length > 0 ? ` ${details.join(", ")}` : "";
+    return `recover_search ${recovered ? "recovered" : "not_recovered"} (${reason})${detailText}`;
   }
 
   if (result.tool === "search_status") {
     const primaryHealthy = output.primaryHealthy === true ? "healthy" : "unhealthy";
     const fallbackHealthy = output.fallbackHealthy === true ? "healthy" : "unhealthy";
+    const lastRecovery = output.lastPrimaryRecovery as { reason?: unknown; completedAt?: unknown } | undefined;
+    const recoveryReason = typeof lastRecovery?.reason === "string" ? lastRecovery.reason : undefined;
+    const completedAt = typeof lastRecovery?.completedAt === "string" ? lastRecovery.completedAt : undefined;
+    if (recoveryReason) {
+      return `search_status primary=${primaryHealthy}, fallback=${fallbackHealthy}, lastRecovery=${recoveryReason}${
+        completedAt ? ` @ ${completedAt}` : ""
+      }`;
+    }
     return `search_status primary=${primaryHealthy}, fallback=${fallbackHealthy}`;
   }
 
@@ -657,6 +688,9 @@ function extractObservationSignals(results: ToolRunResult[]): {
 
   for (const result of results) {
     const output = result.output ?? {};
+    if (result.tool === "search" && result.status === "error") {
+      searchFailureCount += 1;
+    }
     searchFailureCount += readNumber(output.searchFailureCount);
     browseFailureCount += readNumber(output.browseFailureCount);
     extractionFailureCount += readNumber(output.extractionFailureCount);

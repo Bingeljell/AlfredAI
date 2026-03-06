@@ -62,6 +62,21 @@ test("extractObservationSignals captures structured tool failure counts", () => 
   assert.equal(signals.hadLlmBudgetExhausted, true);
 });
 
+test("extractObservationSignals counts search tool errors as search failures", () => {
+  const signals = plannerFailureGuardrailsForTests.extractObservationSignals([
+    {
+      tool: "search",
+      status: "error",
+      durationMs: 1200,
+      error: "Primary search unavailable and no fallback configured"
+    }
+  ]);
+
+  assert.equal(signals.searchFailureCount, 1);
+  assert.equal(signals.browseFailureCount, 0);
+  assert.equal(signals.extractionFailureCount, 0);
+});
+
 test("past action summary stays capped and keeps most recent items", () => {
   const baseObservation = {
     actionType: "single" as const,

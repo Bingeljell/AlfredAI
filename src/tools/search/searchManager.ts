@@ -24,6 +24,7 @@ export interface ProviderStatus {
   lastPrimaryHealthyAt?: string;
   consecutivePrimaryFailures: number;
   lastPrimaryFailure?: SearchFailureDiagnostic;
+  lastPrimaryRecovery?: PrimaryRecoveryResult;
 }
 
 export interface SearchFailureDiagnostic {
@@ -50,12 +51,38 @@ export interface PrimaryRecoveryResult {
   attempted: boolean;
   recovered: boolean;
   reason: string;
+  command?: string;
+  startedAt?: string;
+  completedAt?: string;
+  exitCode?: number | null;
+  signal?: string | null;
+  stdoutSnippet?: string;
+  stderrSnippet?: string;
+  spawnError?: string;
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function clipSnippet(value: string, max = 240): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= max) {
+    return normalized;
+  }
+  return `${normalized.slice(0, max - 1)}…`;
+}
+
+function appendSnippet(current: string, chunk: unknown, max = 512): string {
+  const text =
+    typeof chunk === "string" ? chunk : Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
+  const merged = `${current}${text}`;
+  if (merged.length <= max) {
+    return merged;
+  }
+  return merged.slice(merged.length - max);
 }
 
 export class SearchManager {
@@ -70,6 +97,7 @@ export class SearchManager {
   private readonly primaryHealthGraceMs: number;
   private lastPrimaryHealthyAtMs?: number;
   private lastPrimaryFailure?: SearchFailureDiagnostic;
+  private lastPrimaryRecovery?: PrimaryRecoveryResult;
   private consecutivePrimaryFailures = 0;
 
   constructor(options: SearchManagerOptions) {
@@ -147,44 +175,119 @@ export class SearchManager {
   }
 
   async recoverPrimary(): Promise<PrimaryRecoveryResult> {
-    if (!this.primaryStartCommand) {
-      return {
+    const startedAt = new Date().toISOString();
+    const command = this.primaryStartCommand?.trim();
+    const complete = (result: PrimaryRecoveryResult): PrimaryRecoveryResult => {
+      const finalized: PrimaryRecoveryResult = {
+        ...result,
+        startedAt: result.startedAt ?? startedAt,
+        completedAt: result.completedAt ?? new Date().toISOString()
+      };
+      this.lastPrimaryRecovery = finalized;
+      return finalized;
+    };
+
+    if (!command) {
+      return complete({
         attempted: false,
         recovered: false,
         reason: "primary_start_command_not_configured"
-      };
+      });
     }
 
+    let stdoutSnippet = "";
+    let stderrSnippet = "";
+    let processExited = false;
+    let exitCode: number | null = null;
+    let exitSignal: string | null = null;
+    let spawnError: string | undefined;
+
+    let child: ReturnType<typeof spawn>;
     try {
-      spawn(this.primaryStartCommand, {
-        stdio: "ignore",
+      child = spawn(command, {
+        stdio: ["ignore", "pipe", "pipe"],
         detached: true,
         shell: true
-      }).unref();
-    } catch {
-      return {
+      });
+    } catch (error) {
+      return complete({
         attempted: true,
         recovered: false,
-        reason: "primary_start_command_spawn_failed"
-      };
+        reason: "primary_start_command_spawn_failed",
+        command: clipSnippet(command, 280),
+        spawnError: clipSnippet(error instanceof Error ? error.message : String(error))
+      });
     }
+
+    child.stdout?.on("data", (chunk) => {
+      stdoutSnippet = appendSnippet(stdoutSnippet, chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderrSnippet = appendSnippet(stderrSnippet, chunk);
+    });
+    child.once("error", (error) => {
+      spawnError = clipSnippet(error instanceof Error ? error.message : String(error));
+    });
+    child.once("exit", (code, signal) => {
+      processExited = true;
+      exitCode = typeof code === "number" ? code : null;
+      exitSignal = typeof signal === "string" ? signal : null;
+    });
 
     const deadline = Date.now() + this.startupTimeoutMs;
     while (Date.now() < deadline) {
       await sleep(this.retryIntervalMs);
       if (await this.primary.healthcheck()) {
-        return {
+        child.unref();
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        return complete({
           attempted: true,
           recovered: true,
-          reason: "primary_recovered_after_restart"
-        };
+          reason: "primary_recovered_after_restart",
+          command: clipSnippet(command, 280),
+          stdoutSnippet: stdoutSnippet ? clipSnippet(stdoutSnippet, 280) : undefined,
+          stderrSnippet: stderrSnippet ? clipSnippet(stderrSnippet, 280) : undefined
+        });
+      }
+      if (spawnError) {
+        return complete({
+          attempted: true,
+          recovered: false,
+          reason: "primary_start_command_runtime_error",
+          command: clipSnippet(command, 280),
+          spawnError,
+          stdoutSnippet: stdoutSnippet ? clipSnippet(stdoutSnippet, 280) : undefined,
+          stderrSnippet: stderrSnippet ? clipSnippet(stderrSnippet, 280) : undefined
+        });
+      }
+      if (processExited) {
+        return complete({
+          attempted: true,
+          recovered: false,
+          reason: "primary_start_command_exited",
+          command: clipSnippet(command, 280),
+          exitCode,
+          signal: exitSignal,
+          stdoutSnippet: stdoutSnippet ? clipSnippet(stdoutSnippet, 280) : undefined,
+          stderrSnippet: stderrSnippet ? clipSnippet(stderrSnippet, 280) : undefined
+        });
       }
     }
-    return {
+    child.unref();
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    return complete({
       attempted: true,
       recovered: false,
-      reason: "primary_unhealthy_after_restart_timeout"
-    };
+      reason: "primary_unhealthy_after_restart_timeout",
+      command: clipSnippet(command, 280),
+      exitCode,
+      signal: exitSignal,
+      spawnError,
+      stdoutSnippet: stdoutSnippet ? clipSnippet(stdoutSnippet, 280) : undefined,
+      stderrSnippet: stderrSnippet ? clipSnippet(stderrSnippet, 280) : undefined
+    });
   }
 
   async getProviderStatus(): Promise<ProviderStatus> {
@@ -206,7 +309,8 @@ export class SearchManager {
       activeDefault: primaryHealthy ? this.primary.name : this.fallback?.name ?? this.primary.name,
       lastPrimaryHealthyAt: this.lastPrimaryHealthyAtMs ? new Date(this.lastPrimaryHealthyAtMs).toISOString() : undefined,
       consecutivePrimaryFailures: this.consecutivePrimaryFailures,
-      lastPrimaryFailure: this.lastPrimaryFailure
+      lastPrimaryFailure: this.lastPrimaryFailure,
+      lastPrimaryRecovery: this.lastPrimaryRecovery
     };
   }
 

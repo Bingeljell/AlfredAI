@@ -4,11 +4,21 @@ import { QueryExpansionSchema, ExtractedLeadBatchSchema } from "../../src/tools/
 
 test("QueryExpansionSchema accepts null targetLeadCount for strict JSON-schema compatibility", () => {
   const parsed = QueryExpansionSchema.parse({
-    queries: ["top managed service providers usa", "best system integrators usa", "msp directory usa"],
-    targetLeadCount: null
+    queries: ["top fintech suppliers india", "payment processing companies directory india", "b2b fintech contact leads india"],
+    targetLeadCount: null,
+    objectiveBrief: {
+      objectiveSummary: "Find fintech supplier leads in India with contact details.",
+      companyType: "suppliers",
+      industry: "fintech",
+      geography: "India",
+      businessModel: "b2b",
+      contactRequirement: "email contacts requested",
+      constraintsMissing: []
+    }
   });
 
   assert.equal(parsed.targetLeadCount, null);
+  assert.equal(parsed.objectiveBrief.industry, "fintech");
 });
 
 test("ExtractedLeadBatchSchema accepts nullable website/location and sizeEvidence text", () => {

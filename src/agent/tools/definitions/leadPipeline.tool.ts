@@ -16,7 +16,7 @@ export const LeadPipelineToolInputSchema = z.object({
 
 export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInputSchema> = {
   name: "lead_pipeline",
-  description: "Run the SI/MSP lead extraction pipeline over search + browse + extraction + quality gate.",
+  description: "Run the lead extraction pipeline over search + browse + extraction + quality gate.",
   inputSchema: LeadPipelineToolInputSchema,
   inputHint:
     "Use when you need more validated leads. Increase maxPages for deeper crawl or tune minConfidence for stricter/looser gating.",

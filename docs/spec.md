@@ -27,6 +27,12 @@ Alfred runs the classic **ReAct (Reason + Act)** loop in every session:
 
 **Gateway/Orchestrator** runs all loops (one per session), picks the best model per task, and routes inline vs queued execution.
 
+### 2.1 Master vs Specialist Separation
+- **Alfred (Master Agent)** is domain-agnostic and owns orchestration, policy, memory continuity, and user-facing outcomes.
+- **Specialist Agents** (starting with LeadGenAgent) own domain execution details.
+- Deterministic logic is limited to guardrails (budget/time/safety), while specialist business behavior remains model-driven and objective-led.
+- LeadGenAgent must clarify objective constraints before retrieval (company type, industry, geography, B2B/B2C/supplier intent, contact needs) and adapt course from observations.
+
 ## 3. Sessions – Isolated & Parallel
 - Full multi-session support: long-running (Product A), short-term (Outreach campaign), or one-off.  
 - Each session has its own isolated memory namespace (separate Daily notes + RAG index).  

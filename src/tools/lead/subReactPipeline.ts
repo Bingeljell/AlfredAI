@@ -9,7 +9,12 @@ import {
   type StructuredChatHttpErrorDetails
 } from "../../services/openAiClient.js";
 import { BrowserPool, type PagePayload } from "./browserPool.js";
-import { ExtractedLeadBatchSchema, QueryExpansionSchema, type ExtractedLead } from "./schemas.js";
+import {
+  ExtractedLeadBatchSchema,
+  QueryExpansionSchema,
+  type ExtractedLead,
+  type LeadObjectiveBrief
+} from "./schemas.js";
 import { LlmBudgetManager } from "./llmBudget.js";
 import { parseRequestedLeadCount } from "./requestIntent.js";
 import type { NormalizedLeadPipelineFilters } from "./filters.js";
@@ -44,9 +49,45 @@ const QUERY_EXPANSION_JSON_SCHEMA = {
           type: "null"
         }
       ]
+    },
+    objectiveBrief: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        objectiveSummary: { type: "string", minLength: 8, maxLength: 400 },
+        companyType: {
+          anyOf: [{ type: "string", minLength: 2, maxLength: 160 }, { type: "null" }]
+        },
+        industry: {
+          anyOf: [{ type: "string", minLength: 2, maxLength: 160 }, { type: "null" }]
+        },
+        geography: {
+          anyOf: [{ type: "string", minLength: 2, maxLength: 160 }, { type: "null" }]
+        },
+        businessModel: {
+          anyOf: [{ type: "string", minLength: 2, maxLength: 80 }, { type: "null" }]
+        },
+        contactRequirement: {
+          anyOf: [{ type: "string", minLength: 2, maxLength: 160 }, { type: "null" }]
+        },
+        constraintsMissing: {
+          type: "array",
+          maxItems: 8,
+          items: { type: "string", minLength: 2, maxLength: 80 }
+        }
+      },
+      required: [
+        "objectiveSummary",
+        "companyType",
+        "industry",
+        "geography",
+        "businessModel",
+        "contactRequirement",
+        "constraintsMissing"
+      ]
     }
   },
-  required: ["queries", "targetLeadCount"]
+  required: ["queries", "targetLeadCount", "objectiveBrief"]
 } as const;
 
 const EXTRACTED_LEAD_BATCH_JSON_SCHEMA = {
@@ -109,13 +150,13 @@ const EXTRACTED_LEAD_BATCH_JSON_SCHEMA = {
 } as const;
 
 const EXTRACTION_TASK_PROMPT = `
-You are an expert B2B lead researcher specializing in USA-based System Integrators (SI) and Managed Service Providers (MSP).
+You are an expert lead researcher.
 
 Task:
-Extract REAL company leads from the provided page payloads (one or more pages may be included).
+Extract REAL company leads from the provided page payloads (one or more pages may be included), aligned to the user objective.
 
 Hard rules:
-- Only return companies that are clearly SI, MSP, or very close IT services providers.
+- Only return companies that clearly match the requested lead profile.
 - NEVER return the aggregator, directory, or listing site itself as a lead.
 - NEVER use ranking labels (for example "#3 provider") as company names.
 - Use ONLY information explicitly visible in the provided page payloads.
@@ -177,7 +218,7 @@ If no good leads are found, return { "leads": [] }.
 Output requirements:
 - Valid JSON only. No markdown, no explanations, no extra keys or text.
 - Confidence guidelines:
-  - 0.80-1.00 = very strong SI/MSP fit with clear evidence
+  - 0.80-1.00 = very strong fit with clear evidence
   - 0.60-0.79 = good fit
   - 0.55-0.59 = near-range or partial fit (allowed)
   - <0.55 = do not include
@@ -200,7 +241,7 @@ function buildQueryExpansionSystemPrompt(): string {
     {
       label: "Directives",
       content:
-        "Rewrite user lead requests into 3-5 targeted search queries for discovering real company entities. Include vertical+location intent and directory-style queries. Respect any explicit filter context (employee-count constraints, country, industry keywords, email intent). Also output a targetLeadCount integer when the user intent specifies quantity."
+        "First clarify the objective into an objectiveBrief (what to find, for whom, where, B2B/B2C/supplier orientation, contact requirements, and missing constraints). Then rewrite the request into 3-5 targeted search queries for discovering real company entities. Respect explicit filter context (employee-count constraints, country, industry keywords, email intent). Also output a targetLeadCount integer when user intent specifies quantity."
     }
   ]);
 }
@@ -294,6 +335,7 @@ export interface LeadSubReactResult {
 interface QueryPlanResult {
   queries: string[];
   targetLeadCount?: number;
+  objectiveBrief: LeadObjectiveBrief;
   plannerFailureReason?: string;
   plannerFailureDetails?: StructuredChatHttpErrorDetails;
   usedModelPlan: boolean;
@@ -370,6 +412,23 @@ function addLlmUsage(totals: LlmUsageTotals, usage: LlmUsage | undefined): void 
 function parseLocationHint(message: string): string | undefined {
   const match = message.match(/\bin\s+([A-Za-z][A-Za-z\s]{1,40})$/i);
   return match?.[1]?.trim();
+}
+
+function inferBusinessModelHint(message: string): string | undefined {
+  const normalized = message.toLowerCase();
+  if (/\bb2b\b/.test(normalized) && /\bb2c\b/.test(normalized)) {
+    return "mixed";
+  }
+  if (/\bb2b\b/.test(normalized)) {
+    return "b2b";
+  }
+  if (/\bb2c\b/.test(normalized)) {
+    return "b2c";
+  }
+  if (/\bsupplier|wholesale|distributor\b/.test(normalized)) {
+    return "supplier_or_distribution";
+  }
+  return undefined;
 }
 
 function isEmailRequested(message: string, filters: NormalizedLeadPipelineFilters | undefined): boolean {
@@ -493,27 +552,138 @@ function resolveTargetEmployeeRange(
   return parseTargetEmployeeRange(message);
 }
 
+function cleanBriefString(value: string | undefined | null): string | null {
+  if (!value) {
+    return null;
+  }
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function inferFallbackObjectiveBrief(
+  message: string,
+  filters: NormalizedLeadPipelineFilters | undefined,
+  emailRequested: boolean
+): LeadObjectiveBrief {
+  const cleanedMessage = message.replace(/\s+/g, " ").trim();
+  const industry = filters?.industryKeywords?.length ? filters.industryKeywords.join(", ") : undefined;
+  const geography = filters?.country ?? parseLocationHint(message);
+  const businessModel = inferBusinessModelHint(message);
+  const companyType = industry ?? undefined;
+  const contactRequirement = emailRequested ? "email contacts requested" : "company profile data requested";
+  const constraintsMissing: string[] = [];
+  const objectiveSummary =
+    cleanedMessage.length >= 8 ? cleanedMessage.slice(0, 400) : "Collect lead candidates matching the user request.";
+
+  if (!companyType) {
+    constraintsMissing.push("company_type_or_industry");
+  }
+  if (!geography) {
+    constraintsMissing.push("geography");
+  }
+  if (!businessModel) {
+    constraintsMissing.push("business_model");
+  }
+
+  return {
+    objectiveSummary,
+    companyType: cleanBriefString(companyType),
+    industry: cleanBriefString(industry),
+    geography: cleanBriefString(geography),
+    businessModel: cleanBriefString(businessModel),
+    contactRequirement: contactRequirement,
+    constraintsMissing
+  };
+}
+
+function sanitizeObjectiveBrief(
+  brief: LeadObjectiveBrief,
+  fallback: LeadObjectiveBrief
+): LeadObjectiveBrief {
+  const constraintsMissing = Array.isArray(brief.constraintsMissing)
+    ? brief.constraintsMissing.map((item) => item.replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 8)
+    : fallback.constraintsMissing;
+  return {
+    objectiveSummary: brief.objectiveSummary.replace(/\s+/g, " ").trim().slice(0, 400) || fallback.objectiveSummary,
+    companyType: cleanBriefString(brief.companyType) ?? fallback.companyType ?? null,
+    industry: cleanBriefString(brief.industry) ?? fallback.industry ?? null,
+    geography: cleanBriefString(brief.geography) ?? fallback.geography ?? null,
+    businessModel: cleanBriefString(brief.businessModel) ?? fallback.businessModel ?? null,
+    contactRequirement: cleanBriefString(brief.contactRequirement) ?? fallback.contactRequirement ?? null,
+    constraintsMissing
+  };
+}
+
+const FALLBACK_QUERY_STOPWORDS = new Set([
+  "find",
+  "with",
+  "from",
+  "that",
+  "this",
+  "these",
+  "those",
+  "have",
+  "need",
+  "give",
+  "show",
+  "please",
+  "companies",
+  "company",
+  "leads",
+  "lead",
+  "less",
+  "than",
+  "more",
+  "under",
+  "over",
+  "employees",
+  "employee",
+  "emails",
+  "email",
+  "contact",
+  "contacts",
+  "including"
+]);
+
+function extractSignalTerms(message: string): string[] {
+  const words = message
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 3 && !/^\d+$/.test(item))
+    .filter((item) => !FALLBACK_QUERY_STOPWORDS.has(item));
+  return Array.from(new Set(words)).slice(0, 5);
+}
+
 function fallbackQueryExpansion(message: string, filters: NormalizedLeadPipelineFilters | undefined): string[] {
-  const location = filters?.country ?? parseLocationHint(message) ?? "USA";
+  const location = filters?.country ?? parseLocationHint(message);
   const sizeClause = filters?.employeeCountMax ? ` under ${filters.employeeCountMax} employees` : "";
   const lower = message.toLowerCase();
+  const signalTerms = filters?.industryKeywords?.length ? filters.industryKeywords : extractSignalTerms(message);
+  const anchor = signalTerms.length > 0 ? signalTerms.join(" ") : "target";
+  const locationClause = location ? ` ${location}` : "";
   const base = new Set<string>();
-  base.add(`top managed service providers ${location}${sizeClause} 2026`);
-  base.add(`best system integrator companies ${location}${sizeClause}`);
-  base.add(`msp companies list site:clutch.co ${location}${sizeClause}`);
-  if (/si|system integrator/.test(lower)) {
-    base.add(`system integrator directory ${location}${sizeClause}`);
-  }
-  if (/msp|managed service/.test(lower)) {
-    base.add(`managed service provider directory ${location}${sizeClause}`);
+  base.add(message.replace(/\s+/g, " ").trim());
+  base.add(`${anchor} companies${locationClause}${sizeClause}`);
+  base.add(`${anchor} company directory${locationClause}${sizeClause}`);
+  base.add(`${anchor} top companies${locationClause}${sizeClause}`);
+  if (inferBusinessModelHint(message)) {
+    base.add(`${inferBusinessModelHint(message)} ${anchor} companies${locationClause}${sizeClause}`);
   }
   if (filters?.requireEmail || /\bemail|emails|contact\b/i.test(message)) {
-    base.add(`managed service providers ${location} contact email`);
+    base.add(`${anchor} company contact email${locationClause}`);
   }
   if (filters?.industryKeywords?.length) {
-    base.add(`${filters.industryKeywords.join(" ")} managed services ${location}${sizeClause}`);
+    base.add(`${filters.industryKeywords.join(" ")} companies${locationClause}${sizeClause}`);
   }
-  return Array.from(base).slice(0, 5);
+  if (location) {
+    base.add(`${anchor} companies site:linkedin.com/company ${location}${sizeClause}`);
+  }
+  return Array.from(base)
+    .map((query) => query.replace(/\s+/g, " ").trim())
+    .filter((query) => query.length >= 3)
+    .slice(0, 5);
 }
 
 function normalizeWebsite(url: string | undefined): string | undefined {
@@ -1142,9 +1312,11 @@ function diagnosticDetails(diagnostic: StructuredChatDiagnostic<unknown>, attemp
 }
 
 async function buildQueryPlan(message: string, options: LeadSubReactOptions, budget: LlmBudgetManager): Promise<QueryPlanResult> {
+  const fallbackObjectiveBrief = inferFallbackObjectiveBrief(message, options.filters, isEmailRequested(message, options.filters));
   if (!options.openAiApiKey || !budget.consume()) {
     return {
       queries: fallbackQueryExpansion(message, options.filters),
+      objectiveBrief: fallbackObjectiveBrief,
       usedModelPlan: false,
       plannerFailureReason: !options.openAiApiKey ? "missing_api_key" : "llm_budget_exhausted",
       llmUsage: undefined
@@ -1170,6 +1342,7 @@ async function buildQueryPlan(message: string, options: LeadSubReactOptions, bud
   if (!diagnostic.result) {
     return {
       queries: fallbackQueryExpansion(message, options.filters),
+      objectiveBrief: fallbackObjectiveBrief,
       usedModelPlan: false,
       plannerFailureReason: formatDiagnosticReason(diagnostic),
       plannerFailureDetails: diagnostic.httpErrorDetails,
@@ -1180,6 +1353,7 @@ async function buildQueryPlan(message: string, options: LeadSubReactOptions, bud
   return {
     queries: diagnostic.result.queries.map((query) => query.trim()).filter(Boolean).slice(0, 5),
     targetLeadCount: diagnostic.result.targetLeadCount ?? undefined,
+    objectiveBrief: sanitizeObjectiveBrief(diagnostic.result.objectiveBrief, fallbackObjectiveBrief),
     usedModelPlan: true,
     llmUsage: diagnostic.usage
   };
@@ -1209,10 +1383,12 @@ function chunk<T>(items: T[], size: number): T[][] {
 function buildExtractionPrompt(
   batch: PagePayload[],
   requestMessage: string,
-  filters: NormalizedLeadPipelineFilters | undefined
+  filters: NormalizedLeadPipelineFilters | undefined,
+  objectiveBrief: LeadObjectiveBrief
 ): string {
   return [
     `User request: ${requestMessage}`,
+    `Objective brief: ${JSON.stringify(objectiveBrief)}`,
     `Filters: ${JSON.stringify(filters ?? {})}`,
     "Page payloads (batched):",
     JSON.stringify(batch)
@@ -1222,7 +1398,8 @@ function buildExtractionPrompt(
 async function extractBatch(
   batch: PagePayload[],
   options: LeadSubReactOptions,
-  budget: LlmBudgetManager
+  budget: LlmBudgetManager,
+  objectiveBrief: LeadObjectiveBrief
 ): Promise<ExtractBatchResult> {
   const failureReasons: string[] = [];
   const failureDetails: Array<Record<string, unknown>> = [];
@@ -1267,7 +1444,7 @@ async function extractBatch(
         },
         {
           role: "user",
-          content: buildExtractionPrompt(batch, options.message, options.filters)
+          content: buildExtractionPrompt(batch, options.message, options.filters, objectiveBrief)
         }
       ]
     },
@@ -1327,7 +1504,7 @@ async function extractBatch(
         },
         {
           role: "user",
-          content: buildExtractionPrompt(retryBatch, options.message, options.filters)
+          content: buildExtractionPrompt(retryBatch, options.message, options.filters, objectiveBrief)
         }
       ]
     },
@@ -1658,6 +1835,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     queryCount: queryPlan.queries.length,
     requestedLeadCount,
     requestedLeadCountSource: queryPlan.targetLeadCount ? "model_plan" : "fallback_parser",
+    objectiveBrief: queryPlan.objectiveBrief,
     filtersApplied: options.filters,
     usedModelPlan: queryPlan.usedModelPlan,
     plannerFailureReason: queryPlan.plannerFailureReason,
@@ -1818,7 +1996,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
       llmCallsRemaining: budget.remaining
     });
 
-    const extraction = await extractBatch(batch, options, budget);
+    const extraction = await extractBatch(batch, options, budget, queryPlan.objectiveBrief);
     addLlmUsage(llmUsage, extraction.llmUsage);
     extractedLeads.push(...extraction.leads);
     if (extraction.failureReasons.length > 0) {

@@ -32,6 +32,9 @@
   - `ALFRED_ENV=dev|prod` policy behavior wired through approval decision logic.
 - **Phase 7**: In progress
   - Core tests added (unit/integration/smoke/security).
+  - Architecture boundary is now explicitly documented: `Alfred` remains the domain-agnostic orchestrator while `LeadGenAgent` is a specialist workflow with its own objective-clarification contract before retrieval.
+  - Lead query planning now emits a structured `objectiveBrief` (summary + known constraints + missing constraints) and feeds that brief into extraction context, improving specialist self-alignment without hardcoding vertical assumptions.
+  - Remaining SI/MSP-specific lead assumptions were removed from runtime fallback/planner phrasing and lead-tool descriptions, making the lead pipeline user-objective-driven across verticals/B2B/B2C/supplier use cases.
   - Runtime prompt-stack composition is now in place for Alfred (master persona + lead domain + role prompts), with prompt-version metadata emitted into timeline events so long sessions keep identity/behavior context refreshed on each planner/extractor call.
   - Auto-discovered local ops tools are now available to the agent (`file_list`, `file_read`, `file_write`, `file_edit`, `shell_exec`, `process_list`, `process_stop`) with project-root path safety and policy-mode gating (`trusted` required for shell/process stop).
   - Lead quality iteration completed: multi-query search fan-out and list-page company extraction are now implemented with regression coverage.

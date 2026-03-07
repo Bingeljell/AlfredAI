@@ -59,7 +59,45 @@ test("extractObservationSignals captures structured tool failure counts", () => 
   assert.equal(signals.searchFailureCount, 2);
   assert.equal(signals.browseFailureCount, 1);
   assert.equal(signals.extractionFailureCount, 3);
+  assert.equal(signals.semanticMissCount, 0);
+  assert.equal(signals.retrievalBlockedCount, 0);
+  assert.ok(signals.failureCodes.includes("search_unhealthy"));
+  assert.ok(signals.failureCodes.includes("extraction_failure"));
   assert.equal(signals.hadLlmBudgetExhausted, true);
+});
+
+test("extractObservationSignals marks semantic miss and retrieval blocked failure codes", () => {
+  const signals = plannerFailureGuardrailsForTests.extractObservationSignals([
+    {
+      tool: "lead_pipeline",
+      status: "ok",
+      durationMs: 1000,
+      output: {
+        queryCount: 5,
+        pagesVisited: 9,
+        rawCandidateCount: 0,
+        searchFailureCount: 0,
+        extractionFailureCount: 0
+      }
+    },
+    {
+      tool: "lead_pipeline",
+      status: "ok",
+      durationMs: 900,
+      output: {
+        queryCount: 5,
+        pagesVisited: 0,
+        rawCandidateCount: 0,
+        searchFailureCount: 5,
+        extractionFailureCount: 0
+      }
+    }
+  ]);
+
+  assert.equal(signals.semanticMissCount, 1);
+  assert.equal(signals.retrievalBlockedCount, 1);
+  assert.ok(signals.failureCodes.includes("semantic_miss"));
+  assert.ok(signals.failureCodes.includes("search_retrieval_blocked"));
 });
 
 test("extractObservationSignals counts search tool errors as search failures", () => {
@@ -269,6 +307,73 @@ test("search query guardrail fills missing/invalid query from user message", () 
   assert.equal(guarded.reason, "search_query_missing_or_invalid");
   assert.equal(guarded.calls[0]?.tool, "search");
   assert.equal(guarded.calls[0]?.input.query, "Find 20 MSP/SI leads in USA with emails");
+});
+
+test("novelty guardrail switches repeated low-yield lead pipeline to search diversification", () => {
+  const guarded = plannerFailureGuardrailsForTests.applyNoveltyGuardrail(
+    {
+      type: "single",
+      tool: "lead_pipeline",
+      input: {
+        maxPages: 10,
+        llmMaxCalls: 12,
+        extractionBatchSize: 6,
+        browseConcurrency: 6,
+        minConfidence: 0.7,
+        runEmailEnrichment: true
+      }
+    },
+    [
+      {
+        iteration: 1,
+        actionType: "single",
+        toolNames: ["lead_pipeline"],
+        yieldRelevant: true,
+        llmTokensUsed: 1000,
+        newLeadCount: 0,
+        totalLeadCount: 0,
+        failedToolCount: 0,
+        searchFailureCount: 0,
+        browseFailureCount: 1,
+        extractionFailureCount: 0,
+        semanticMissCount: 1,
+        retrievalBlockedCount: 0,
+        failureCodes: ["semantic_miss"],
+        leadPipelineInputSummaries: ["maxPages=10, llmMaxCalls=12, batch=6, concurrency=6, minConf=0.7, emailEnrichment=true"],
+        hadLlmBudgetExhausted: false,
+        note: "first low-yield pass"
+      },
+      {
+        iteration: 2,
+        actionType: "single",
+        toolNames: ["lead_pipeline"],
+        yieldRelevant: true,
+        llmTokensUsed: 1200,
+        newLeadCount: 0,
+        totalLeadCount: 0,
+        failedToolCount: 0,
+        searchFailureCount: 0,
+        browseFailureCount: 0,
+        extractionFailureCount: 0,
+        semanticMissCount: 1,
+        retrievalBlockedCount: 0,
+        failureCodes: ["semantic_miss"],
+        leadPipelineInputSummaries: ["maxPages=10, llmMaxCalls=12, batch=6, concurrency=6, minConf=0.7, emailEnrichment=true"],
+        hadLlmBudgetExhausted: false,
+        note: "second low-yield pass"
+      }
+    ],
+    "Find 20 MSP/SI leads in USA with emails",
+    2
+  );
+
+  assert.equal(guarded.adjusted, true);
+  assert.equal(guarded.reason, "repeated_low_yield_pattern");
+  assert.equal(guarded.action.type, "single");
+  if (guarded.action.type === "single") {
+    assert.equal(guarded.action.tool, "search");
+    assert.equal(typeof guarded.action.input.query, "string");
+  }
 });
 
 test("yield-per-token signal uses rolling last two yield attempts", () => {

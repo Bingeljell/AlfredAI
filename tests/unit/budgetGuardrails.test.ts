@@ -59,3 +59,51 @@ test("lead pipeline time budget honors expected per-iteration llm cap", () => {
 
   assert.equal(adjusted.llmMaxCalls, 8);
 });
+
+test("dynamic iteration ceiling expands under healthy budget and high deficit", () => {
+  const ceiling = budgetGuardrailsForTests.computeDynamicIterationCeiling({
+    configuredMaxIterations: 8,
+    observations: [],
+    budgetSnapshot: {
+      mode: "normal",
+      remainingMs: 400_000,
+      elapsedMs: 20_000,
+      remainingTimeRatio: 0.9,
+      toolCallsRemaining: 20,
+      toolCallRatio: 0.9,
+      plannerCallsRemaining: 5,
+      plannerCallRatio: 0.83,
+      llmCallsRemaining: 30,
+      llmCallRatio: 0.83
+    },
+    requestedLeadCount: 20,
+    currentLeadCount: 0,
+    diminishingThreshold: 2
+  });
+
+  assert.equal(ceiling, 6);
+});
+
+test("dynamic iteration ceiling constrains exploration in emergency mode", () => {
+  const ceiling = budgetGuardrailsForTests.computeDynamicIterationCeiling({
+    configuredMaxIterations: 8,
+    observations: [],
+    budgetSnapshot: {
+      mode: "emergency",
+      remainingMs: 120_000,
+      elapsedMs: 240_000,
+      remainingTimeRatio: 0.33,
+      toolCallsRemaining: 8,
+      toolCallRatio: 0.4,
+      plannerCallsRemaining: 1,
+      plannerCallRatio: 0.16,
+      llmCallsRemaining: 6,
+      llmCallRatio: 0.2
+    },
+    requestedLeadCount: 20,
+    currentLeadCount: 2,
+    diminishingThreshold: 2
+  });
+
+  assert.equal(ceiling, 3);
+});

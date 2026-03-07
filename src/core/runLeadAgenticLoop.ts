@@ -35,6 +35,10 @@ interface LeadAgentObservation {
   searchFailureCount: number;
   browseFailureCount: number;
   extractionFailureCount: number;
+  semanticMissCount?: number;
+  retrievalBlockedCount?: number;
+  failureCodes?: string[];
+  leadPipelineInputSummaries?: string[];
   hadLlmBudgetExhausted: boolean;
   note: string;
 }
@@ -390,7 +394,8 @@ export const leadDedupeForTests = {
 export const plannerFailureGuardrailsForTests = {
   applyFailureGuardrail,
   extractObservationSignals,
-  applySearchQueryGuardrail
+  applySearchQueryGuardrail,
+  applyNoveltyGuardrail
 };
 
 export const plannerContextForTests = {
@@ -398,7 +403,8 @@ export const plannerContextForTests = {
   buildRecentPerformanceSummary,
   computeYieldPerTokenSignal,
   computeExpectedLlmCapForIteration,
-  computeDeficitStrategy
+  computeDeficitStrategy,
+  buildFailureCodeSummary
 };
 
 function summarizeToolResult(result: ToolRunResult): string {
@@ -567,6 +573,8 @@ function buildRecentPerformanceSummary(observations: LeadAgentObservation[], thr
   const normalizedZeroYieldStreak = zeroYieldStreak === -1 ? yieldRelevant.length : zeroYieldStreak;
   const searchFailures = recent.reduce((sum, item) => sum + item.searchFailureCount, 0);
   const extractionFailures = recent.reduce((sum, item) => sum + item.extractionFailureCount, 0);
+  const semanticMisses = recent.reduce((sum, item) => sum + (item.semanticMissCount ?? 0), 0);
+  const retrievalBlocks = recent.reduce((sum, item) => sum + (item.retrievalBlockedCount ?? 0), 0);
   const yieldSignal = computeYieldPerTokenSignal(yieldRelevant);
 
   return [
@@ -576,9 +584,25 @@ function buildRecentPerformanceSummary(observations: LeadAgentObservation[], thr
     `yieldZeroStreak=${normalizedZeroYieldStreak}`,
     `searchFailures=${searchFailures}`,
     `extractionFailures=${extractionFailures}`,
+    `semanticMisses=${semanticMisses}`,
+    `retrievalBlocks=${retrievalBlocks}`,
     `yieldPer1kTokens=${yieldSignal.averageLeadsPer1kTokens.toFixed(2)}`,
     `yieldAlert=${yieldSignal.status}`
   ].join(", ");
+}
+
+function buildFailureCodeSummary(observations: LeadAgentObservation[], maxItems = 6): Array<{ code: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const observation of observations) {
+    for (const code of observation.failureCodes ?? []) {
+      counts.set(code, (counts.get(code) ?? 0) + 1);
+    }
+  }
+
+  return Array.from(counts.entries())
+    .map(([code, count]) => ({ code, count }))
+    .sort((a, b) => b.count - a.count || a.code.localeCompare(b.code))
+    .slice(0, Math.max(1, maxItems));
 }
 
 function isEmailRequestedMessage(message: string): boolean {
@@ -679,12 +703,18 @@ function extractObservationSignals(results: ToolRunResult[]): {
   searchFailureCount: number;
   browseFailureCount: number;
   extractionFailureCount: number;
+  semanticMissCount: number;
+  retrievalBlockedCount: number;
+  failureCodes: string[];
   hadLlmBudgetExhausted: boolean;
 } {
   let searchFailureCount = 0;
   let browseFailureCount = 0;
   let extractionFailureCount = 0;
+  let semanticMissCount = 0;
+  let retrievalBlockedCount = 0;
   let hadLlmBudgetExhausted = false;
+  const failureCodes = new Set<string>();
 
   for (const result of results) {
     const output = result.output ?? {};
@@ -694,6 +724,37 @@ function extractObservationSignals(results: ToolRunResult[]): {
     searchFailureCount += readNumber(output.searchFailureCount);
     browseFailureCount += readNumber(output.browseFailureCount);
     extractionFailureCount += readNumber(output.extractionFailureCount);
+    const rawCandidateCount = readNumber(output.rawCandidateCount);
+    const pagesVisited = readNumber(output.pagesVisited);
+    const queryCount = readNumber(output.queryCount);
+    const toolSearchFailures = readNumber(output.searchFailureCount);
+    const toolExtractionFailures = readNumber(output.extractionFailureCount);
+    const finalCandidateCount = readNumber(output.finalCandidateCount);
+    const emailCoverageRatio =
+      typeof output.emailCoverageRatio === "number" && Number.isFinite(output.emailCoverageRatio)
+        ? output.emailCoverageRatio
+        : undefined;
+
+    if (result.status === "error") {
+      failureCodes.add("tool_error");
+    }
+    if (toolSearchFailures > 0) {
+      failureCodes.add("search_unhealthy");
+    }
+    if (pagesVisited > 0 && rawCandidateCount === 0 && toolSearchFailures === 0 && toolExtractionFailures === 0) {
+      semanticMissCount += 1;
+      failureCodes.add("semantic_miss");
+    }
+    if (queryCount > 0 && pagesVisited === 0 && toolSearchFailures > 0) {
+      retrievalBlockedCount += 1;
+      failureCodes.add("search_retrieval_blocked");
+    }
+    if (toolExtractionFailures > 0) {
+      failureCodes.add("extraction_failure");
+    }
+    if (finalCandidateCount > 0 && typeof emailCoverageRatio === "number" && emailCoverageRatio < 0.3) {
+      failureCodes.add("low_email_coverage");
+    }
 
     const extractionSamples = Array.isArray(output.extractionFailureSamples) ? output.extractionFailureSamples : [];
     if (
@@ -703,6 +764,7 @@ function extractObservationSignals(results: ToolRunResult[]): {
       })
     ) {
       hadLlmBudgetExhausted = true;
+      failureCodes.add("llm_budget_exhausted");
     }
   }
 
@@ -710,6 +772,9 @@ function extractObservationSignals(results: ToolRunResult[]): {
     searchFailureCount,
     browseFailureCount,
     extractionFailureCount,
+    semanticMissCount,
+    retrievalBlockedCount,
+    failureCodes: Array.from(failureCodes).sort(),
     hadLlmBudgetExhausted
   };
 }
@@ -807,6 +872,71 @@ function applySearchQueryGuardrail(
   };
 }
 
+function applyNoveltyGuardrail(
+  action: AgentAction,
+  observations: LeadAgentObservation[],
+  message: string,
+  threshold: number
+): {
+  action: AgentAction;
+  adjusted: boolean;
+  reason?: string;
+} {
+  const hasLeadPipelineCall =
+    action.type === "single"
+      ? action.tool === "lead_pipeline"
+      : action.tools.some((item) => item.tool === "lead_pipeline");
+  if (!hasLeadPipelineCall) {
+    return { action, adjusted: false };
+  }
+
+  const recentLeadAttempts = observations
+    .filter((item) => item.yieldRelevant && item.toolNames.includes("lead_pipeline"))
+    .slice(-2);
+  if (recentLeadAttempts.length < 2) {
+    return { action, adjusted: false };
+  }
+
+  const repeatedLowYield = recentLeadAttempts.every((item) => item.newLeadCount < threshold);
+  if (!repeatedLowYield) {
+    return { action, adjusted: false };
+  }
+
+  const hadSemanticMiss = recentLeadAttempts.some(
+    (item) => (item.semanticMissCount ?? 0) > 0 || (item.failureCodes ?? []).includes("semantic_miss")
+  );
+  if (!hadSemanticMiss) {
+    return { action, adjusted: false };
+  }
+
+  const currentLeadInputSummary = (action.type === "single" ? [action] : action.tools)
+    .filter((call) => call.tool === "lead_pipeline")
+    .map((call) => summarizeLeadPipelineInput(call.input))
+    .join("|");
+  if (!currentLeadInputSummary) {
+    return { action, adjusted: false };
+  }
+
+  const recentInputSummaries = recentLeadAttempts.flatMap((item) => item.leadPipelineInputSummaries ?? []);
+  if (!recentInputSummaries.includes(currentLeadInputSummary)) {
+    return { action, adjusted: false };
+  }
+
+  const diversifiedQuery =
+    "small managed service providers and system integrators usa under 50 employees site:clutch.co OR site:goodfirms.co OR site:designrush.com";
+  return {
+    action: {
+      type: "single",
+      tool: "search",
+      input: {
+        query: normalizeSearchQuery(message) ?? diversifiedQuery
+      }
+    },
+    adjusted: true,
+    reason: "repeated_low_yield_pattern"
+  };
+}
+
 function buildDeterministicAssistantSummary(args: {
   leadCount: number;
   requestedLeadCount: number;
@@ -829,16 +959,20 @@ function buildDeterministicAssistantSummary(args: {
   let searchFailureCount = 0;
   let browseFailureCount = 0;
   let extractionFailureCount = 0;
+  let semanticMissCount = 0;
+  let retrievalBlockedCount = 0;
   for (const observation of args.observations) {
     searchFailureCount += observation.searchFailureCount;
     browseFailureCount += observation.browseFailureCount;
     extractionFailureCount += observation.extractionFailureCount;
+    semanticMissCount += observation.semanticMissCount ?? 0;
+    retrievalBlockedCount += observation.retrievalBlockedCount ?? 0;
   }
 
   return [
     `Leads collected: ${args.leadCount}/${args.requestedLeadCount} (deficit ${deficitCount}).`,
     `Email coverage: ${emailLeadCount}/${args.leadCount} (${(emailCoverageRatio * 100).toFixed(1)}%).`,
-    `Observed failures: search ${searchFailureCount}, browse ${browseFailureCount}, extraction ${extractionFailureCount}.`,
+    `Observed failures: search ${searchFailureCount}, browse ${browseFailureCount}, extraction ${extractionFailureCount}, semantic_miss ${semanticMissCount}, retrieval_blocked ${retrievalBlockedCount}.`,
     `LLM usage: ${args.llmUsageTotals.totalTokens} total tokens (${args.llmUsageTotals.promptTokens} prompt, ${args.llmUsageTotals.completionTokens} completion) across ${args.llmUsageTotals.callCount} calls.`,
     `Budget snapshot: mode=${args.budgetSnapshot.mode}, time ${(args.budgetSnapshot.remainingTimeRatio * 100).toFixed(0)}% (${Math.round(
       args.budgetSnapshot.remainingMs / 1000
@@ -857,6 +991,40 @@ function computeDiminishingReturns(history: LeadAgentObservation[], threshold: n
 
   const lastTwo = yieldHistory.slice(-2);
   return lastTwo.every((item) => item.newLeadCount < threshold);
+}
+
+function computeDynamicIterationCeiling(args: {
+  configuredMaxIterations: number;
+  observations: LeadAgentObservation[];
+  budgetSnapshot: BudgetSnapshot;
+  requestedLeadCount: number;
+  currentLeadCount: number;
+  diminishingThreshold: number;
+}): number {
+  const configured = Math.max(2, args.configuredMaxIterations);
+  let ceiling = Math.min(configured, 4);
+  const deficit = Math.max(0, args.requestedLeadCount - args.currentLeadCount);
+  const highDeficit = deficit > Math.max(5, Math.ceil(args.requestedLeadCount * 0.25));
+
+  if (
+    highDeficit &&
+    args.budgetSnapshot.remainingTimeRatio > 0.35 &&
+    args.budgetSnapshot.llmCallRatio > 0.35 &&
+    args.budgetSnapshot.plannerCallRatio > 0.2
+  ) {
+    ceiling = Math.min(configured, ceiling + 2);
+  }
+
+  const last = args.observations.at(-1);
+  if (last?.yieldRelevant && last.newLeadCount >= Math.max(2, args.diminishingThreshold)) {
+    ceiling = Math.min(configured, ceiling + 1);
+  }
+
+  if (args.budgetSnapshot.mode === "emergency") {
+    ceiling = Math.min(ceiling, Math.max(2, Math.min(configured, 3)));
+  }
+
+  return Math.max(2, Math.min(configured, ceiling));
 }
 
 interface LeadPipelineModeBounds {
@@ -963,7 +1131,8 @@ function applyLeadPipelineTimeBudget(
 export const budgetGuardrailsForTests = {
   applyLeadPipelineTimeBudget,
   minLeadPipelineStartMsForMode,
-  leadPipelineBoundsForMode
+  leadPipelineBoundsForMode,
+  computeDynamicIterationCeiling
 };
 
 export const diminishingReturnsForTests = {
@@ -1196,6 +1365,8 @@ async function decidePlannerAction(
       acc.searchFailureCount += item.searchFailureCount;
       acc.browseFailureCount += item.browseFailureCount;
       acc.extractionFailureCount += item.extractionFailureCount;
+      acc.semanticMissCount += item.semanticMissCount ?? 0;
+      acc.retrievalBlockedCount += item.retrievalBlockedCount ?? 0;
       acc.hadLlmBudgetExhausted = acc.hadLlmBudgetExhausted || item.hadLlmBudgetExhausted;
       return acc;
     },
@@ -1204,9 +1375,12 @@ async function decidePlannerAction(
       searchFailureCount: 0,
       browseFailureCount: 0,
       extractionFailureCount: 0,
+      semanticMissCount: 0,
+      retrievalBlockedCount: 0,
       hadLlmBudgetExhausted: false
     }
   );
+  const failureCodeSummary = buildFailureCodeSummary(lastObservations);
   const diagnostic = await runOpenAiStructuredChatWithDiagnostics(
     {
       apiKey: options.openAiApiKey,
@@ -1216,7 +1390,7 @@ async function decidePlannerAction(
         {
           role: "system",
           content:
-            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, hadLlmBudgetExhausted), a capped pastActionsSummary, and recentPerformanceSummary. React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. If failedToolCount > 0 across recent observations, your thought must acknowledge that failure signal before choosing the next action. Budget mode is dynamic: when budgetMode is conserve or emergency, prioritize high-yield/low-cost actions (search_status/search) before deep full-pipeline runs; use smaller lead_pipeline inputs and avoid expensive retries unless signal quality is high. If budget.remainingMs < 60000, prefer lightweight diagnostic/retrieval actions or stop instead of launching heavy pipelines. Honor expectedCapThisIteration by keeping lead_pipeline.llmMaxCalls at or below that value unless there is a strong, explicit reason. If deficitStrategy.recommendation is polish_only, choose lightweight polishing actions over broad discovery; if no polish-capable tools exist, stop with explanation. If yieldSignal.status is low, explicitly choose one diversification strategy and mention it in thought: strategy=query_diversify | strategy=relax_confidence | strategy=volume_no_email | strategy=deeper_crawl | strategy=stop. Avoid repeating identical search queries across consecutive low-yield iterations; diversify query wording toward small IT firms, managed IT services, or SMB-focused providers when needed. For lead_pipeline actions, you may set runEmailEnrichment=false when budget is constrained and lead deficit remains high. Use pastActionsSummary and recentPerformanceSummary to avoid repeating low-yield actions with nearly identical inputs. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
+            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, semanticMissCount, retrievalBlockedCount, hadLlmBudgetExhausted), a capped pastActionsSummary, recentPerformanceSummary, and failureCodeSummary. Treat failure codes as informative signals, not rigid deterministic instructions. React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If semanticMissCount > 0, prefer retrieval strategy changes (query diversification, directory-focused search) before repeating identical lead_pipeline settings. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. If failedToolCount > 0 across recent observations, your thought must acknowledge that failure signal before choosing the next action. Budget mode is dynamic: when budgetMode is conserve or emergency, prioritize high-yield/low-cost actions (search_status/search) before deep full-pipeline runs; use smaller lead_pipeline inputs and avoid expensive retries unless signal quality is high. If budget.remainingMs < 60000, prefer lightweight diagnostic/retrieval actions or stop instead of launching heavy pipelines. Honor expectedCapThisIteration by keeping lead_pipeline.llmMaxCalls at or below that value unless there is a strong, explicit reason. If deficitStrategy.recommendation is polish_only, choose lightweight polishing actions over broad discovery; if no polish-capable tools exist, stop with explanation. If yieldSignal.status is low, explicitly choose one diversification strategy and mention it in thought: strategy=query_diversify | strategy=relax_confidence | strategy=volume_no_email | strategy=deeper_crawl | strategy=stop. Avoid repeating identical search queries across consecutive low-yield iterations; diversify query wording toward small IT firms, managed IT services, or SMB-focused providers when needed. For lead_pipeline actions, you may set runEmailEnrichment=false when budget is constrained and lead deficit remains high. Use pastActionsSummary and recentPerformanceSummary to avoid repeating low-yield actions with nearly identical inputs. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
         },
         {
           role: "user",
@@ -1237,6 +1411,7 @@ async function decidePlannerAction(
             tools: availableTools,
             recentObservations: lastObservations,
             aggregateFailures,
+            failureCodeSummary,
             pastActionsSummary,
             recentPerformanceSummary
           })
@@ -1380,6 +1555,7 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
   let toolCallsUsed = 0;
   let stop: { reason: AgentStopReason; explanation: string } | undefined;
   let diminishingObservedOnce = false;
+  let recoveryPendingYieldAttempt = false;
   let currentBudgetMode: BudgetMode = "normal";
 
   const recordLlmUsage = async (args: {
@@ -1503,6 +1679,21 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
     const budgetSnapshotBeforePlan = computeBudgetSnapshot("pre_plan");
     const elapsedMs = budgetSnapshotBeforePlan.elapsedMs;
     const remainingMs = budgetSnapshotBeforePlan.remainingMs;
+    const adaptiveIterationCeiling = computeDynamicIterationCeiling({
+      configuredMaxIterations: options.maxIterations,
+      observations,
+      budgetSnapshot: budgetSnapshotBeforePlan,
+      requestedLeadCount: state.requestedLeadCount,
+      currentLeadCount: state.leads.length,
+      diminishingThreshold: options.diminishingThreshold
+    });
+    if (iteration > adaptiveIterationCeiling) {
+      stop = {
+        reason: "budget_exhausted",
+        explanation: `Stopped at adaptive iteration ceiling (${adaptiveIterationCeiling}/${options.maxIterations}) to conserve budget and avoid low-yield thrash.`
+      };
+      break;
+    }
     if (remainingMs <= 0 || elapsedMs > options.maxDurationMs) {
       stop = {
         reason: "budget_exhausted",
@@ -1569,6 +1760,7 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
         plannerFailureReason: plannerDecision.plannerFailureReason,
         plannerCallsUsed: plannerBudget.used,
         plannerCallsRemaining: plannerBudget.remaining,
+        adaptiveIterationCeiling,
         expectedLlmCapThisIteration: expectedLlmCapForPlan,
         deficitStrategy: deficitStrategyForPlan,
         yieldSignal: yieldSignalForPlan,
@@ -1592,7 +1784,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
     }
 
     const guardedPlan = applyFailureGuardrail(initialAction, observations);
-    const action = guardedPlan.action;
+    const noveltyGuardedPlan = applyNoveltyGuardrail(guardedPlan.action, observations, options.message, options.diminishingThreshold);
+    const action = noveltyGuardedPlan.action;
 
     if (guardedPlan.adjusted) {
       await options.runStore.appendEvent({
@@ -1604,6 +1797,20 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
           iteration,
           reason: guardedPlan.reason,
           originalAction: initialAction,
+          adjustedAction: action
+        },
+        timestamp: nowIso()
+      });
+    }
+    if (noveltyGuardedPlan.adjusted) {
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "thought",
+        eventType: "agent_plan_adjusted",
+        payload: {
+          iteration,
+          reason: noveltyGuardedPlan.reason,
           adjustedAction: action
         },
         timestamp: nowIso()
@@ -1710,6 +1917,7 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
         iteration,
         actionType: action.type,
         calls,
+        adaptiveIterationCeiling,
         expectedLlmCapThisIteration,
         deficitStrategy,
         yieldSignal,
@@ -1831,6 +2039,12 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       searchFailureCount: signals.searchFailureCount,
       browseFailureCount: signals.browseFailureCount,
       extractionFailureCount: signals.extractionFailureCount,
+      semanticMissCount: signals.semanticMissCount,
+      retrievalBlockedCount: signals.retrievalBlockedCount,
+      failureCodes: signals.failureCodes,
+      leadPipelineInputSummaries: calls
+        .filter((item) => item.tool === "lead_pipeline")
+        .map((item) => summarizeLeadPipelineInput(item.input)),
       hadLlmBudgetExhausted: signals.hadLlmBudgetExhausted,
       note: `${summarizeActionExecution(calls, results)} | ${results.map(summarizeToolResult).join(" | ")}`
     };
@@ -1850,6 +2064,9 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
         searchFailureCount: signals.searchFailureCount,
         browseFailureCount: signals.browseFailureCount,
         extractionFailureCount: signals.extractionFailureCount,
+        semanticMissCount: signals.semanticMissCount,
+        retrievalBlockedCount: signals.retrievalBlockedCount,
+        failureCodes: signals.failureCodes,
         hadLlmBudgetExhausted: signals.hadLlmBudgetExhausted,
         results,
         expectedLlmCapThisIteration,
@@ -1860,6 +2077,21 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       },
       timestamp: nowIso()
     });
+
+    const recoveredSearchThisIteration = results.some(
+      (result) =>
+        result.tool === "recover_search" &&
+        result.status === "ok" &&
+        result.output &&
+        typeof result.output === "object" &&
+        (result.output.recovery as { recovered?: unknown } | undefined)?.recovered === true
+    );
+    if (recoveredSearchThisIteration) {
+      recoveryPendingYieldAttempt = true;
+    }
+    if (observation.yieldRelevant) {
+      recoveryPendingYieldAttempt = false;
+    }
 
     const actionCancelled = results.some((result) => result.output?.cancelled === true);
     if (actionCancelled || (await options.isCancellationRequested())) {
@@ -1901,6 +2133,21 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
     }
 
     if (computeDiminishingReturns(observations, options.diminishingThreshold)) {
+      if (recoveryPendingYieldAttempt) {
+        await options.runStore.appendEvent({
+          runId: options.runId,
+          sessionId: options.sessionId,
+          phase: "observe",
+          eventType: "agent_replan",
+          payload: {
+            iteration,
+            reason: "post_recovery_yield_attempt_required",
+            explanation: "Search recovery succeeded recently; requiring one yield attempt before allowing diminishing-return stop."
+          },
+          timestamp: nowIso()
+        });
+        continue;
+      }
       if (diminishingObservedOnce) {
         stop = {
           reason: "diminishing_returns",

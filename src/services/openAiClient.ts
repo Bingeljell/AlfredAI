@@ -190,7 +190,7 @@ export async function runOpenAiChat(options: OpenAiChatOptions): Promise<string 
       Authorization: `Bearer ${options.apiKey}`
     },
     body: JSON.stringify({
-      model: options.model ?? "gpt-4.1-mini",
+      model: options.model ?? "gpt-5-mini",
       temperature: 0.2,
       messages: options.messages
     }),
@@ -229,7 +229,7 @@ export async function runOpenAiStructuredChatWithDiagnostics<T>(
         Authorization: `Bearer ${options.apiKey}`
       },
       body: JSON.stringify({
-        model: options.model ?? "gpt-4.1-mini",
+        model: options.model ?? "gpt-5-mini",
         temperature: 0,
         messages: options.messages,
         response_format: {

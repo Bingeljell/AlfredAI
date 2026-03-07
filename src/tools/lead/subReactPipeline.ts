@@ -14,6 +14,14 @@ import { LlmBudgetManager } from "./llmBudget.js";
 import { parseRequestedLeadCount } from "./requestIntent.js";
 import type { NormalizedLeadPipelineFilters } from "./filters.js";
 import { load as loadHtml } from "cheerio";
+import { composeSystemPrompt } from "../../prompts/composePrompt.js";
+import { ALFRED_MASTER_PROMPT_VERSION, ALFRED_MASTER_SYSTEM_PROMPT } from "../../prompts/master/alfred.system.js";
+import { LEAD_DOMAIN_PROMPT_VERSION, LEAD_GENERATION_DOMAIN_SYSTEM_PROMPT } from "../../prompts/domains/leadGeneration.system.js";
+import {
+  LEAD_QUERY_EXPANSION_ROLE_PROMPT_VERSION,
+  LEAD_QUERY_EXPANSION_ROLE_SYSTEM_PROMPT
+} from "../../prompts/roles/queryExpansion.system.js";
+import { LEAD_EXTRACTOR_ROLE_PROMPT_VERSION, LEAD_EXTRACTOR_ROLE_SYSTEM_PROMPT } from "../../prompts/roles/extractor.system.js";
 
 const QUERY_EXPANSION_JSON_SCHEMA = {
   type: "object",
@@ -100,7 +108,7 @@ const EXTRACTED_LEAD_BATCH_JSON_SCHEMA = {
   required: ["leads"]
 } as const;
 
-const EXTRACTION_SYSTEM_PROMPT = `
+const EXTRACTION_TASK_PROMPT = `
 You are an expert B2B lead researcher specializing in USA-based System Integrators (SI) and Managed Service Providers (MSP).
 
 Task:
@@ -174,6 +182,49 @@ Output requirements:
   - 0.55-0.59 = near-range or partial fit (allowed)
   - <0.55 = do not include
 `;
+
+function buildQueryExpansionSystemPrompt(): string {
+  return composeSystemPrompt([
+    {
+      label: `Persona ${ALFRED_MASTER_PROMPT_VERSION}`,
+      content: ALFRED_MASTER_SYSTEM_PROMPT
+    },
+    {
+      label: `Domain ${LEAD_DOMAIN_PROMPT_VERSION}`,
+      content: LEAD_GENERATION_DOMAIN_SYSTEM_PROMPT
+    },
+    {
+      label: `Role ${LEAD_QUERY_EXPANSION_ROLE_PROMPT_VERSION}`,
+      content: LEAD_QUERY_EXPANSION_ROLE_SYSTEM_PROMPT
+    },
+    {
+      label: "Directives",
+      content:
+        "Rewrite user lead requests into 3-5 targeted search queries for discovering real company entities. Include vertical+location intent and directory-style queries. Respect any explicit filter context (employee-count constraints, country, industry keywords, email intent). Also output a targetLeadCount integer when the user intent specifies quantity."
+    }
+  ]);
+}
+
+function buildExtractionSystemPrompt(): string {
+  return composeSystemPrompt([
+    {
+      label: `Persona ${ALFRED_MASTER_PROMPT_VERSION}`,
+      content: ALFRED_MASTER_SYSTEM_PROMPT
+    },
+    {
+      label: `Domain ${LEAD_DOMAIN_PROMPT_VERSION}`,
+      content: LEAD_GENERATION_DOMAIN_SYSTEM_PROMPT
+    },
+    {
+      label: `Role ${LEAD_EXTRACTOR_ROLE_PROMPT_VERSION}`,
+      content: LEAD_EXTRACTOR_ROLE_SYSTEM_PROMPT
+    },
+    {
+      label: "Extraction Directives",
+      content: EXTRACTION_TASK_PROMPT
+    }
+  ]);
+}
 
 interface LeadSubReactOptions {
   runId: string;
@@ -1108,8 +1159,7 @@ async function buildQueryPlan(message: string, options: LeadSubReactOptions, bud
       messages: [
         {
           role: "system",
-          content:
-            "Rewrite user lead requests into 3-5 targeted search queries for discovering real company entities. Include vertical+location intent and directory-style queries. Respect any explicit filter context (employee-count constraints, country, industry keywords, email intent). Also output a targetLeadCount integer when the user intent specifies quantity."
+          content: buildQueryExpansionSystemPrompt()
         },
         { role: "user", content: JSON.stringify({ request: message, filters: options.filters }) }
       ]
@@ -1213,7 +1263,7 @@ async function extractBatch(
       messages: [
         {
           role: "system",
-          content: EXTRACTION_SYSTEM_PROMPT
+          content: buildExtractionSystemPrompt()
         },
         {
           role: "user",
@@ -1273,7 +1323,7 @@ async function extractBatch(
         {
           role: "system",
           content:
-            `${EXTRACTION_SYSTEM_PROMPT}\n\nRetry context: previous attempt failed validation. Return a strictly schema-valid JSON object.`
+            `${buildExtractionSystemPrompt()}\n\nRetry context: previous attempt failed validation. Return a strictly schema-valid JSON object.`
         },
         {
           role: "user",
@@ -1570,6 +1620,11 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
   await emitStep(options.runStore, options.runId, options.sessionId, "query_expansion", {
     status: "started",
     fallbackRequestedLeadCount,
+    promptStack: {
+      master: ALFRED_MASTER_PROMPT_VERSION,
+      domain: LEAD_DOMAIN_PROMPT_VERSION,
+      role: LEAD_QUERY_EXPANSION_ROLE_PROMPT_VERSION
+    },
     llmCallsUsed: budget.used,
     llmCallsRemaining: budget.remaining
   });
@@ -1607,6 +1662,11 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     usedModelPlan: queryPlan.usedModelPlan,
     plannerFailureReason: queryPlan.plannerFailureReason,
     plannerFailureDetails: queryPlan.plannerFailureDetails,
+    promptStack: {
+      master: ALFRED_MASTER_PROMPT_VERSION,
+      domain: LEAD_DOMAIN_PROMPT_VERSION,
+      role: LEAD_QUERY_EXPANSION_ROLE_PROMPT_VERSION
+    },
     llmCallsUsed: budget.used,
     llmCallsRemaining: budget.remaining,
     llmUsage
@@ -1749,6 +1809,11 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
       status: "started",
       batchIndex: index + 1,
       totalBatches: batches.length,
+      promptStack: {
+        master: ALFRED_MASTER_PROMPT_VERSION,
+        domain: LEAD_DOMAIN_PROMPT_VERSION,
+        role: LEAD_EXTRACTOR_ROLE_PROMPT_VERSION
+      },
       llmCallsUsed: budget.used,
       llmCallsRemaining: budget.remaining
     });

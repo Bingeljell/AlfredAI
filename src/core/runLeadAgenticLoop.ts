@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { LlmUsage, LlmUsageTotals, RunOutcome, ToolCallRecord } from "../types.js";
+import type { LlmUsage, LlmUsageTotals, PolicyMode, RunOutcome, ToolCallRecord } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import { discoverLeadAgentTools } from "../agent/tools/registry.js";
@@ -10,6 +10,10 @@ import { LlmBudgetManager } from "../tools/lead/llmBudget.js";
 import type { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
 import { writeLeadsCsv } from "../tools/csv/writeCsv.js";
 import { redactValue } from "../utils/redact.js";
+import { composeSystemPrompt } from "../prompts/composePrompt.js";
+import { ALFRED_MASTER_PROMPT_VERSION, ALFRED_MASTER_SYSTEM_PROMPT } from "../prompts/master/alfred.system.js";
+import { LEAD_DOMAIN_PROMPT_VERSION, LEAD_GENERATION_DOMAIN_SYSTEM_PROMPT } from "../prompts/domains/leadGeneration.system.js";
+import { LEAD_PLANNER_ROLE_PROMPT_VERSION, LEAD_PLANNER_ROLE_SYSTEM_PROMPT } from "../prompts/roles/planner.system.js";
 
 export type AgentStopReason =
   | "target_met"
@@ -194,6 +198,7 @@ interface AgenticLoopOptions {
   plannerMaxCalls: number;
   observationWindow: number;
   diminishingThreshold: number;
+  policyMode: PolicyMode;
   isCancellationRequested: () => Promise<boolean>;
 }
 
@@ -1272,6 +1277,30 @@ function fallbackPlan(args: {
   };
 }
 
+function buildLeadPlannerSystemPrompt(): string {
+  const plannerDirectives =
+    "Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. Prioritize lead-focused tools (lead_pipeline, search, search_status, recover_search, write_csv); only use filesystem/shell/process tools when they are strictly required for debugging or recovery. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, semanticMissCount, retrievalBlockedCount, hadLlmBudgetExhausted), a capped pastActionsSummary, recentPerformanceSummary, and failureCodeSummary. Treat failure codes as informative signals, not rigid deterministic instructions. React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If semanticMissCount > 0, prefer retrieval strategy changes (query diversification, directory-focused search) before repeating identical lead_pipeline settings. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. If failedToolCount > 0 across recent observations, your thought must acknowledge that failure signal before choosing the next action. Budget mode is dynamic: when budgetMode is conserve or emergency, prioritize high-yield/low-cost actions (search_status/search) before deep full-pipeline runs; use smaller lead_pipeline inputs and avoid expensive retries unless signal quality is high. If budget.remainingMs < 60000, prefer lightweight diagnostic/retrieval actions or stop instead of launching heavy pipelines. Honor expectedCapThisIteration by keeping lead_pipeline.llmMaxCalls at or below that value unless there is a strong, explicit reason. If deficitStrategy.recommendation is polish_only, choose lightweight polishing actions over broad discovery; if no polish-capable tools exist, stop with explanation. If yieldSignal.status is low, explicitly choose one diversification strategy and mention it in thought: strategy=query_diversify | strategy=relax_confidence | strategy=volume_no_email | strategy=deeper_crawl | strategy=stop. Avoid repeating identical search queries across consecutive low-yield iterations; diversify query wording toward small IT firms, managed IT services, or SMB-focused providers when needed. For lead_pipeline actions, you may set runEmailEnrichment=false when budget is constrained and lead deficit remains high. Use pastActionsSummary and recentPerformanceSummary to avoid repeating low-yield actions with nearly identical inputs. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\").";
+
+  return composeSystemPrompt([
+    {
+      label: `Persona ${ALFRED_MASTER_PROMPT_VERSION}`,
+      content: ALFRED_MASTER_SYSTEM_PROMPT
+    },
+    {
+      label: `Domain ${LEAD_DOMAIN_PROMPT_VERSION}`,
+      content: LEAD_GENERATION_DOMAIN_SYSTEM_PROMPT
+    },
+    {
+      label: `Role ${LEAD_PLANNER_ROLE_PROMPT_VERSION}`,
+      content: LEAD_PLANNER_ROLE_SYSTEM_PROMPT
+    },
+    {
+      label: "Planner Directives",
+      content: plannerDirectives
+    }
+  ]);
+}
+
 function parseToolInputJson(inputJson: string): Record<string, unknown> | undefined {
   try {
     const parsed = JSON.parse(inputJson) as unknown;
@@ -1389,8 +1418,7 @@ async function decidePlannerAction(
       messages: [
         {
           role: "system",
-          content:
-            "You are Alfred's lead-generation planner. Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, semanticMissCount, retrievalBlockedCount, hadLlmBudgetExhausted), a capped pastActionsSummary, recentPerformanceSummary, and failureCodeSummary. Treat failure codes as informative signals, not rigid deterministic instructions. React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If semanticMissCount > 0, prefer retrieval strategy changes (query diversification, directory-focused search) before repeating identical lead_pipeline settings. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. If failedToolCount > 0 across recent observations, your thought must acknowledge that failure signal before choosing the next action. Budget mode is dynamic: when budgetMode is conserve or emergency, prioritize high-yield/low-cost actions (search_status/search) before deep full-pipeline runs; use smaller lead_pipeline inputs and avoid expensive retries unless signal quality is high. If budget.remainingMs < 60000, prefer lightweight diagnostic/retrieval actions or stop instead of launching heavy pipelines. Honor expectedCapThisIteration by keeping lead_pipeline.llmMaxCalls at or below that value unless there is a strong, explicit reason. If deficitStrategy.recommendation is polish_only, choose lightweight polishing actions over broad discovery; if no polish-capable tools exist, stop with explanation. If yieldSignal.status is low, explicitly choose one diversification strategy and mention it in thought: strategy=query_diversify | strategy=relax_confidence | strategy=volume_no_email | strategy=deeper_crawl | strategy=stop. Avoid repeating identical search queries across consecutive low-yield iterations; diversify query wording toward small IT firms, managed IT services, or SMB-focused providers when needed. For lead_pipeline actions, you may set runEmailEnrichment=false when budget is constrained and lead deficit remains high. Use pastActionsSummary and recentPerformanceSummary to avoid repeating low-yield actions with nearly identical inputs. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\")."
+          content: buildLeadPlannerSystemPrompt()
         },
         {
           role: "user",
@@ -1534,6 +1562,8 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
     sessionId: options.sessionId,
     message: options.message,
     deadlineAtMs,
+    policyMode: options.policyMode,
+    projectRoot: process.cwd(),
     runStore: options.runStore,
     searchManager: options.searchManager,
     workspaceDir: options.workspaceDir,
@@ -1651,7 +1681,12 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       maxDurationMs: options.maxDurationMs,
       maxToolCalls: options.maxToolCalls,
       llmCallBudget,
-      initialBudgetMode: currentBudgetMode
+      initialBudgetMode: currentBudgetMode,
+      promptStack: {
+        master: ALFRED_MASTER_PROMPT_VERSION,
+        domain: LEAD_DOMAIN_PROMPT_VERSION,
+        plannerRole: LEAD_PLANNER_ROLE_PROMPT_VERSION
+      }
     },
     timestamp: nowIso()
   });

@@ -32,6 +32,8 @@
   - `ALFRED_ENV=dev|prod` policy behavior wired through approval decision logic.
 - **Phase 7**: In progress
   - Core tests added (unit/integration/smoke/security).
+  - Runtime prompt-stack composition is now in place for Alfred (master persona + lead domain + role prompts), with prompt-version metadata emitted into timeline events so long sessions keep identity/behavior context refreshed on each planner/extractor call.
+  - Auto-discovered local ops tools are now available to the agent (`file_list`, `file_read`, `file_write`, `file_edit`, `shell_exec`, `process_list`, `process_stop`) with project-root path safety and policy-mode gating (`trusted` required for shell/process stop).
   - Lead quality iteration completed: multi-query search fan-out and list-page company extraction are now implemented with regression coverage.
   - Sub-ReAct lead pipeline migration completed: strict lead schema, `sub_react_step` timeline events, batched structured extraction, and persistent Playwright browser pool.
   - Playwright setup is now mandatory for the lead pipeline path with one-time browser bootstrap support.

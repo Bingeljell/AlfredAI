@@ -106,6 +106,7 @@ export async function runReActLoop(
     plannerMaxCalls: options.agentPlannerMaxCalls ?? Math.max(3, options.maxSteps),
     observationWindow: options.agentObservationWindow ?? 8,
     diminishingThreshold: options.agentDiminishingThreshold ?? 2,
+    policyMode: options.policyMode,
     isCancellationRequested: options.isCancellationRequested
   });
 

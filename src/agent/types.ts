@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import type { LeadCandidate } from "../types.js";
+import type { LeadCandidate, PolicyMode } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import type { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
@@ -24,6 +24,8 @@ export interface LeadAgentToolContext {
   sessionId: string;
   message: string;
   deadlineAtMs: number;
+  policyMode: PolicyMode;
+  projectRoot: string;
   runStore: RunStore;
   searchManager: SearchManager;
   workspaceDir: string;

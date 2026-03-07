@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
-import { runOpenAiStructuredChatWithDiagnostics } from "../../src/services/openAiClient.js";
+import { runOpenAiStructuredChatWithDiagnostics, runOpenAiChat } from "../../src/services/openAiClient.js";
 
 const SimpleSchema = z.object({
   ok: z.boolean()
@@ -137,6 +137,94 @@ test("captures usage metadata from structured OpenAI responses", async () => {
       completionTokens: 45,
       totalTokens: 168
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("omits temperature for gpt-5-mini structured calls", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody: Record<string, unknown> | undefined;
+  globalThis.fetch = async (_input, init) => {
+    const raw = typeof init?.body === "string" ? init.body : "{}";
+    capturedBody = JSON.parse(raw) as Record<string, unknown>;
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({ ok: true })
+            }
+          }
+        ]
+      }),
+      {
+        status: 200,
+        headers: {
+          "content-type": "application/json"
+        }
+      }
+    );
+  };
+
+  try {
+    const diagnostic = await runOpenAiStructuredChatWithDiagnostics(
+      {
+        apiKey: "test-key",
+        model: "gpt-5-mini",
+        schemaName: "simple_schema",
+        jsonSchema: {
+          type: "object",
+          properties: { ok: { type: "boolean" } },
+          required: ["ok"],
+          additionalProperties: false
+        },
+        messages: [{ role: "user", content: "hello" }]
+      },
+      SimpleSchema
+    );
+
+    assert.deepEqual(diagnostic.result, { ok: true });
+    assert.equal(Object.prototype.hasOwnProperty.call(capturedBody ?? {}, "temperature"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("keeps temperature for non-gpt-5 chat calls", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody: Record<string, unknown> | undefined;
+  globalThis.fetch = async (_input, init) => {
+    const raw = typeof init?.body === "string" ? init.body : "{}";
+    capturedBody = JSON.parse(raw) as Record<string, unknown>;
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: "ok"
+            }
+          }
+        ]
+      }),
+      {
+        status: 200,
+        headers: {
+          "content-type": "application/json"
+        }
+      }
+    );
+  };
+
+  try {
+    const content = await runOpenAiChat({
+      apiKey: "test-key",
+      model: "gpt-4.1-mini",
+      messages: [{ role: "user", content: "hello" }]
+    });
+
+    assert.equal(content, "ok");
+    assert.equal(capturedBody?.temperature, 0.2);
   } finally {
     globalThis.fetch = originalFetch;
   }

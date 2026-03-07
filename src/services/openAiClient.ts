@@ -143,6 +143,11 @@ interface ParsedOpenAiResponse {
   usage?: LlmUsage;
 }
 
+function shouldOmitTemperature(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  return normalized.startsWith("gpt-5");
+}
+
 function toTokenCount(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return undefined;
@@ -182,6 +187,14 @@ export async function runOpenAiChat(options: OpenAiChatOptions): Promise<string 
   if (!options.apiKey) {
     return undefined;
   }
+  const model = options.model ?? "gpt-5-mini";
+  const body: Record<string, unknown> = {
+    model,
+    messages: options.messages
+  };
+  if (!shouldOmitTemperature(model)) {
+    body.temperature = 0.2;
+  }
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -189,11 +202,7 @@ export async function runOpenAiChat(options: OpenAiChatOptions): Promise<string 
       "Content-Type": "application/json",
       Authorization: `Bearer ${options.apiKey}`
     },
-    body: JSON.stringify({
-      model: options.model ?? "gpt-5-mini",
-      temperature: 0.2,
-      messages: options.messages
-    }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(25000)
   });
 
@@ -222,25 +231,29 @@ export async function runOpenAiStructuredChatWithDiagnostics<T>(
 
   let response: Response;
   try {
+    const model = options.model ?? "gpt-5-mini";
+    const body: Record<string, unknown> = {
+      model,
+      messages: options.messages,
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: options.schemaName,
+          schema: options.jsonSchema,
+          strict: true
+        }
+      }
+    };
+    if (!shouldOmitTemperature(model)) {
+      body.temperature = 0;
+    }
     response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${options.apiKey}`
       },
-      body: JSON.stringify({
-        model: options.model ?? "gpt-5-mini",
-        temperature: 0,
-        messages: options.messages,
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: options.schemaName,
-            schema: options.jsonSchema,
-            strict: true
-          }
-        }
-      }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(35000)
     });
   } catch (error) {

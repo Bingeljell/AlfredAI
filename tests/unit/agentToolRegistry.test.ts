@@ -11,6 +11,7 @@ test("auto-discovers lead agent tools from definitions folder", async () => {
   assert.ok(tools.has("web_fetch"));
   assert.ok(tools.has("run_diagnostics"));
   assert.ok(tools.has("doc_qa"));
+  assert.ok(tools.has("writer_agent"));
   assert.ok(tools.has("email_enrich"));
   assert.ok(tools.has("search_status"));
   assert.ok(tools.has("write_csv"));

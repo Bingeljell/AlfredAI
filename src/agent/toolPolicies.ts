@@ -4,6 +4,7 @@ export const LEAD_AGENT_TOOL_ALLOWLIST = [
   "recover_search",
   "run_diagnostics",
   "doc_qa",
+  "writer_agent",
   "web_fetch",
   "email_enrich",
   "lead_pipeline",

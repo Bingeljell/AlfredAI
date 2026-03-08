@@ -2,10 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { SearchManager, SearchManagerError } from "../../src/tools/search/searchManager.js";
 import type { SearchProvider } from "../../src/tools/search/types.js";
+import type { SearchProviderName } from "../../src/types.js";
 
 class FakeProvider implements SearchProvider {
   constructor(
-    public readonly name: "searxng" | "brave",
+    public readonly name: SearchProviderName,
     private readonly healthy: boolean,
     private readonly items: number
   ) {}

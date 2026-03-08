@@ -2,7 +2,7 @@ export type PolicyMode = "trusted" | "balanced";
 
 export type RunStatus = "queued" | "running" | "completed" | "cancelled" | "failed" | "needs_approval";
 
-export type SearchProviderName = "searxng" | "brave";
+export type SearchProviderName = "searxng" | "brave" | "brightdata";
 
 export interface SessionRecord {
   id: string;

@@ -6,6 +6,7 @@ import { SessionStore } from "../memory/sessionStore.js";
 import { RunStore } from "../runs/runStore.js";
 import { SearxngProvider } from "../tools/search/providers/searxngProvider.js";
 import { BraveProvider } from "../tools/search/providers/braveProvider.js";
+import { BrightDataProvider } from "../tools/search/providers/brightDataProvider.js";
 import { SearchManager } from "../tools/search/searchManager.js";
 import { InMemoryQueue } from "../workers/inMemoryQueue.js";
 import { ChatService } from "../services/chatService.js";
@@ -34,11 +35,20 @@ const searxngProvider = new SearxngProvider(
   appConfig.searxngSearchPath,
   appConfig.searxngHealthPath
 );
+const brightDataProvider = appConfig.brightDataSearchApiKey
+  ? new BrightDataProvider({
+      apiKey: appConfig.brightDataSearchApiKey,
+      baseUrl: appConfig.brightDataSearchBaseUrl,
+      searchPath: appConfig.brightDataSearchPath,
+      engine: appConfig.brightDataSearchEngine,
+      timeoutMs: appConfig.brightDataSearchTimeoutMs
+    })
+  : undefined;
 const braveProvider = appConfig.braveSearchApiKey ? new BraveProvider(appConfig.braveSearchApiKey) : undefined;
 
 const searchManager = new SearchManager({
   primary: searxngProvider,
-  fallback: braveProvider,
+  fallback: brightDataProvider ?? braveProvider,
   primaryStartCommand: appConfig.searxngStartCommand || undefined,
   maxResults: appConfig.searchMaxResults,
   startupTimeoutMs: appConfig.searxngStartTimeoutMs,

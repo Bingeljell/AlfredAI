@@ -34,3 +34,15 @@ export async function discoverLeadAgentTools(): Promise<Map<string, LeadAgentToo
 
   return toolMap;
 }
+
+export function applyToolAllowlist(
+  toolMap: Map<string, LeadAgentToolDefinition>,
+  allowlist: string[] | undefined
+): Map<string, LeadAgentToolDefinition> {
+  const normalizedAllowlist = allowlist?.map((item) => item.trim()).filter(Boolean);
+  if (!normalizedAllowlist || normalizedAllowlist.length === 0) {
+    return toolMap;
+  }
+
+  return new Map(Array.from(toolMap.entries()).filter(([name]) => normalizedAllowlist.includes(name)));
+}

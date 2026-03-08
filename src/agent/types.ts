@@ -3,6 +3,7 @@ import type { LeadCandidate, PolicyMode } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import type { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
+import type { PagePayload } from "../tools/lead/browserPool.js";
 
 export interface LeadAgentDefaults {
   searchMaxResults: number;
@@ -17,6 +18,7 @@ export interface LeadAgentState {
   leads: LeadCandidate[];
   artifacts: string[];
   requestedLeadCount: number;
+  fetchedPages: PagePayload[];
 }
 
 export interface LeadAgentToolContext {
@@ -36,6 +38,8 @@ export interface LeadAgentToolContext {
   isCancellationRequested: () => Promise<boolean>;
   addLeads: (leads: LeadCandidate[]) => { addedCount: number; totalCount: number };
   addArtifact: (artifactPath: string) => void;
+  setFetchedPages: (pages: PagePayload[]) => void;
+  getFetchedPages: () => PagePayload[];
 }
 
 export interface LeadAgentToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {

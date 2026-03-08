@@ -5,6 +5,7 @@ import { evaluateApprovalNeed } from "./approvalPolicy.js";
 import { appendDailyNote } from "../memory/dailyNotes.js";
 import { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
 import { runLeadAgenticLoop } from "./runLeadAgenticLoop.js";
+import { resolveLeadAgentToolAllowlist } from "../agent/toolPolicies.js";
 
 interface RunReActLoopOptions {
   runStore: RunStore;
@@ -106,6 +107,7 @@ export async function runReActLoop(
     plannerMaxCalls: options.agentPlannerMaxCalls ?? Math.max(3, options.maxSteps),
     observationWindow: options.agentObservationWindow ?? 8,
     diminishingThreshold: options.agentDiminishingThreshold ?? 2,
+    toolAllowlist: resolveLeadAgentToolAllowlist(),
     policyMode: options.policyMode,
     isCancellationRequested: options.isCancellationRequested
   });

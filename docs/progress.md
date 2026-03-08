@@ -32,6 +32,9 @@
   - `ALFRED_ENV=dev|prod` policy behavior wired through approval decision logic.
 - **Phase 7**: In progress
   - Core tests added (unit/integration/smoke/security).
+  - Added standalone `web_fetch` and `email_enrich` tools so retrieval and contact enrichment can be executed independently of the monolithic `lead_pipeline` path.
+  - Added runtime tool-allowlist injection for lead-agent execution, with explicit allowlist policy wiring at the ReAct handoff boundary.
+  - Lead-agent runtime state now supports fetched-page scratch context (`setFetchedPages` / `getFetchedPages`) to prepare for deeper specialist tool-chaining.
   - Architecture boundary is now explicitly documented: `Alfred` remains the domain-agnostic orchestrator while `LeadGenAgent` is a specialist workflow with its own objective-clarification contract before retrieval.
   - Lead query planning now emits a structured `objectiveBrief` (summary + known constraints + missing constraints) and feeds that brief into extraction context, improving specialist self-alignment without hardcoding vertical assumptions.
   - Remaining SI/MSP-specific lead assumptions were removed from runtime fallback/planner phrasing and lead-tool descriptions, making the lead pipeline user-objective-driven across verticals/B2B/B2C/supplier use cases.

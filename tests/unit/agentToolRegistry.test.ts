@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { discoverLeadAgentTools } from "../../src/agent/tools/registry.js";
+import { applyToolAllowlist, discoverLeadAgentTools } from "../../src/agent/tools/registry.js";
 
 test("auto-discovers lead agent tools from definitions folder", async () => {
   const tools = await discoverLeadAgentTools();
@@ -8,6 +8,8 @@ test("auto-discovers lead agent tools from definitions folder", async () => {
   assert.ok(tools.has("lead_pipeline"));
   assert.ok(tools.has("recover_search"));
   assert.ok(tools.has("search"));
+  assert.ok(tools.has("web_fetch"));
+  assert.ok(tools.has("email_enrich"));
   assert.ok(tools.has("search_status"));
   assert.ok(tools.has("write_csv"));
   assert.ok(tools.has("file_list"));
@@ -25,4 +27,10 @@ test("auto-discovers lead agent tools from definitions folder", async () => {
     maxResults?: number;
   };
   assert.equal(parsed.maxResults, 10);
+
+  const filtered = applyToolAllowlist(tools, ["search", "web_fetch", "write_csv"]);
+  assert.equal(filtered.has("search"), true);
+  assert.equal(filtered.has("web_fetch"), true);
+  assert.equal(filtered.has("write_csv"), true);
+  assert.equal(filtered.has("lead_pipeline"), false);
 });

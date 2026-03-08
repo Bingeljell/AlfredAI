@@ -33,6 +33,7 @@
 - **Phase 7**: In progress
   - Core tests added (unit/integration/smoke/security).
   - Added standalone `web_fetch` and `email_enrich` tools so retrieval and contact enrichment can be executed independently of the monolithic `lead_pipeline` path.
+  - Runtime separation is now active: `runReActLoop` enters an Alfred master-orchestrator loop that can delegate to `LeadGenAgent`, evaluate specialist outcomes against the current turn objective, and re-delegate under the same run budget/safety guardrails.
   - Added runtime tool-allowlist injection for lead-agent execution, with explicit allowlist policy wiring at the ReAct handoff boundary.
   - Lead-agent runtime state now supports fetched-page scratch context (`setFetchedPages` / `getFetchedPages`) to prepare for deeper specialist tool-chaining.
   - Architecture boundary is now explicitly documented: `Alfred` remains the domain-agnostic orchestrator while `LeadGenAgent` is a specialist workflow with its own objective-clarification contract before retrieval.

@@ -4,8 +4,7 @@ import type { SearchManager } from "../tools/search/searchManager.js";
 import { evaluateApprovalNeed } from "./approvalPolicy.js";
 import { appendDailyNote } from "../memory/dailyNotes.js";
 import { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
-import { runLeadAgenticLoop } from "./runLeadAgenticLoop.js";
-import { resolveLeadAgentToolAllowlist } from "../agent/toolPolicies.js";
+import { runAlfredOrchestratorLoop } from "./runAlfredOrchestratorLoop.js";
 
 interface RunReActLoopOptions {
   runStore: RunStore;
@@ -78,12 +77,12 @@ export async function runReActLoop(
     sessionId,
     phase: "thought",
     eventType: "intent_identified",
-    payload: { intent: "lead_generation_agentic" },
+    payload: { intent: "master_orchestration" },
     timestamp: nowIso()
   });
 
   const leadPipelineExecutor = options.leadPipelineExecutor ?? executeLeadSubReactPipeline;
-  const outcome = await runLeadAgenticLoop({
+  const outcome = await runAlfredOrchestratorLoop({
     runStore,
     searchManager: options.searchManager,
     workspaceDir: options.workspaceDir,
@@ -107,7 +106,6 @@ export async function runReActLoop(
     plannerMaxCalls: options.agentPlannerMaxCalls ?? Math.max(3, options.maxSteps),
     observationWindow: options.agentObservationWindow ?? 8,
     diminishingThreshold: options.agentDiminishingThreshold ?? 2,
-    toolAllowlist: resolveLeadAgentToolAllowlist(),
     policyMode: options.policyMode,
     isCancellationRequested: options.isCancellationRequested
   });

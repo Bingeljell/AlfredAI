@@ -90,4 +90,8 @@ test("runReActLoop produces a completed outcome with artifact", async () => {
 
   assert.equal(outcome.status, "completed");
   assert.ok(outcome.artifactPaths?.[0]?.endsWith("leads.csv"));
+  const updatedRun = await runStore.getRun(run.runId);
+  assert.ok(updatedRun);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(events.some((event) => event.eventType === "alfred_loop_started"));
 });

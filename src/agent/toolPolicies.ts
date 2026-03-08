@@ -2,6 +2,7 @@ export const LEAD_AGENT_TOOL_ALLOWLIST = [
   "search",
   "search_status",
   "recover_search",
+  "run_diagnostics",
   "web_fetch",
   "email_enrich",
   "lead_pipeline",

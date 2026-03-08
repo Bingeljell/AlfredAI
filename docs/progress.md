@@ -37,6 +37,7 @@
   - Search fallback options now include Bright Data: when `BRIGHTDATA_SEARCH_API_KEY` is configured, gateway uses `brightdata` as fallback (ahead of `brave`) with configurable endpoint/path/engine/timeouts for quick provider testing.
   - Bright Data fallback call contract is now corrected for real runs: provider sends POST `/request` payloads with zone + target engine URL, and fallback activation now requires both API key and zone to avoid false-healthy but always-failing fallback states.
   - Added a `run_diagnostics` tool so Alfred can inspect run telemetry/debug exports directly and return structured failure summaries (tool errors, stop reasons, failure-signal aggregates, and remediation recommendations) without manual log parsing.
+  - Added a `doc_qa` tool so Alfred can answer repository/documentation questions from local files with scoped retrieval, citation-rich responses, and deterministic fallback behavior when model support is unavailable.
   - Added runtime tool-allowlist injection for lead-agent execution, with explicit allowlist policy wiring at the ReAct handoff boundary.
   - Lead-agent runtime state now supports fetched-page scratch context (`setFetchedPages` / `getFetchedPages`) to prepare for deeper specialist tool-chaining.
   - Architecture boundary is now explicitly documented: `Alfred` remains the domain-agnostic orchestrator while `LeadGenAgent` is a specialist workflow with its own objective-clarification contract before retrieval.

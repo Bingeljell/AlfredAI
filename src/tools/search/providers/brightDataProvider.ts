@@ -5,7 +5,9 @@ interface BrightDataProviderOptions {
   apiKey: string;
   baseUrl: string;
   searchPath: string;
+  zone: string;
   engine: string;
+  country: string;
   timeoutMs: number;
 }
 
@@ -103,45 +105,95 @@ function normalizeResults(payload: unknown, maxResults: number): SearchResult[] 
   return normalized;
 }
 
+function tryParseJsonString(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function normalizePayload(payload: unknown): unknown {
+  const record = asRecord(payload);
+  if (!record) {
+    return payload;
+  }
+  if ("body" in record) {
+    return tryParseJsonString(record.body);
+  }
+  if ("response" in record) {
+    return tryParseJsonString(record.response);
+  }
+  return payload;
+}
+
+function buildEngineUrl(engine: string, query: string, country: string): string {
+  const normalizedEngine = engine.trim().toLowerCase();
+  const normalizedCountry = country.trim().toLowerCase() || "us";
+  const encodedQuery = encodeURIComponent(query);
+  if (normalizedEngine === "duckduckgo") {
+    return `https://duckduckgo.com/?q=${encodedQuery}&kl=${normalizedCountry}-en`;
+  }
+  if (normalizedEngine === "google") {
+    return `https://www.google.com/search?q=${encodedQuery}&gl=${normalizedCountry}&hl=en`;
+  }
+  if (normalizedEngine === "bing") {
+    return `https://www.bing.com/search?q=${encodedQuery}&cc=${normalizedCountry}&setlang=en`;
+  }
+  return `https://duckduckgo.com/?q=${encodedQuery}&kl=${normalizedCountry}-en`;
+}
+
 export class BrightDataProvider implements SearchProvider {
   readonly name = "brightdata" as const;
 
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly searchPath: string;
+  private readonly zone: string;
   private readonly engine: string;
+  private readonly country: string;
   private readonly timeoutMs: number;
 
   constructor(options: BrightDataProviderOptions) {
     this.apiKey = options.apiKey.trim();
     this.baseUrl = options.baseUrl;
     this.searchPath = options.searchPath;
+    this.zone = options.zone.trim();
     this.engine = options.engine.trim();
+    this.country = options.country.trim();
     this.timeoutMs = options.timeoutMs;
   }
 
   async healthcheck(): Promise<boolean> {
-    return this.apiKey.length > 0;
+    return this.apiKey.length > 0 && this.zone.length > 0;
   }
 
   async search(query: string, maxResults: number): Promise<SearchResult[]> {
     if (!this.apiKey) {
       throw new Error("Bright Data API key is not configured");
     }
-
-    const searchUrl = new URL(this.searchPath, this.baseUrl);
-    searchUrl.searchParams.set("q", query);
-    searchUrl.searchParams.set("format", "json");
-    searchUrl.searchParams.set("num_results", String(maxResults));
-    if (this.engine) {
-      searchUrl.searchParams.set("engine", this.engine);
+    if (!this.zone) {
+      throw new Error("Bright Data zone is not configured");
     }
 
+    const searchUrl = new URL(this.searchPath, this.baseUrl);
+
     const response = await fetch(searchUrl, {
+      method: "POST",
       headers: {
         Accept: "application/json",
+        "Content-Type": "application/json",
         Authorization: `Bearer ${this.apiKey}`
       },
+      body: JSON.stringify({
+        zone: this.zone,
+        format: "json",
+        url: buildEngineUrl(this.engine, query, this.country),
+        method: "GET"
+      }),
       signal: AbortSignal.timeout(this.timeoutMs)
     });
 
@@ -152,8 +204,7 @@ export class BrightDataProvider implements SearchProvider {
       );
     }
 
-    const payload = (await response.json()) as unknown;
+    const payload = normalizePayload((await response.json()) as unknown);
     return normalizeResults(payload, maxResults);
   }
 }
-

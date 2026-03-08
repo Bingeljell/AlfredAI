@@ -35,6 +35,7 @@
   - Added standalone `web_fetch` and `email_enrich` tools so retrieval and contact enrichment can be executed independently of the monolithic `lead_pipeline` path.
   - Runtime separation is now active: `runReActLoop` enters an Alfred master-orchestrator loop that can delegate to `LeadGenAgent`, evaluate specialist outcomes against the current turn objective, and re-delegate under the same run budget/safety guardrails.
   - Search fallback options now include Bright Data: when `BRIGHTDATA_SEARCH_API_KEY` is configured, gateway uses `brightdata` as fallback (ahead of `brave`) with configurable endpoint/path/engine/timeouts for quick provider testing.
+  - Bright Data fallback call contract is now corrected for real runs: provider sends POST `/request` payloads with zone + target engine URL, and fallback activation now requires both API key and zone to avoid false-healthy but always-failing fallback states.
   - Added runtime tool-allowlist injection for lead-agent execution, with explicit allowlist policy wiring at the ReAct handoff boundary.
   - Lead-agent runtime state now supports fetched-page scratch context (`setFetchedPages` / `getFetchedPages`) to prepare for deeper specialist tool-chaining.
   - Architecture boundary is now explicitly documented: `Alfred` remains the domain-agnostic orchestrator while `LeadGenAgent` is a specialist workflow with its own objective-clarification contract before retrieval.

@@ -35,12 +35,14 @@ const searxngProvider = new SearxngProvider(
   appConfig.searxngSearchPath,
   appConfig.searxngHealthPath
 );
-const brightDataProvider = appConfig.brightDataSearchApiKey
+const brightDataProvider = appConfig.brightDataSearchApiKey && appConfig.brightDataSearchZone
   ? new BrightDataProvider({
       apiKey: appConfig.brightDataSearchApiKey,
       baseUrl: appConfig.brightDataSearchBaseUrl,
       searchPath: appConfig.brightDataSearchPath,
+      zone: appConfig.brightDataSearchZone,
       engine: appConfig.brightDataSearchEngine,
+      country: appConfig.brightDataSearchCountry,
       timeoutMs: appConfig.brightDataSearchTimeoutMs
     })
   : undefined;

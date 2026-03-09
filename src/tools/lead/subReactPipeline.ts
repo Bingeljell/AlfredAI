@@ -13,6 +13,7 @@ import {
   ExtractedLeadBatchSchema,
   QueryExpansionSchema,
   type ExtractedLead,
+  type LeadExecutionBrief,
   type LeadObjectiveBrief
 } from "./schemas.js";
 import { LlmBudgetManager } from "./llmBudget.js";
@@ -282,6 +283,7 @@ interface LeadSubReactOptions {
   softStopRemainingMs?: number;
   minConfidence: number;
   runEmailEnrichment?: boolean;
+  executionBrief?: LeadExecutionBrief;
   filters?: NormalizedLeadPipelineFilters;
   deadlineAtMs?: number;
   isCancellationRequested?: () => Promise<boolean>;
@@ -1312,7 +1314,8 @@ function diagnosticDetails(diagnostic: StructuredChatDiagnostic<unknown>, attemp
 }
 
 async function buildQueryPlan(message: string, options: LeadSubReactOptions, budget: LlmBudgetManager): Promise<QueryPlanResult> {
-  const fallbackObjectiveBrief = inferFallbackObjectiveBrief(message, options.filters, isEmailRequested(message, options.filters));
+  const fallbackObjectiveBrief = options.executionBrief?.objectiveBrief
+    ?? inferFallbackObjectiveBrief(message, options.filters, isEmailRequested(message, options.filters));
   if (!options.openAiApiKey || !budget.consume()) {
     return {
       queries: fallbackQueryExpansion(message, options.filters),
@@ -1333,7 +1336,14 @@ async function buildQueryPlan(message: string, options: LeadSubReactOptions, bud
           role: "system",
           content: buildQueryExpansionSystemPrompt()
         },
-        { role: "user", content: JSON.stringify({ request: message, filters: options.filters }) }
+        {
+          role: "user",
+          content: JSON.stringify({
+            request: message,
+            filters: options.filters,
+            canonicalLeadBrief: options.executionBrief ?? null
+          })
+        }
       ]
     },
     QueryExpansionSchema
@@ -1353,7 +1363,8 @@ async function buildQueryPlan(message: string, options: LeadSubReactOptions, bud
   return {
     queries: diagnostic.result.queries.map((query) => query.trim()).filter(Boolean).slice(0, 5),
     targetLeadCount: diagnostic.result.targetLeadCount ?? undefined,
-    objectiveBrief: sanitizeObjectiveBrief(diagnostic.result.objectiveBrief, fallbackObjectiveBrief),
+    objectiveBrief: options.executionBrief?.objectiveBrief
+      ?? sanitizeObjectiveBrief(diagnostic.result.objectiveBrief, fallbackObjectiveBrief),
     usedModelPlan: true,
     llmUsage: diagnostic.usage
   };
@@ -1790,7 +1801,7 @@ async function enrichLeadEmails(
 export async function executeLeadSubReactPipeline(options: LeadSubReactOptions): Promise<LeadSubReactResult> {
   const budget = new LlmBudgetManager(options.llmMaxCalls);
   const llmUsage = emptyLlmUsageTotals();
-  const explicitRequestedLeadCount = extractRequestedLeadCount(options.message);
+  const explicitRequestedLeadCount = options.executionBrief?.requestedLeadCount ?? extractRequestedLeadCount(options.message);
   const fallbackRequestedLeadCount = parseRequestedLeadCount(options.message);
   const targetEmployeeRange = resolveTargetEmployeeRange(options.message, options.filters);
   const emailRequested = isEmailRequested(options.message, options.filters);

@@ -28,6 +28,31 @@ test("runAlfredOrchestratorLoop responds after successful tool when completion e
     options: { schemaName: string }
   ): Promise<StructuredChatDiagnostic<T>> => {
     plannerCalls += 1;
+    if (options.schemaName === "alfred_lead_execution_brief") {
+      return {
+        result: {
+          thought: "Lead brief not needed for diagnostics.",
+          requestedLeadCount: 1,
+          emailRequired: false,
+          outputFormat: null,
+          objectiveBrief: {
+            objectiveSummary: "Diagnose the current run.",
+            companyType: null,
+            industry: null,
+            geography: null,
+            businessModel: null,
+            contactRequirement: "diagnostics requested",
+            constraintsMissing: []
+          }
+        },
+        usage: {
+          promptTokens: 40,
+          completionTokens: 10,
+          totalTokens: 50
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+
     if (options.schemaName === "alfred_orchestrator_plan") {
       return {
         result: {
@@ -121,6 +146,31 @@ test("runAlfredOrchestratorLoop records delegation telemetry and passes scratchp
   >(
     options: { schemaName: string }
   ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_lead_execution_brief") {
+      return {
+        result: {
+          thought: "Preserve the user's exact request for the lead specialist.",
+          requestedLeadCount: 3,
+          emailRequired: true,
+          outputFormat: null,
+          objectiveBrief: {
+            objectiveSummary: "Find 3 leads with emails.",
+            companyType: null,
+            industry: null,
+            geography: null,
+            businessModel: null,
+            contactRequirement: "email required",
+            constraintsMissing: []
+          }
+        },
+        usage: {
+          promptTokens: 50,
+          completionTokens: 12,
+          totalTokens: 62
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+
     if (options.schemaName === "alfred_orchestrator_plan") {
       return {
         result: {
@@ -213,6 +263,9 @@ test("runAlfredOrchestratorLoop records delegation telemetry and passes scratchp
   assert.equal(delegatedInput?.parentRunId, run.runId);
   assert.equal(delegatedInput?.delegationId, "delegation_1");
   assert.equal(delegatedInput?.scratchpad?.currentTurnObjective, "Find 3 leads with emails");
+  assert.equal(delegatedInput?.leadExecutionBrief?.requestedLeadCount, 3);
+  assert.equal(delegatedInput?.leadExecutionBrief?.emailRequired, true);
+  assert.equal(delegatedInput?.leadExecutionBrief?.objectiveBrief.contactRequirement, "email required");
 
   const updatedRun = await runStore.getRun(run.runId);
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
@@ -222,4 +275,5 @@ test("runAlfredOrchestratorLoop records delegation telemetry and passes scratchp
   assert.ok(resultEvent);
   assert.equal(delegatedEvent?.payload.delegationId, "delegation_1");
   assert.equal(resultEvent?.payload.delegationId, "delegation_1");
+  assert.equal((delegatedEvent?.payload as { leadExecutionBrief?: { requestedLeadCount?: number } } | undefined)?.leadExecutionBrief?.requestedLeadCount, 3);
 });

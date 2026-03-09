@@ -4,6 +4,7 @@ import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import type { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
 import type { PagePayload } from "../tools/lead/browserPool.js";
+import type { LeadExecutionBrief } from "../tools/lead/schemas.js";
 
 export interface LeadAgentDefaults {
   searchMaxResults: number;
@@ -19,12 +20,14 @@ export interface LeadAgentState {
   artifacts: string[];
   requestedLeadCount: number;
   fetchedPages: PagePayload[];
+  executionBrief?: LeadExecutionBrief;
 }
 
 export interface LeadAgentToolContext {
   runId: string;
   sessionId: string;
   message: string;
+  leadExecutionBrief?: LeadExecutionBrief;
   deadlineAtMs: number;
   policyMode: PolicyMode;
   projectRoot: string;

@@ -10,9 +10,16 @@ export const LeadObjectiveBriefSchema = z.object({
   constraintsMissing: z.array(z.string().min(2).max(80)).max(8).optional()
 });
 
+export const LeadExecutionBriefSchema = z.object({
+  requestedLeadCount: z.number().int().min(1).max(100),
+  objectiveBrief: LeadObjectiveBriefSchema,
+  emailRequired: z.boolean().optional(),
+  outputFormat: z.string().min(2).max(80).nullable().optional()
+});
+
 export const QueryExpansionSchema = z.object({
   queries: z.array(z.string().min(3)).min(3).max(5),
-  targetLeadCount: z.number().int().min(10).max(100).nullable().optional(),
+  targetLeadCount: z.number().int().min(1).max(100).nullable().optional(),
   objectiveBrief: LeadObjectiveBriefSchema
 });
 
@@ -39,3 +46,4 @@ export const ExtractedLeadBatchSchema = z.object({
 export type ExtractedLead = z.infer<typeof ExtractedLeadSchema>;
 export type ExtractedLeadBatch = z.infer<typeof ExtractedLeadBatchSchema>;
 export type LeadObjectiveBrief = z.infer<typeof LeadObjectiveBriefSchema>;
+export type LeadExecutionBrief = z.infer<typeof LeadExecutionBriefSchema>;

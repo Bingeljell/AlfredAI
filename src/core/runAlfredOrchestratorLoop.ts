@@ -13,6 +13,8 @@ import { applyToolAllowlist, discoverLeadAgentTools } from "../agent/tools/regis
 import { resolveLeadAgentToolAllowlist } from "../agent/toolPolicies.js";
 import { redactValue } from "../utils/redact.js";
 import { listAgentSkills } from "../agent/skills/registry.js";
+import { LeadExecutionBriefSchema, type LeadExecutionBrief } from "../tools/lead/schemas.js";
+import { parseRequestedLeadCount } from "../tools/lead/requestIntent.js";
 
 interface AlfredOrchestratorOptions {
   runStore: RunStore;
@@ -54,6 +56,14 @@ interface AlfredCompletionEvaluation {
   responseText: string | null;
   continueReason: string | null;
   confidence: number;
+}
+
+interface AlfredLeadBriefOutput {
+  thought: string;
+  requestedLeadCount: number;
+  emailRequired: boolean;
+  outputFormat: string | null;
+  objectiveBrief: LeadExecutionBrief["objectiveBrief"];
 }
 
 const ALFRED_PLANNER_OUTPUT_JSON_SCHEMA = {
@@ -100,6 +110,52 @@ const AlfredCompletionEvaluationSchema: z.ZodType<AlfredCompletionEvaluation> = 
   responseText: z.string().min(1).max(4000).nullable(),
   continueReason: z.string().min(1).max(500).nullable(),
   confidence: z.number().min(0).max(1)
+});
+
+const ALFRED_LEAD_BRIEF_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    thought: { type: "string", minLength: 1, maxLength: 500 },
+    requestedLeadCount: { type: "integer", minimum: 1, maximum: 100 },
+    emailRequired: { type: "boolean" },
+    outputFormat: { anyOf: [{ type: "string", minLength: 2, maxLength: 80 }, { type: "null" }] },
+    objectiveBrief: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        objectiveSummary: { type: "string", minLength: 8, maxLength: 400 },
+        companyType: { anyOf: [{ type: "string", minLength: 2, maxLength: 160 }, { type: "null" }] },
+        industry: { anyOf: [{ type: "string", minLength: 2, maxLength: 160 }, { type: "null" }] },
+        geography: { anyOf: [{ type: "string", minLength: 2, maxLength: 160 }, { type: "null" }] },
+        businessModel: { anyOf: [{ type: "string", minLength: 2, maxLength: 80 }, { type: "null" }] },
+        contactRequirement: { anyOf: [{ type: "string", minLength: 2, maxLength: 160 }, { type: "null" }] },
+        constraintsMissing: {
+          type: "array",
+          maxItems: 8,
+          items: { type: "string", minLength: 2, maxLength: 80 }
+        }
+      },
+      required: [
+        "objectiveSummary",
+        "companyType",
+        "industry",
+        "geography",
+        "businessModel",
+        "contactRequirement",
+        "constraintsMissing"
+      ]
+    }
+  },
+  required: ["thought", "requestedLeadCount", "emailRequired", "outputFormat", "objectiveBrief"]
+} as const;
+
+const AlfredLeadBriefOutputSchema: z.ZodType<AlfredLeadBriefOutput> = z.object({
+  thought: z.string().min(1).max(500),
+  requestedLeadCount: z.number().int().min(1).max(100),
+  emailRequired: z.boolean(),
+  outputFormat: z.string().min(2).max(80).nullable(),
+  objectiveBrief: LeadExecutionBriefSchema.shape.objectiveBrief
 });
 
 function nowIso(): string {
@@ -200,6 +256,91 @@ function buildAlfredCompletionEvaluatorSystemPrompt(sessionContext?: SessionProm
       content: formatSessionContextBlock(sessionContext)
     }
   ]);
+}
+
+function buildAlfredLeadBriefSystemPrompt(sessionContext?: SessionPromptContext): string {
+  return composeSystemPrompt([
+    {
+      label: `Persona ${ALFRED_MASTER_PROMPT_VERSION}`,
+      content: ALFRED_MASTER_SYSTEM_PROMPT
+    },
+    {
+      label: "Role",
+      content:
+        "You are Alfred's lead brief builder. Convert the user's current conversational request into a canonical lead-execution brief."
+    },
+    {
+      label: "Directives",
+      content:
+        "Use the current turn and relevant recent session context to infer the lead request. Preserve explicit user requirements exactly. Do not inflate counts, broaden geography, or weaken required contact/output requirements. The brief is an execution contract for downstream specialist work, not a place to reinterpret the request."
+    },
+    {
+      label: "Session Context",
+      content: formatSessionContextBlock(sessionContext)
+    }
+  ]);
+}
+
+function fallbackLeadExecutionBrief(message: string): LeadExecutionBrief {
+  const normalizedMessage = message.replace(/\s+/g, " ").trim().slice(0, 400);
+  const emailRequired = /\bemail(s)?\b/i.test(message);
+  return {
+    requestedLeadCount: parseRequestedLeadCount(message),
+    emailRequired,
+    outputFormat: /\bcsv\b/i.test(message) ? "csv" : null,
+    objectiveBrief: {
+      objectiveSummary: normalizedMessage || "Collect lead candidates matching the current user request.",
+      companyType: null,
+      industry: null,
+      geography: null,
+      businessModel: null,
+      contactRequirement: emailRequired ? "email required" : "company data requested",
+      constraintsMissing: []
+    }
+  };
+}
+
+async function buildLeadExecutionBrief(args: {
+  apiKey?: string;
+  structuredChatRunner: typeof openAiClient.runOpenAiStructuredChatWithDiagnostics;
+  message: string;
+  sessionContext?: SessionPromptContext;
+}): Promise<LeadExecutionBrief> {
+  if (!args.apiKey) {
+    return fallbackLeadExecutionBrief(args.message);
+  }
+
+  const diagnostic = await args.structuredChatRunner(
+    {
+      apiKey: args.apiKey,
+      schemaName: "alfred_lead_execution_brief",
+      jsonSchema: ALFRED_LEAD_BRIEF_JSON_SCHEMA,
+      messages: [
+        {
+          role: "system",
+          content: buildAlfredLeadBriefSystemPrompt(args.sessionContext)
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            turnObjective: args.message
+          })
+        }
+      ]
+    },
+    AlfredLeadBriefOutputSchema
+  );
+
+  if (!diagnostic.result) {
+    return fallbackLeadExecutionBrief(args.message);
+  }
+
+  return {
+    requestedLeadCount: diagnostic.result.requestedLeadCount,
+    emailRequired: diagnostic.result.emailRequired,
+    outputFormat: diagnostic.result.outputFormat,
+    objectiveBrief: diagnostic.result.objectiveBrief
+  };
 }
 
 function truncateForPrompt(value: unknown, maxLength = 2400): string {
@@ -333,8 +474,9 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   };
   const structuredChatRunner = options.structuredChatRunner ?? openAiClient.runOpenAiStructuredChatWithDiagnostics;
   const agentLoopRunner = options.agentLoopRunner ?? runAgentLoop;
-  const buildLeadAgentRuntimeOptions = (message: string): LeadAgentRuntimeOptions => ({
+  const buildLeadAgentRuntimeOptions = (message: string, leadExecutionBrief?: LeadExecutionBrief): LeadAgentRuntimeOptions => ({
     scratchpad,
+    leadExecutionBrief,
     runStore: options.runStore,
     searchManager: options.searchManager,
     workspaceDir: options.workspaceDir,
@@ -387,7 +529,15 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     if (!options.openAiApiKey) {
       const leadOutcome = await agentLoopRunner({
         skillName: "lead_agent",
-        ...buildLeadAgentRuntimeOptions(options.message)
+        ...buildLeadAgentRuntimeOptions(
+          options.message,
+          await buildLeadExecutionBrief({
+            apiKey: options.openAiApiKey,
+            structuredChatRunner,
+            message: options.message,
+            sessionContext: options.sessionContext
+          })
+        )
       });
       return leadOutcome;
     }
@@ -473,8 +623,19 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       }
 
       const delegatedMessage = (plan.delegateBrief ?? options.message).slice(0, 1200);
+      const leadExecutionBrief = agentName === "lead_agent"
+        ? await buildLeadExecutionBrief({
+            apiKey: options.openAiApiKey,
+            structuredChatRunner,
+            message: delegatedMessage,
+            sessionContext: options.sessionContext
+          })
+        : undefined;
       const delegationId = `delegation_${iteration}`;
       scratchpad[`delegation.${delegationId}.brief`] = delegatedMessage;
+      if (leadExecutionBrief) {
+        scratchpad[`delegation.${delegationId}.leadExecutionBrief`] = leadExecutionBrief;
+      }
       await options.runStore.appendEvent({
         runId: options.runId,
         sessionId: options.sessionId,
@@ -485,6 +646,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           delegationId,
           agentName,
           brief: delegatedMessage,
+          leadExecutionBrief,
           scratchpadKeys: Object.keys(scratchpad).sort()
         },
         timestamp: nowIso()
@@ -493,7 +655,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         skillName: agentName,
         parentRunId: options.runId,
         delegationId,
-        ...buildLeadAgentRuntimeOptions(delegatedMessage)
+        ...buildLeadAgentRuntimeOptions(delegatedMessage, leadExecutionBrief)
       });
       scratchpad[`delegation.${delegationId}.result`] = {
         status: leadOutcome.status,

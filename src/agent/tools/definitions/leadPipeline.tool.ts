@@ -37,13 +37,13 @@ export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInpu
       softStopRemainingMs: input.softStopRemainingMs,
       minConfidence: input.minConfidence ?? context.defaults.subReactMinConfidence,
       runEmailEnrichment: input.runEmailEnrichment,
+      executionBrief: context.leadExecutionBrief,
       filters: normalizedFilters,
       deadlineAtMs: context.deadlineAtMs,
       isCancellationRequested: context.isCancellationRequested
     });
 
     const merged = context.addLeads(outcome.leads);
-    context.state.requestedLeadCount = Math.max(context.state.requestedLeadCount, outcome.requestedLeadCount);
 
     return {
       addedLeadCount: merged.addedCount,

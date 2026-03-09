@@ -3,11 +3,13 @@ import type { RunStore } from "../../runs/runStore.js";
 import type { SearchManager } from "../../tools/search/searchManager.js";
 import type { LeadAgentDefaults } from "../types.js";
 import type { executeLeadSubReactPipeline } from "../../tools/lead/subReactPipeline.js";
+import type { LeadExecutionBrief } from "../../tools/lead/schemas.js";
 
 export interface AgentSkillRunOptions {
   parentRunId?: string;
   delegationId?: string;
   scratchpad?: Record<string, unknown>;
+  leadExecutionBrief?: LeadExecutionBrief;
   runStore: RunStore;
   searchManager: SearchManager;
   workspaceDir: string;

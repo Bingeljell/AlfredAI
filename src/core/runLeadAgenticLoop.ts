@@ -8,6 +8,7 @@ import { parseRequestedLeadCount } from "../tools/lead/requestIntent.js";
 import { runOpenAiStructuredChatWithDiagnostics } from "../services/openAiClient.js";
 import { LlmBudgetManager } from "../tools/lead/llmBudget.js";
 import type { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
+import type { LeadExecutionBrief } from "../tools/lead/schemas.js";
 import { writeLeadsCsv } from "../tools/csv/writeCsv.js";
 import { redactValue } from "../utils/redact.js";
 import { composeSystemPrompt } from "../prompts/composePrompt.js";
@@ -185,6 +186,7 @@ export interface LeadAgentRuntimeOptions {
   parentRunId?: string;
   delegationId?: string;
   scratchpad?: Record<string, unknown>;
+  leadExecutionBrief?: LeadExecutionBrief;
   runStore: RunStore;
   searchManager: SearchManager;
   workspaceDir: string;
@@ -1279,6 +1281,18 @@ function buildLeadPlannerSystemPrompt(): string {
   ]);
 }
 
+function formatLeadExecutionBriefForPrompt(brief?: LeadExecutionBrief): string | undefined {
+  if (!brief) {
+    return undefined;
+  }
+  return JSON.stringify({
+    requestedLeadCount: brief.requestedLeadCount,
+    emailRequired: brief.emailRequired ?? false,
+    outputFormat: brief.outputFormat ?? null,
+    objectiveBrief: brief.objectiveBrief
+  });
+}
+
 function parseToolInputJson(inputJson: string): Record<string, unknown> | undefined {
   try {
     const parsed = JSON.parse(inputJson) as unknown;
@@ -1399,13 +1413,14 @@ async function decidePlannerAction(
           role: "system",
           content: buildLeadPlannerSystemPrompt()
         },
-        {
-          role: "user",
-          content: JSON.stringify({
-            request: options.message,
-            iteration,
-            budget: budgetSnapshot,
-            leadDeficit,
+          {
+            role: "user",
+            content: JSON.stringify({
+              request: options.message,
+              canonicalLeadBrief: formatLeadExecutionBriefForPrompt(options.leadExecutionBrief),
+              iteration,
+              budget: budgetSnapshot,
+              leadDeficit,
             deficitStrategy,
             yieldSignal,
             expectedCapThisIteration: expectedLlmCapThisIteration,
@@ -1501,14 +1516,15 @@ export async function runLeadAgenticLoop(options: LeadAgentRuntimeOptions): Prom
       assistantText: "No tools are available for this agent configuration."
     };
   }
-  const targetLeadCount = parseRequestedLeadCount(options.message);
+  const targetLeadCount = options.leadExecutionBrief?.requestedLeadCount ?? parseRequestedLeadCount(options.message);
   const startMs = Date.now();
   const deadlineAtMs = startMs + options.maxDurationMs;
   const state: LeadAgentState = {
     leads: [],
     artifacts: [],
     requestedLeadCount: targetLeadCount,
-    fetchedPages: []
+    fetchedPages: [],
+    executionBrief: options.leadExecutionBrief
   };
   const emailRequestedByUser = isEmailRequestedMessage(options.message);
 
@@ -1556,6 +1572,7 @@ export async function runLeadAgenticLoop(options: LeadAgentRuntimeOptions): Prom
     runId: options.runId,
     sessionId: options.sessionId,
     message: options.message,
+    leadExecutionBrief: options.leadExecutionBrief,
     deadlineAtMs,
     policyMode: options.policyMode,
     projectRoot: process.cwd(),
@@ -1681,6 +1698,7 @@ export async function runLeadAgenticLoop(options: LeadAgentRuntimeOptions): Prom
       initialBudgetMode: currentBudgetMode,
       parentRunId: options.parentRunId ?? null,
       delegationId: options.delegationId ?? null,
+      leadExecutionBrief: options.leadExecutionBrief ?? null,
       scratchpadKeys: Object.keys(options.scratchpad ?? {}).sort(),
       toolAllowlist: allowlist ?? null,
       availableToolNames: Array.from(availableTools.keys()).sort(),

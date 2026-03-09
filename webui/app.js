@@ -492,28 +492,33 @@ function renderChatHistory() {
 
   const runs = state.sessionRuns.slice(0, CHAT_RUN_CAP).reverse();
   const html = runs.map((run) => {
-    const active = run.runId === state.activeRunId ? "active" : "";
+    const active = run.runId === state.activeRunId;
     const assistantPreview = buildRunAssistantPreview(run);
-    const assistantMax = active ? 1800 : 320;
+    const userMax = active ? 4000 : 1200;
+    const assistantMax = active ? 9000 : 3200;
     const artifacts = run.artifactPaths?.length ? `<span>${run.artifactPaths.length} artifacts</span>` : "";
     return `
-      <article class="message-card ${active}" data-run-id="${escapeHtml(run.runId)}">
-        <div class="message-role">User</div>
-        <div class="message-body user">${escapeHtml(toShortText(run.message, active ? 1200 : 260))}</div>
-        <div class="message-role" style="margin-top: 16px;">Alfred</div>
-        <div class="message-body assistant">${escapeHtml(toShortText(assistantPreview, assistantMax))}</div>
-        <div class="message-meta">
-          <span>${escapeHtml(statusLabel(run.status))}</span>
-          <span>${escapeHtml(shortId(run.runId))}</span>
-          <span>${escapeHtml(formatDateTime(run.updatedAt))}</span>
-          <span>${escapeHtml(formatTokenUsage(run.llmUsage || {}))}</span>
-          ${artifacts}
-        </div>
-        <div class="message-actions">
-          <button class="ghost-button" data-open-run="${escapeHtml(run.runId)}">Inspect</button>
-          <button class="ghost-button" data-export-run="${escapeHtml(run.runId)}">Export JSON</button>
-        </div>
-      </article>
+      <section class="chat-turn ${active ? "active" : ""}" data-run-id="${escapeHtml(run.runId)}">
+        <article class="chat-bubble user-bubble">
+          <div class="message-role">User</div>
+          <div class="message-body user">${escapeHtml(toShortText(run.message, userMax))}</div>
+        </article>
+        <article class="chat-bubble assistant-bubble">
+          <div class="message-role">Alfred</div>
+          <div class="message-body assistant">${escapeHtml(toShortText(assistantPreview, assistantMax))}</div>
+          <div class="message-meta">
+            <span>${escapeHtml(statusLabel(run.status))}</span>
+            <span>${escapeHtml(shortId(run.runId))}</span>
+            <span>${escapeHtml(formatDateTime(run.updatedAt))}</span>
+            <span>${escapeHtml(formatTokenUsage(run.llmUsage || {}))}</span>
+            ${artifacts}
+          </div>
+          <div class="message-actions">
+            <button class="ghost-button" data-open-run="${escapeHtml(run.runId)}">Inspect</button>
+            <button class="ghost-button" data-export-run="${escapeHtml(run.runId)}">Export JSON</button>
+          </div>
+        </article>
+      </section>
     `;
   }).join("");
   setHtmlIfChanged(els.chatHistory, html);

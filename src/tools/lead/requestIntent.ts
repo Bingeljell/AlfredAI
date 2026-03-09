@@ -1,8 +1,8 @@
 function clampLeadCount(value: number): number {
-  return Math.min(100, Math.max(10, value));
+  return Math.min(100, Math.max(1, value));
 }
 
-export function parseRequestedLeadCount(message: string): number {
+export function extractRequestedLeadCount(message: string): number | undefined {
   const directVerbPattern = /\b(?:find|get|generate)(?:\s+\w+){0,3}\s+(\d{1,3})\b/i;
   const directVerbMatch = message.match(directVerbPattern);
   if (directVerbMatch) {
@@ -21,5 +21,9 @@ export function parseRequestedLeadCount(message: string): number {
     }
   }
 
-  return 50;
+  return undefined;
+}
+
+export function parseRequestedLeadCount(message: string): number {
+  return extractRequestedLeadCount(message) ?? 50;
 }

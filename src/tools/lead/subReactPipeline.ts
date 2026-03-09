@@ -16,7 +16,7 @@ import {
   type LeadObjectiveBrief
 } from "./schemas.js";
 import { LlmBudgetManager } from "./llmBudget.js";
-import { parseRequestedLeadCount } from "./requestIntent.js";
+import { extractRequestedLeadCount, parseRequestedLeadCount } from "./requestIntent.js";
 import type { NormalizedLeadPipelineFilters } from "./filters.js";
 import { load as loadHtml } from "cheerio";
 import { composeSystemPrompt } from "../../prompts/composePrompt.js";
@@ -42,7 +42,7 @@ const QUERY_EXPANSION_JSON_SCHEMA = {
       anyOf: [
         {
           type: "integer",
-          minimum: 10,
+          minimum: 1,
           maximum: 100
         },
         {
@@ -1790,6 +1790,7 @@ async function enrichLeadEmails(
 export async function executeLeadSubReactPipeline(options: LeadSubReactOptions): Promise<LeadSubReactResult> {
   const budget = new LlmBudgetManager(options.llmMaxCalls);
   const llmUsage = emptyLlmUsageTotals();
+  const explicitRequestedLeadCount = extractRequestedLeadCount(options.message);
   const fallbackRequestedLeadCount = parseRequestedLeadCount(options.message);
   const targetEmployeeRange = resolveTargetEmployeeRange(options.message, options.filters);
   const emailRequested = isEmailRequested(options.message, options.filters);
@@ -1808,7 +1809,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
 
   const queryPlan = await buildQueryPlan(options.message, options, budget);
   addLlmUsage(llmUsage, queryPlan.llmUsage);
-  const requestedLeadCount = queryPlan.targetLeadCount ?? fallbackRequestedLeadCount;
+  const requestedLeadCount = explicitRequestedLeadCount ?? queryPlan.targetLeadCount ?? fallbackRequestedLeadCount;
 
   if (hasTimedOut(options)) {
     const timedOutEarly = qualityGate([], requestedLeadCount, options.minConfidence, targetEmployeeRange, emailRequested);
@@ -1834,7 +1835,11 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     status: "completed",
     queryCount: queryPlan.queries.length,
     requestedLeadCount,
-    requestedLeadCountSource: queryPlan.targetLeadCount ? "model_plan" : "fallback_parser",
+    requestedLeadCountSource: explicitRequestedLeadCount
+      ? "user_request"
+      : queryPlan.targetLeadCount
+        ? "model_plan"
+        : "fallback_parser",
     objectiveBrief: queryPlan.objectiveBrief,
     filtersApplied: options.filters,
     usedModelPlan: queryPlan.usedModelPlan,

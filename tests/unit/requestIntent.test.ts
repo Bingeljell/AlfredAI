@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseRequestedLeadCount } from "../../src/tools/lead/requestIntent.js";
+import { extractRequestedLeadCount, parseRequestedLeadCount } from "../../src/tools/lead/requestIntent.js";
 
 test("parses direct count with filler words", () => {
   assert.equal(parseRequestedLeadCount("Find me 20 MSP and SI companies from USA"), 20);
@@ -15,6 +15,11 @@ test("falls back to default when no count specified", () => {
 });
 
 test("applies lower and upper clamps", () => {
-  assert.equal(parseRequestedLeadCount("find me 2 leads"), 10);
+  assert.equal(parseRequestedLeadCount("find me 2 leads"), 2);
   assert.equal(parseRequestedLeadCount("find me 400 leads"), 100);
+});
+
+test("extracts explicit small asks without applying the default fallback", () => {
+  assert.equal(extractRequestedLeadCount("find me 3 leads with emails"), 3);
+  assert.equal(extractRequestedLeadCount("find MSP companies from USA"), undefined);
 });

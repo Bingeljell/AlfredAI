@@ -320,7 +320,7 @@ h3 {
 
 .session-item,
 .run-item,
-.message-card,
+.chat-bubble,
 .metric-card,
 .artifact-chip,
 .console-line {
@@ -342,7 +342,7 @@ h3 {
 
 .session-item.active,
 .run-item.active,
-.message-card.active {
+.chat-turn.active .chat-bubble {
   border-color: rgba(255, 255, 255, 0.16);
   background: linear-gradient(135deg, rgba(187, 16, 230, 0.1), rgba(255, 255, 255, 0.04));
 }
@@ -444,23 +444,40 @@ h3 {
 .chat-history {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 18px;
   max-height: var(--chat-cap-height);
   min-height: 320px;
-  padding-right: 4px;
+  padding: 2px 4px 2px 2px;
 }
 
-.message-card {
+.chat-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-bubble {
   padding: 16px;
   background: rgba(255, 255, 255, 0.03);
+  max-width: min(92%, 900px);
 }
 
-.message-card .message-role {
+.chat-turn .message-role {
   font-family: var(--mono);
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.1em;
   color: var(--text-dim);
+}
+
+.user-bubble {
+  align-self: flex-end;
+  background: linear-gradient(135deg, rgba(187, 16, 230, 0.18), rgba(230, 16, 180, 0.12));
+}
+
+.assistant-bubble {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.035);
 }
 
 .message-body,
@@ -481,6 +498,7 @@ textarea {
 .message-body {
   margin-top: 10px;
   white-space: pre-wrap;
+  word-break: break-word;
   line-height: 1.68;
   color: var(--text);
 }
@@ -496,6 +514,7 @@ textarea {
 .message-actions,
 .run-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   margin-top: 14px;
 }

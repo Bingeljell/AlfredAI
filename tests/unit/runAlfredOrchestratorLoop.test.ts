@@ -110,3 +110,115 @@ test("runAlfredOrchestratorLoop responds after successful tool when completion e
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
   assert.ok(events.some((event) => event.eventType === "alfred_completion_evaluated"));
 });
+
+test("runAlfredOrchestratorLoop records delegation telemetry and passes scratchpad to delegated agent", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-delegate");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "Find leads", "running");
+
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      return {
+        result: {
+          thought: "Delegate to the lead specialist.",
+          actionType: "delegate_agent" as const,
+          delegateAgent: "lead_agent",
+          delegateBrief: "Find 3 leads with emails",
+          toolName: null,
+          toolInputJson: null,
+          responseText: null
+        },
+        usage: {
+          promptTokens: 90,
+          completionTokens: 18,
+          totalTokens: 108
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+
+    if (options.schemaName === "alfred_completion_evaluation") {
+      return {
+        result: {
+          thought: "The delegated result is sufficient to answer the turn.",
+          shouldRespond: true,
+          responseText: "Delegated result accepted.",
+          continueReason: null,
+          confidence: 0.87
+        },
+        usage: {
+          promptTokens: 70,
+          completionTokens: 14,
+          totalTokens: 84
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  let delegatedInput: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["agentLoopRunner"]> extends (
+    options: infer TOptions
+  ) => Promise<unknown>
+    ? TOptions | undefined
+    : never;
+  const agentLoopRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["agentLoopRunner"]> = async (options) => {
+    delegatedInput = options;
+    return {
+      status: "completed",
+      assistantText: "Lead agent found 3 leads.",
+      artifactPaths: ["/tmp/fake-leads.csv"]
+    };
+  };
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message: "Find 3 leads with emails",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in delegated telemetry test");
+    },
+    maxIterations: 4,
+    maxDurationMs: 60_000,
+    maxToolCalls: 4,
+    maxParallelTools: 1,
+    plannerMaxCalls: 4,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner,
+    agentLoopRunner
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.equal(outcome.assistantText, "Delegated result accepted.");
+  assert.equal(delegatedInput?.skillName, "lead_agent");
+  assert.equal(delegatedInput?.parentRunId, run.runId);
+  assert.equal(delegatedInput?.delegationId, "delegation_1");
+  assert.equal(delegatedInput?.scratchpad?.currentTurnObjective, "Find 3 leads with emails");
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  const delegatedEvent = events.find((event) => event.eventType === "agent_delegated");
+  const resultEvent = events.find((event) => event.eventType === "agent_delegation_result");
+  assert.ok(delegatedEvent);
+  assert.ok(resultEvent);
+  assert.equal(delegatedEvent?.payload.delegationId, "delegation_1");
+  assert.equal(resultEvent?.payload.delegationId, "delegation_1");
+});

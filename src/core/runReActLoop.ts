@@ -1,4 +1,4 @@
-import type { PolicyMode, RunOutcome } from "../types.js";
+import type { PolicyMode, RunOutcome, SessionPromptContext } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import { evaluateApprovalNeed } from "./approvalPolicy.js";
@@ -28,6 +28,7 @@ interface RunReActLoopOptions {
   agentPlannerMaxCalls?: number;
   agentObservationWindow?: number;
   agentDiminishingThreshold?: number;
+  sessionContext?: SessionPromptContext;
   isCancellationRequested: () => Promise<boolean>;
 }
 
@@ -51,6 +52,22 @@ export async function runReActLoop(
     payload: { maxSteps: options.maxSteps },
     timestamp: nowIso()
   });
+
+  if (options.sessionContext) {
+    await runStore.appendEvent({
+      runId,
+      sessionId,
+      phase: "session",
+      eventType: "session_context_loaded",
+      payload: {
+        hasActiveObjective: Boolean(options.sessionContext.activeObjective),
+        hasLastCompletedRun: Boolean(options.sessionContext.lastCompletedRun?.runId),
+        artifactCount: options.sessionContext.lastArtifacts?.length ?? options.sessionContext.lastCompletedRun?.artifactPaths?.length ?? 0,
+        hasSessionSummary: Boolean(options.sessionContext.sessionSummary)
+      },
+      timestamp: nowIso()
+    });
+  }
 
   await appendDailyNote(options.workspaceDir, sessionId, "user", message);
 
@@ -107,6 +124,7 @@ export async function runReActLoop(
     observationWindow: options.agentObservationWindow ?? 8,
     diminishingThreshold: options.agentDiminishingThreshold ?? 2,
     policyMode: options.policyMode,
+    sessionContext: options.sessionContext,
     isCancellationRequested: options.isCancellationRequested
   });
 

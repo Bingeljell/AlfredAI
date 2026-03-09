@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { PolicyMode, RunOutcome } from "../types.js";
+import type { PolicyMode, RunOutcome, SessionPromptContext } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import * as openAiClient from "../services/openAiClient.js";
@@ -32,6 +32,7 @@ interface AlfredOrchestratorOptions {
   observationWindow: number;
   diminishingThreshold: number;
   policyMode: PolicyMode;
+  sessionContext?: SessionPromptContext;
   isCancellationRequested: () => Promise<boolean>;
   structuredChatRunner?: typeof openAiClient.runOpenAiStructuredChatWithDiagnostics;
   agentLoopRunner?: typeof runAgentLoop;
@@ -120,7 +121,42 @@ function parseToolInputJson(inputJson: string | null): Record<string, unknown> |
   }
 }
 
-function buildAlfredPlannerSystemPrompt(): string {
+function formatSessionContextBlock(sessionContext?: SessionPromptContext): string {
+  if (!sessionContext) {
+    return "";
+  }
+
+  const lines: string[] = [
+    "This is compact working memory from the current session. Use it when relevant to the current turn, especially if the user is clearly referring to prior work."
+  ];
+
+  if (sessionContext.activeObjective) {
+    lines.push(`- Active objective: ${sessionContext.activeObjective}`);
+  }
+  if (sessionContext.lastRunId) {
+    lines.push(`- Last run id: ${sessionContext.lastRunId}`);
+  }
+  if (sessionContext.lastCompletedRun?.runId) {
+    lines.push(`- Last completed run id: ${sessionContext.lastCompletedRun.runId}`);
+  }
+  if (sessionContext.lastCompletedRun?.message) {
+    lines.push(`- Last completed request: ${sessionContext.lastCompletedRun.message}`);
+  }
+  if (sessionContext.lastOutcomeSummary) {
+    lines.push(`- Last outcome summary: ${sessionContext.lastOutcomeSummary}`);
+  }
+  const artifacts = sessionContext.lastArtifacts ?? sessionContext.lastCompletedRun?.artifactPaths;
+  if (artifacts?.length) {
+    lines.push(`- Last artifacts: ${artifacts.join(", ")}`);
+  }
+  if (sessionContext.sessionSummary) {
+    lines.push(`- Session summary: ${sessionContext.sessionSummary}`);
+  }
+
+  return lines.join("\n");
+}
+
+function buildAlfredPlannerSystemPrompt(sessionContext?: SessionPromptContext): string {
   return composeSystemPrompt([
     {
       label: `Persona ${ALFRED_MASTER_PROMPT_VERSION}`,
@@ -135,11 +171,15 @@ function buildAlfredPlannerSystemPrompt(): string {
       label: "Directives",
       content:
         "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. Prefer delegating lead-generation execution to lead_agent. Use call_tool for lightweight diagnostics or direct retrieval when that is higher-value than full delegation. After receiving specialist output, evaluate against the turn objective and either respond or re-delegate with a refined brief. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
+    },
+    {
+      label: "Session Context",
+      content: formatSessionContextBlock(sessionContext)
     }
   ]);
 }
 
-function buildAlfredCompletionEvaluatorSystemPrompt(): string {
+function buildAlfredCompletionEvaluatorSystemPrompt(sessionContext?: SessionPromptContext): string {
   return composeSystemPrompt([
     {
       label: `Persona ${ALFRED_MASTER_PROMPT_VERSION}`,
@@ -154,6 +194,10 @@ function buildAlfredCompletionEvaluatorSystemPrompt(): string {
       label: "Directives",
       content:
         "Respond `shouldRespond=true` only when the latest successful tool or delegated agent result is sufficient to answer the current turn with reasonable honesty. If the result is partial, missing key evidence, or needs another action, set `shouldRespond=false` and explain exactly what is still missing. Keep this prompt-driven; do not invent facts beyond the observed result."
+    },
+    {
+      label: "Session Context",
+      content: formatSessionContextBlock(sessionContext)
     }
   ]);
 }
@@ -181,6 +225,7 @@ async function runCompletionEvaluator(args: {
   lastDelegationSummary: string;
   actionSummary: string;
   latestResult: unknown;
+  sessionContext?: SessionPromptContext;
 }): Promise<openAiClient.StructuredChatDiagnostic<AlfredCompletionEvaluation>> {
   return args.structuredChatRunner(
     {
@@ -190,7 +235,7 @@ async function runCompletionEvaluator(args: {
       messages: [
         {
           role: "system",
-          content: buildAlfredCompletionEvaluatorSystemPrompt()
+          content: buildAlfredCompletionEvaluatorSystemPrompt(args.sessionContext)
         },
         {
           role: "user",
@@ -322,7 +367,8 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       availableTools: availableToolSpecs,
       promptStack: {
         master: ALFRED_MASTER_PROMPT_VERSION
-      }
+      },
+      sessionContextLoaded: Boolean(options.sessionContext)
     },
     timestamp: nowIso()
   });
@@ -354,7 +400,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         messages: [
           {
             role: "system",
-            content: buildAlfredPlannerSystemPrompt()
+            content: buildAlfredPlannerSystemPrompt(options.sessionContext)
           },
           {
             role: "user",
@@ -514,7 +560,8 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
             status: leadOutcome.status,
             assistantText: leadOutcome.assistantText,
             artifactPaths: leadOutcome.artifactPaths
-          }
+          },
+          sessionContext: options.sessionContext
         });
         plannerCallsUsed += 1;
         if (completionDiagnostic.usage) {
@@ -639,7 +686,8 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           recentObservations: observations,
           lastDelegationSummary,
           actionSummary: `call_tool:${toolName}`,
-          latestResult: latestToolOutput
+          latestResult: latestToolOutput,
+          sessionContext: options.sessionContext
         });
         plannerCallsUsed += 1;
         if (completionDiagnostic.usage) {

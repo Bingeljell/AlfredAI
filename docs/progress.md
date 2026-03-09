@@ -114,6 +114,8 @@
   - Delegated skill runs now carry parent/delegation metadata plus a lightweight scratchpad scaffold, and Alfred emits explicit delegation start/result events so future sub-agents can share bounded run context without changing the current lead workflow semantics.
   - Delegation telemetry and scratchpad scaffolding now have direct orchestrator unit coverage, verifying that Alfred emits delegation start/result events and passes bounded turn context into delegated skill runs.
   - Final lead-run artifacts now persist directly into run state, and Alfred now propagates delegated `artifactPaths` immediately so session-level continuity can reference prior CSV outputs without waiting for a later run-store refresh.
+  - Session continuity now uses bounded working memory: completed runs update `lastRunId`, `lastCompletedRunId`, artifact references, and compact summaries, which are injected into Alfred as `[Session Context]` on later turns instead of relying on deterministic follow-up parsing.
+  - `/newsession` now clears only session working memory while preserving stored run history, and `session_context_loaded` telemetry plus integration/smoke tests cover both follow-up context injection and memory reset behavior.
   - Additional resiliency and production hardening tasks remain for later iterations.
 
 ## Remaining Follow-ups

@@ -1,4 +1,4 @@
-import type { RunOutcome, RunStatus } from "../types.js";
+import type { RunOutcome, RunStatus, SessionPromptContext, SessionRecord, SessionWorkingMemory } from "../types.js";
 import { runReActLoop } from "../core/runReActLoop.js";
 import type { SessionStore } from "../memory/sessionStore.js";
 import type { RunStore } from "../runs/runStore.js";
@@ -34,12 +34,147 @@ interface ChatServiceOptions {
   agentPlannerMaxCalls: number;
   agentObservationWindow: number;
   agentDiminishingThreshold: number;
+  runLoopRunner?: typeof runReActLoop;
 }
 
 export class ChatService {
   constructor(private readonly options: ChatServiceOptions) {}
 
-  private async executeRun(runId: string, sessionId: string, message: string): Promise<RunOutcome> {
+  private buildOutcomeSummary(message: string, outcome: RunOutcome): string {
+    const assistantSummary = outcome.assistantText?.replace(/\s+/g, " ").trim().slice(0, 280);
+    const parts = [`Request: ${message.trim().slice(0, 180)}`, `Status: ${outcome.status}`];
+    if (assistantSummary) {
+      parts.push(`Outcome: ${assistantSummary}`);
+    }
+    if (outcome.artifactPaths?.length) {
+      parts.push(`Artifacts: ${outcome.artifactPaths.slice(0, 3).join(", ")}`);
+    }
+    return parts.join(" | ");
+  }
+
+  private buildSessionSummary(memory: SessionWorkingMemory): string {
+    const parts: string[] = [];
+    if (memory.activeObjective) {
+      parts.push(`Active objective: ${memory.activeObjective}`);
+    }
+    if (memory.lastOutcomeSummary) {
+      parts.push(`Latest outcome: ${memory.lastOutcomeSummary}`);
+    }
+    if (memory.lastArtifacts?.length) {
+      parts.push(`Artifacts: ${memory.lastArtifacts.join(", ")}`);
+    }
+    return parts.join(" | ").slice(0, 700);
+  }
+
+  private async buildSessionContext(session: SessionRecord): Promise<SessionPromptContext | undefined> {
+    const memory = session.workingMemory;
+    if (!memory) {
+      return undefined;
+    }
+
+    let lastCompletedRun: SessionPromptContext["lastCompletedRun"];
+    if (memory.lastCompletedRunId) {
+      const run = await this.options.runStore.getRun(memory.lastCompletedRunId);
+      if (run) {
+        lastCompletedRun = {
+          runId: run.runId,
+          message: run.message.slice(0, 240),
+          assistantText: run.assistantText?.slice(0, 320),
+          artifactPaths: run.artifactPaths?.slice(0, 5),
+          completedAt: memory.lastCompletedAt ?? run.updatedAt
+        };
+      }
+    }
+
+    const context: SessionPromptContext = {
+      activeObjective: memory.activeObjective,
+      lastRunId: memory.lastRunId,
+      lastCompletedRun,
+      lastArtifacts: memory.lastArtifacts?.slice(0, 5),
+      lastOutcomeSummary: memory.lastOutcomeSummary,
+      sessionSummary: memory.sessionSummary
+    };
+
+    return Object.values(context).some((value) => {
+      if (Array.isArray(value)) {
+        return value.length > 0;
+      }
+      if (value && typeof value === "object") {
+        return Object.keys(value).length > 0;
+      }
+      return Boolean(value);
+    })
+      ? context
+      : undefined;
+  }
+
+  private async persistQueuedRunStart(sessionId: string, runId: string, message: string): Promise<void> {
+    const activeObjective = message.trim().slice(0, 240);
+    await this.options.sessionStore.updateWorkingMemory(sessionId, {
+      activeObjective,
+      lastRunId: runId,
+      sessionSummary: this.buildSessionSummary({
+        activeObjective,
+        lastRunId: runId
+      })
+    });
+  }
+
+  private async persistRunOutcome(sessionId: string, runId: string, message: string, outcome: RunOutcome): Promise<void> {
+    const lastOutcomeSummary = this.buildOutcomeSummary(message, outcome);
+    const memoryPatch: Partial<SessionWorkingMemory> = {
+      activeObjective: message.trim().slice(0, 240),
+      lastRunId: runId,
+      lastOutcomeSummary,
+      lastArtifacts: outcome.artifactPaths?.slice(0, 5) ?? []
+    };
+
+    if (outcome.status === "completed") {
+      memoryPatch.lastCompletedRunId = runId;
+      memoryPatch.lastCompletedAt = new Date().toISOString();
+    }
+
+    const mergedForSummary: SessionWorkingMemory = {
+      ...(await this.options.sessionStore.getSession(sessionId))?.workingMemory,
+      ...memoryPatch
+    };
+    memoryPatch.sessionSummary = this.buildSessionSummary(mergedForSummary);
+    await this.options.sessionStore.updateWorkingMemory(sessionId, memoryPatch);
+  }
+
+  private async handleNewSessionCommand(sessionId: string): Promise<{
+    runId: string;
+    status: RunStatus;
+    assistantText?: string;
+  }> {
+    await this.options.sessionStore.resetWorkingMemory(sessionId);
+    const run = await this.options.runStore.createRun(sessionId, "/newsession", "completed");
+    const assistantText = "Started a fresh session context. Prior run history is still stored, but Alfred will treat the next turn as a new conversation.";
+    await this.options.runStore.appendEvent({
+      runId: run.runId,
+      sessionId,
+      phase: "route",
+      eventType: "session_reset",
+      payload: {},
+      timestamp: new Date().toISOString()
+    });
+    await this.options.runStore.updateRun(run.runId, {
+      status: "completed",
+      assistantText
+    });
+    return {
+      runId: run.runId,
+      status: "completed",
+      assistantText
+    };
+  }
+
+  private async executeRun(
+    runId: string,
+    sessionId: string,
+    message: string,
+    sessionContext?: SessionPromptContext
+  ): Promise<RunOutcome> {
     if (await this.options.runStore.isCancellationRequested(runId)) {
       await this.options.runStore.appendEvent({
         runId,
@@ -78,7 +213,7 @@ export class ChatService {
     heartbeatTimer.unref?.();
 
     try {
-      const outcome = await runReActLoop(sessionId, message, runId, {
+      const outcome = await (this.options.runLoopRunner ?? runReActLoop)(sessionId, message, runId, {
         runStore: this.options.runStore,
         searchManager: this.options.searchManager,
         workspaceDir: this.options.workspaceDir,
@@ -99,6 +234,7 @@ export class ChatService {
         agentPlannerMaxCalls: this.options.agentPlannerMaxCalls,
         agentObservationWindow: this.options.agentObservationWindow,
         agentDiminishingThreshold: this.options.agentDiminishingThreshold,
+        sessionContext,
         isCancellationRequested: () => this.options.runStore.isCancellationRequested(runId)
       });
 
@@ -148,7 +284,12 @@ export class ChatService {
       throw new Error(`Session ${input.sessionId} does not exist`);
     }
 
+    if (input.message.trim() === "/newsession") {
+      return this.handleNewSessionCommand(input.sessionId);
+    }
+
     await this.options.sessionStore.touchSession(input.sessionId);
+    const sessionContext = await this.buildSessionContext(session);
     const run = await this.options.runStore.createRun(input.sessionId, input.message, input.requestJob ? "queued" : "running");
 
     await this.options.runStore.appendEvent({
@@ -161,8 +302,10 @@ export class ChatService {
     });
 
     if (input.requestJob) {
+      await this.persistQueuedRunStart(input.sessionId, run.runId, input.message);
       this.options.queue.enqueue(async () => {
-        await this.executeRun(run.runId, input.sessionId, input.message);
+        const outcome = await this.executeRun(run.runId, input.sessionId, input.message, sessionContext);
+        await this.persistRunOutcome(input.sessionId, run.runId, input.message, outcome);
       });
 
       return {
@@ -171,7 +314,8 @@ export class ChatService {
       };
     }
 
-    const outcome = await this.executeRun(run.runId, input.sessionId, input.message);
+    const outcome = await this.executeRun(run.runId, input.sessionId, input.message, sessionContext);
+    await this.persistRunOutcome(input.sessionId, run.runId, input.message, outcome);
 
     return {
       runId: run.runId,

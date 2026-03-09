@@ -4,6 +4,31 @@ export type RunStatus = "queued" | "running" | "completed" | "cancelled" | "fail
 
 export type SearchProviderName = "searxng" | "brave" | "brightdata";
 
+export interface SessionWorkingMemory {
+  activeObjective?: string;
+  lastRunId?: string;
+  lastCompletedRunId?: string;
+  lastCompletedAt?: string;
+  lastArtifacts?: string[];
+  lastOutcomeSummary?: string;
+  sessionSummary?: string;
+}
+
+export interface SessionPromptContext {
+  activeObjective?: string;
+  lastRunId?: string;
+  lastCompletedRun?: {
+    runId: string;
+    message?: string;
+    assistantText?: string;
+    artifactPaths?: string[];
+    completedAt?: string;
+  };
+  lastArtifacts?: string[];
+  lastOutcomeSummary?: string;
+  sessionSummary?: string;
+}
+
 export interface SessionRecord {
   id: string;
   name: string;
@@ -11,6 +36,7 @@ export interface SessionRecord {
   updatedAt: string;
   status: "active";
   metadata?: Record<string, unknown>;
+  workingMemory?: SessionWorkingMemory;
 }
 
 export interface SearchResult {

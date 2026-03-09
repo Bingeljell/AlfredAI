@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import type { SessionRecord } from "../types.js";
+import type { SessionRecord, SessionWorkingMemory } from "../types.js";
 import { readJsonFile, writeJsonFile } from "../utils/fs.js";
 
 const SESSIONS_FILE = "sessions/sessions.json";
@@ -53,5 +53,42 @@ export class SessionStore {
       updatedAt: new Date().toISOString()
     };
     await writeJsonFile(this.filePath, sessions);
+  }
+
+  async updateWorkingMemory(sessionId: string, patch: Partial<SessionWorkingMemory>): Promise<SessionRecord | undefined> {
+    const sessions = await this.loadSessions();
+    const index = sessions.findIndex((session) => session.id === sessionId);
+    if (index === -1) {
+      return undefined;
+    }
+
+    const updated: SessionRecord = {
+      ...sessions[index],
+      updatedAt: new Date().toISOString(),
+      workingMemory: {
+        ...(sessions[index]?.workingMemory ?? {}),
+        ...patch
+      }
+    };
+    sessions[index] = updated;
+    await writeJsonFile(this.filePath, sessions);
+    return updated;
+  }
+
+  async resetWorkingMemory(sessionId: string): Promise<SessionRecord | undefined> {
+    const sessions = await this.loadSessions();
+    const index = sessions.findIndex((session) => session.id === sessionId);
+    if (index === -1) {
+      return undefined;
+    }
+
+    const updated: SessionRecord = {
+      ...sessions[index],
+      updatedAt: new Date().toISOString(),
+      workingMemory: undefined
+    };
+    sessions[index] = updated;
+    await writeJsonFile(this.filePath, sessions);
+    return updated;
   }
 }

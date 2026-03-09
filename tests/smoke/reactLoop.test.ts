@@ -42,6 +42,19 @@ test("runReActLoop produces a completed outcome with artifact", async () => {
     subReactBatchSize: 4,
     subReactLlmMaxCalls: 6,
     subReactMinConfidence: 0.6,
+    sessionContext: {
+      activeObjective: "Find 3 leads",
+      lastRunId: "run-prev",
+      lastCompletedRun: {
+        runId: "run-prev",
+        message: "Find 3 leads",
+        assistantText: "Found 3 leads",
+        artifactPaths: ["/tmp/prev.csv"]
+      },
+      lastArtifacts: ["/tmp/prev.csv"],
+      lastOutcomeSummary: "Found 3 leads and saved CSV.",
+      sessionSummary: "Previous turn found 3 leads."
+    },
     isCancellationRequested: async () => false,
     leadPipelineExecutor: async () => ({
       leads: [
@@ -94,4 +107,5 @@ test("runReActLoop produces a completed outcome with artifact", async () => {
   assert.ok(updatedRun);
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
   assert.ok(events.some((event) => event.eventType === "alfred_loop_started"));
+  assert.ok(events.some((event) => event.eventType === "session_context_loaded"));
 });

@@ -120,6 +120,7 @@
   - Telemetry is now a proper session -> run -> trace workflow with formatted event logs, raw JSON view, and direct run export from the browser, making it much easier to capture exact run bundles for debugging.
   - Frontend automated coverage is still limited to build/syntax validation (`pnpm run build`, `node --check webui/app.js`); a browser-level UI regression harness remains a follow-up item once the shell stabilizes.
   - Browser performance pass completed: the UI now avoids repainting hidden pages during polling, skips redundant `innerHTML`/`textContent` updates, polls less aggressively, and uses lighter panel styling to reduce lag on long-running sessions.
+  - Right-rail clipping is fixed: the sticky inspector column now scrolls vertically instead of hiding overflow, so lower cards such as tokens/time and run controls remain reachable on smaller viewports.
   - Additional resiliency and production hardening tasks remain for later iterations.
 
 ## Remaining Follow-ups

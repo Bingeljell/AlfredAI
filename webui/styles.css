@@ -576,7 +576,9 @@ textarea {
   top: 18px;
   align-self: start;
   max-height: calc(100vh - 36px);
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .inspector-card {

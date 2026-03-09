@@ -181,7 +181,7 @@ const PLANNER_OUTPUT_JSON_SCHEMA = {
   required: ["thought", "actionType", "singleAction", "parallelActions", "stopReason", "stopExplanation"]
 } as const;
 
-interface AgenticLoopOptions {
+export interface LeadAgentRuntimeOptions {
   runStore: RunStore;
   searchManager: SearchManager;
   workspaceDir: string;
@@ -1327,7 +1327,7 @@ function normalizePlannerAction(output: PlannerOutput, maxParallelTools: number)
 }
 
 async function decidePlannerAction(
-  options: AgenticLoopOptions,
+  options: LeadAgentRuntimeOptions,
   plannerBudget: LlmBudgetManager,
   availableTools: Array<{ name: string; description: string; inputHint: string }>,
   iteration: number,
@@ -1488,7 +1488,7 @@ async function recordToolCall(runStore: RunStore, runId: string, call: Omit<Tool
   });
 }
 
-export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<RunOutcome> {
+export async function runLeadAgenticLoop(options: LeadAgentRuntimeOptions): Promise<RunOutcome> {
   const discoveredTools = await discoverLeadAgentTools();
   const allowlist = options.toolAllowlist?.map((item) => item.trim()).filter(Boolean);
   const availableTools = applyToolAllowlist(discoveredTools, allowlist);

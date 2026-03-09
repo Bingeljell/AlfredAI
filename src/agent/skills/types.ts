@@ -1,0 +1,33 @@
+import type { PolicyMode, RunOutcome } from "../../types.js";
+import type { RunStore } from "../../runs/runStore.js";
+import type { SearchManager } from "../../tools/search/searchManager.js";
+import type { LeadAgentDefaults } from "../types.js";
+import type { executeLeadSubReactPipeline } from "../../tools/lead/subReactPipeline.js";
+
+export interface AgentSkillRunOptions {
+  runStore: RunStore;
+  searchManager: SearchManager;
+  workspaceDir: string;
+  message: string;
+  runId: string;
+  sessionId: string;
+  openAiApiKey?: string;
+  defaults: LeadAgentDefaults;
+  leadPipelineExecutor: typeof executeLeadSubReactPipeline;
+  maxIterations: number;
+  maxDurationMs: number;
+  maxToolCalls: number;
+  maxParallelTools: number;
+  plannerMaxCalls: number;
+  observationWindow: number;
+  diminishingThreshold: number;
+  policyMode: PolicyMode;
+  isCancellationRequested: () => Promise<boolean>;
+}
+
+export interface AgentSkillDefinition {
+  name: string;
+  description: string;
+  toolAllowlist?: string[];
+  run: (options: AgentSkillRunOptions) => Promise<RunOutcome>;
+}

@@ -5,12 +5,14 @@ import type { SearchManager } from "../tools/search/searchManager.js";
 import * as openAiClient from "../services/openAiClient.js";
 import { composeSystemPrompt } from "../prompts/composePrompt.js";
 import { ALFRED_MASTER_PROMPT_VERSION, ALFRED_MASTER_SYSTEM_PROMPT } from "../prompts/master/alfred.system.js";
-import { runLeadAgenticLoop } from "./runLeadAgenticLoop.js";
+import type { LeadAgentRuntimeOptions } from "./runLeadAgenticLoop.js";
+import { runAgentLoop } from "./runAgentLoop.js";
 import { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
 import type { LeadAgentDefaults, LeadAgentState, LeadAgentToolContext } from "../agent/types.js";
 import { applyToolAllowlist, discoverLeadAgentTools } from "../agent/tools/registry.js";
 import { resolveLeadAgentToolAllowlist } from "../agent/toolPolicies.js";
 import { redactValue } from "../utils/redact.js";
+import { listAgentSkills } from "../agent/skills/registry.js";
 
 interface AlfredOrchestratorOptions {
   runStore: RunStore;
@@ -218,12 +220,10 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     description: tool.description,
     inputHint: tool.inputHint
   }));
-  const availableAgents = [
-    {
-      name: "lead_agent",
-      description: "Specialist agent for lead generation and enrichment workflows."
-    }
-  ];
+  const availableAgents = listAgentSkills().map((skill) => ({
+    name: skill.name,
+    description: skill.description
+  }));
 
   const alfredState: LeadAgentState = {
     leads: [],
@@ -283,6 +283,26 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   let lastDelegationSummary = "No delegation attempted yet.";
   let lastCompletionNote = "No completion evaluation yet.";
   const structuredChatRunner = options.structuredChatRunner ?? openAiClient.runOpenAiStructuredChatWithDiagnostics;
+  const buildLeadAgentRuntimeOptions = (message: string): LeadAgentRuntimeOptions => ({
+    runStore: options.runStore,
+    searchManager: options.searchManager,
+    workspaceDir: options.workspaceDir,
+    message,
+    runId: options.runId,
+    sessionId: options.sessionId,
+    openAiApiKey: options.openAiApiKey,
+    defaults: options.defaults,
+    leadPipelineExecutor: options.leadPipelineExecutor,
+    maxIterations: options.maxIterations,
+    maxDurationMs: Math.max(60_000, options.maxDurationMs - (Date.now() - startMs)),
+    maxToolCalls: options.maxToolCalls,
+    maxParallelTools: options.maxParallelTools,
+    plannerMaxCalls: options.plannerMaxCalls,
+    observationWindow: options.observationWindow,
+    diminishingThreshold: options.diminishingThreshold,
+    policyMode: options.policyMode,
+    isCancellationRequested: options.isCancellationRequested
+  });
 
   await options.runStore.appendEvent({
     runId: options.runId,
@@ -313,26 +333,9 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     }
 
     if (!options.openAiApiKey) {
-      const leadOutcome = await runLeadAgenticLoop({
-        runStore: options.runStore,
-        searchManager: options.searchManager,
-        workspaceDir: options.workspaceDir,
-        message: options.message,
-        runId: options.runId,
-        sessionId: options.sessionId,
-        openAiApiKey: options.openAiApiKey,
-        defaults: options.defaults,
-        leadPipelineExecutor: options.leadPipelineExecutor,
-        maxIterations: options.maxIterations,
-        maxDurationMs: Math.max(60_000, options.maxDurationMs - (Date.now() - startMs)),
-        maxToolCalls: options.maxToolCalls,
-        maxParallelTools: options.maxParallelTools,
-        plannerMaxCalls: options.plannerMaxCalls,
-        observationWindow: options.observationWindow,
-        diminishingThreshold: options.diminishingThreshold,
-        toolAllowlist: leadAgentAllowlist,
-        policyMode: options.policyMode,
-        isCancellationRequested: options.isCancellationRequested
+      const leadOutcome = await runAgentLoop({
+        skillName: "lead_agent",
+        ...buildLeadAgentRuntimeOptions(options.message)
       });
       return leadOutcome;
     }
@@ -408,7 +411,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
 
     if (plan.actionType === "delegate_agent") {
       const agentName = plan.delegateAgent?.trim().toLowerCase();
-      if (agentName !== "lead_agent") {
+      if (!agentName || !availableAgents.some((agent) => agent.name === agentName)) {
         observations.push({
           iteration,
           summary: `unsupported_delegate:${plan.delegateAgent ?? "null"}`,
@@ -418,26 +421,9 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       }
 
       const delegatedMessage = (plan.delegateBrief ?? options.message).slice(0, 1200);
-      const leadOutcome = await runLeadAgenticLoop({
-        runStore: options.runStore,
-        searchManager: options.searchManager,
-        workspaceDir: options.workspaceDir,
-        message: delegatedMessage,
-        runId: options.runId,
-        sessionId: options.sessionId,
-        openAiApiKey: options.openAiApiKey,
-        defaults: options.defaults,
-        leadPipelineExecutor: options.leadPipelineExecutor,
-        maxIterations: options.maxIterations,
-        maxDurationMs: Math.max(60_000, options.maxDurationMs - (Date.now() - startMs)),
-        maxToolCalls: options.maxToolCalls,
-        maxParallelTools: options.maxParallelTools,
-        plannerMaxCalls: options.plannerMaxCalls,
-        observationWindow: options.observationWindow,
-        diminishingThreshold: options.diminishingThreshold,
-        toolAllowlist: leadAgentAllowlist,
-        policyMode: options.policyMode,
-        isCancellationRequested: options.isCancellationRequested
+      const leadOutcome = await runAgentLoop({
+        skillName: agentName,
+        ...buildLeadAgentRuntimeOptions(delegatedMessage)
       });
 
       const runRecord = await options.runStore.getRun(options.runId);

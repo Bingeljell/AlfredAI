@@ -1,8 +1,8 @@
 const CHAT_RUN_CAP = 24;
 const TELEMETRY_EVENT_CAP = 400;
 const RAW_VIEW_CAP = 120_000;
-const POLL_INTERVAL_MS = 2_500;
-const PROVIDER_REFRESH_MS = 30_000;
+const POLL_INTERVAL_MS = 4_000;
+const PROVIDER_REFRESH_MS = 60_000;
 
 const VIEW_META = {
   workspace: {
@@ -92,6 +92,20 @@ const els = {
     settings: document.getElementById("settings-page")
   }
 };
+
+function setTextIfChanged(element, nextValue) {
+  const text = nextValue ?? "";
+  if (element.textContent !== text) {
+    element.textContent = text;
+  }
+}
+
+function setHtmlIfChanged(element, nextHtml) {
+  const html = nextHtml ?? "";
+  if (element.innerHTML !== html) {
+    element.innerHTML = html;
+  }
+}
 
 function pretty(value, maxChars) {
   const text = JSON.stringify(value, null, 2);
@@ -377,14 +391,14 @@ function buildRawTelemetry(payload) {
 
 function renderPageHeader() {
   const meta = VIEW_META[state.view];
-  els.pageKicker.textContent = meta.kicker;
-  els.pageTitle.textContent = meta.title;
-  els.pageSubtitle.textContent = meta.subtitle;
+  setTextIfChanged(els.pageKicker, meta.kicker);
+  setTextIfChanged(els.pageTitle, meta.title);
+  setTextIfChanged(els.pageSubtitle, meta.subtitle);
 
   const session = getActiveSession();
   const run = getSelectedRunRecord();
-  els.activeSessionBadge.textContent = session ? `${session.name} (${shortId(session.id)})` : "No session";
-  els.activeRunBadge.textContent = run ? `${statusLabel(run.status)} | ${shortId(run.runId)}` : "No run";
+  setTextIfChanged(els.activeSessionBadge, session ? `${session.name} (${shortId(session.id)})` : "No session");
+  setTextIfChanged(els.activeRunBadge, run ? `${statusLabel(run.status)} | ${shortId(run.runId)}` : "No run");
   els.activeRunBadge.className = `status-pill ${statusClass(run?.status)}`;
 }
 
@@ -411,11 +425,11 @@ function renderNav() {
 
 function renderSessions() {
   if (state.sessions.length === 0) {
-    els.sessionList.innerHTML = emptyState("Create a session to start talking to Alfred.");
+    setHtmlIfChanged(els.sessionList, emptyState("Create a session to start talking to Alfred."));
     return;
   }
 
-  els.sessionList.innerHTML = state.sessions.map((session) => {
+  const html = state.sessions.map((session) => {
     const active = session.id === state.activeSessionId ? "active" : "";
     const working = session.workingMemory || {};
     const latest = working.lastOutcomeSummary || working.activeObjective || "No recent summary yet.";
@@ -432,6 +446,7 @@ function renderSessions() {
       </button>
     `;
   }).join("");
+  setHtmlIfChanged(els.sessionList, html);
 }
 
 function renderWorkspaceSummary() {
@@ -446,12 +461,12 @@ function renderWorkspaceSummary() {
     metricCard("Chat Cap", `${CHAT_RUN_CAP} runs`)
   ].join("");
 
-  els.workspaceSummary.innerHTML = `
+  setHtmlIfChanged(els.workspaceSummary, `
     <div class="stacked-copy">
       <p>${escapeHtml(headerText)}</p>
     </div>
     <div class="summary-grid">${cards}</div>
-  `;
+  `);
 }
 
 function buildRunAssistantPreview(run) {
@@ -466,17 +481,17 @@ function buildRunAssistantPreview(run) {
 
 function renderChatHistory() {
   if (!state.activeSessionId) {
-    els.chatHistory.innerHTML = emptyState("No session selected.");
+    setHtmlIfChanged(els.chatHistory, emptyState("No session selected."));
     return;
   }
 
   if (state.sessionRuns.length === 0) {
-    els.chatHistory.innerHTML = emptyState("No runs yet in this session.");
+    setHtmlIfChanged(els.chatHistory, emptyState("No runs yet in this session."));
     return;
   }
 
   const runs = state.sessionRuns.slice(0, CHAT_RUN_CAP).reverse();
-  els.chatHistory.innerHTML = runs.map((run) => {
+  const html = runs.map((run) => {
     const active = run.runId === state.activeRunId ? "active" : "";
     const assistantPreview = buildRunAssistantPreview(run);
     const assistantMax = active ? 1800 : 320;
@@ -501,6 +516,7 @@ function renderChatHistory() {
       </article>
     `;
   }).join("");
+  setHtmlIfChanged(els.chatHistory, html);
 }
 
 function renderTelemetryRuns() {
@@ -513,11 +529,11 @@ function renderTelemetryRuns() {
   });
 
   if (runs.length === 0) {
-    els.telemetryRuns.innerHTML = emptyState(filter ? "No runs matched that filter." : "No runs available for this session.");
+    setHtmlIfChanged(els.telemetryRuns, emptyState(filter ? "No runs matched that filter." : "No runs available for this session."));
     return;
   }
 
-  els.telemetryRuns.innerHTML = runs.map((run) => {
+  const html = runs.map((run) => {
     const active = run.runId === state.activeRunId ? "active" : "";
     const detail = run.assistantText || `Status ${run.status}`;
     return `
@@ -532,6 +548,7 @@ function renderTelemetryRuns() {
       </button>
     `;
   }).join("");
+  setHtmlIfChanged(els.telemetryRuns, html);
 }
 
 function renderTelemetry() {
@@ -539,21 +556,21 @@ function renderTelemetry() {
   const run = payload?.run;
 
   if (!run) {
-    els.telemetryMeta.innerHTML = emptyState("Select a run to inspect telemetry.");
-    els.telemetryConsole.innerHTML = emptyState("No telemetry loaded.");
+    setHtmlIfChanged(els.telemetryMeta, emptyState("Select a run to inspect telemetry."));
+    setHtmlIfChanged(els.telemetryConsole, emptyState("No telemetry loaded."));
     return;
   }
 
-  els.telemetryMeta.innerHTML = [
+  setHtmlIfChanged(els.telemetryMeta, [
     metricCard("Run", shortId(run.runId)),
     metricCard("Status", statusLabel(run.status)),
     metricCard("Events", String(payload.events?.length || 0)),
     metricCard("Tool Calls", String(run.toolCalls?.length || 0)),
     metricCard("Tokens", String(run.llmUsage?.totalTokens || 0)),
     metricCard("Artifacts", String(run.artifactPaths?.length || 0))
-  ].join("");
+  ].join(""));
 
-  els.telemetryConsole.innerHTML = state.telemetryMode === "raw" ? buildRawTelemetry(payload) : buildFormattedTelemetry(payload);
+  setHtmlIfChanged(els.telemetryConsole, state.telemetryMode === "raw" ? buildRawTelemetry(payload) : buildFormattedTelemetry(payload));
   els.telemetryFormat.classList.toggle("active", state.telemetryMode === "formatted");
   els.telemetryRaw.classList.toggle("active", state.telemetryMode === "raw");
 }
@@ -563,30 +580,30 @@ function renderStatusPage() {
   const session = getActiveSession();
   const run = getSelectedRunRecord();
 
-  els.statusProviderCard.innerHTML = status
+  setHtmlIfChanged(els.statusProviderCard, status
     ? `
         <p>Primary healthy: ${escapeHtml(String(status.primaryHealthy))}</p>
         <p>Fallback healthy: ${escapeHtml(String(status.fallbackHealthy))}</p>
         <p>Active default: ${escapeHtml(String(status.activeDefault || "unknown"))}</p>
         <p>Primary provider: ${escapeHtml(String(status.primaryProvider || "unknown"))}</p>
       `
-    : `<p>Status not loaded yet.</p>`;
+    : `<p>Status not loaded yet.</p>`);
 
-  els.statusSessionCard.innerHTML = `
+  setHtmlIfChanged(els.statusSessionCard, `
     <p>Total sessions visible: ${escapeHtml(String(state.sessions.length))}</p>
     <p>Selected session: ${escapeHtml(session?.name || "none")}</p>
     <p>Runs in selected session: ${escapeHtml(String(state.sessionRuns.length))}</p>
     <p>Selected run: ${escapeHtml(run ? shortId(run.runId) : "none")}</p>
-  `;
+  `);
 }
 
 function renderSettingsPage() {
-  els.settingsUiCard.innerHTML = `
+  setHtmlIfChanged(els.settingsUiCard, `
     <p>Chat run cap: ${CHAT_RUN_CAP}</p>
     <p>Telemetry event cap: ${TELEMETRY_EVENT_CAP}</p>
     <p>Raw JSON browser cap: ${RAW_VIEW_CAP} chars</p>
     <p>Auto-poll interval: ${POLL_INTERVAL_MS}ms</p>
-  `;
+  `);
 }
 
 function renderInspector() {
@@ -597,70 +614,75 @@ function renderInspector() {
   const recentTools = (run?.toolCalls || []).slice(-6).reverse();
   const artifacts = run?.artifactPaths || [];
 
-  els.inspectorRunStatus.textContent = run ? statusLabel(run.status) : "idle";
+  setTextIfChanged(els.inspectorRunStatus, run ? statusLabel(run.status) : "idle");
   els.inspectorRunStatus.className = `status-pill ${statusClass(run?.status)}`;
 
   if (!run) {
-    els.livePulse.innerHTML = emptyState("Select a run to populate the live right rail.");
-    els.thoughtFeed.innerHTML = emptyState("No thought events yet.");
-    els.toolFeed.innerHTML = emptyState("No tool activity yet.");
-    els.budgetGrid.innerHTML = [
+    setHtmlIfChanged(els.livePulse, emptyState("Select a run to populate the live right rail."));
+    setHtmlIfChanged(els.thoughtFeed, emptyState("No thought events yet."));
+    setHtmlIfChanged(els.toolFeed, emptyState("No tool activity yet."));
+    setHtmlIfChanged(els.budgetGrid, [
       metricCard("Tokens", "0"),
       metricCard("Elapsed", "0s"),
       metricCard("Tool Calls", "0"),
       metricCard("Artifacts", "0")
-    ].join("");
-    els.artifactList.innerHTML = emptyState("No artifacts yet.");
+    ].join(""));
+    setHtmlIfChanged(els.artifactList, emptyState("No artifacts yet."));
     return;
   }
 
   const pulseText = latestHeartbeat ? summarizeEvent(latestHeartbeat) : latestProgressMessage(payload);
-  els.livePulse.innerHTML = `
+  setHtmlIfChanged(els.livePulse, `
     <p><strong>${escapeHtml(toShortText(run.message, 140))}</strong></p>
     <p>${escapeHtml(pulseText)}</p>
     <p>Updated ${escapeHtml(formatRelativeTime(run.updatedAt))}</p>
-  `;
+  `);
 
-  els.thoughtFeed.innerHTML = recentThoughts.length > 0
+  setHtmlIfChanged(els.thoughtFeed, recentThoughts.length > 0
     ? recentThoughts.reverse().map((event) => `
         <div class="event-item">
           <span class="event-label">${escapeHtml(event.eventType)}</span>
           <div class="event-text">${escapeHtml(summarizeEvent(event))}</div>
         </div>
       `).join("")
-    : emptyState("No thought events on this run.");
+    : emptyState("No thought events on this run."));
 
-  els.toolFeed.innerHTML = recentTools.length > 0
+  setHtmlIfChanged(els.toolFeed, recentTools.length > 0
     ? recentTools.map((call) => `
         <div class="event-item">
           <span class="event-label">${escapeHtml(call.toolName)} | ${escapeHtml(call.status)}</span>
           <div class="event-text">${escapeHtml(`${call.durationMs}ms | ${toShortText(pretty(call.outputRedacted), 130)}`)}</div>
         </div>
       `).join("")
-    : emptyState("No tool calls recorded.");
+    : emptyState("No tool calls recorded."));
 
-  els.budgetGrid.innerHTML = [
+  setHtmlIfChanged(els.budgetGrid, [
     metricCard("Tokens", String(run.llmUsage?.totalTokens || 0)),
     metricCard("Elapsed", formatElapsedMs(computeRunElapsed(payload))),
     metricCard("Tool Calls", String(run.toolCalls?.length || 0)),
     metricCard("Artifacts", String(artifacts.length || 0))
-  ].join("");
+  ].join(""));
 
-  els.artifactList.innerHTML = artifacts.length > 0
+  setHtmlIfChanged(els.artifactList, artifacts.length > 0
     ? artifacts.map((artifact) => `<div class="artifact-chip">${escapeHtml(artifact.split("/").pop() || artifact)}</div>`).join("")
-    : emptyState("No artifacts on this run.");
+    : emptyState("No artifacts on this run."));
 }
 
 function renderAll() {
   renderNav();
   renderPageHeader();
   renderSessions();
-  renderWorkspaceSummary();
-  renderChatHistory();
-  renderTelemetryRuns();
-  renderTelemetry();
-  renderStatusPage();
-  renderSettingsPage();
+  if (state.view === "workspace") {
+    renderWorkspaceSummary();
+    renderChatHistory();
+  } else if (state.view === "telemetry") {
+    renderTelemetryRuns();
+    renderTelemetry();
+  } else if (state.view === "status") {
+    renderStatusPage();
+  } else if (state.view === "settings") {
+    renderSettingsPage();
+  }
   renderInspector();
 }
 
@@ -695,10 +717,12 @@ async function refreshProviderStatus() {
       `Fallback: ${status.fallbackHealthy ? "healthy" : "degraded"}`,
       `Default: ${status.activeDefault || "unknown"}`
     ];
-    els.providerStatus.textContent = lines.join(" | ");
-    renderStatusPage();
+    setTextIfChanged(els.providerStatus, lines.join(" | "));
+    if (state.view === "status") {
+      renderStatusPage();
+    }
   } catch (error) {
-    els.providerStatus.textContent = `Provider status error: ${error.message}`;
+    setTextIfChanged(els.providerStatus, `Provider status error: ${error.message}`);
   }
 }
 

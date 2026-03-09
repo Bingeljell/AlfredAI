@@ -9,7 +9,7 @@
   --text-soft: #ddb7cf;
   --text-dim: #ad8aa0;
   --line: rgba(255, 255, 255, 0.08);
-  --shadow: 0 20px 40px rgba(0, 0, 0, 0.38);
+  --shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
   --brand-a: #bb10e6;
   --brand-b: #e610b4;
   --brand-c: #e65010;
@@ -34,9 +34,8 @@ body {
 body {
   color: var(--text);
   background:
-    radial-gradient(circle at top left, rgba(187, 16, 230, 0.22), transparent 30%),
-    radial-gradient(circle at top right, rgba(230, 16, 180, 0.18), transparent 26%),
-    radial-gradient(circle at bottom center, rgba(230, 80, 16, 0.16), transparent 28%),
+    radial-gradient(circle at top left, rgba(187, 16, 230, 0.14), transparent 28%),
+    radial-gradient(circle at bottom center, rgba(230, 80, 16, 0.1), transparent 24%),
     linear-gradient(160deg, #05040a 0%, #0d0712 45%, #11070f 100%);
   font-family: var(--display);
 }
@@ -58,19 +57,10 @@ textarea {
 button {
   cursor: pointer;
   transition:
-    transform 140ms ease,
     border-color 140ms ease,
     background 140ms ease,
     box-shadow 140ms ease,
     opacity 140ms ease;
-}
-
-button:hover {
-  transform: translateY(-1px);
-}
-
-button:active {
-  transform: translateY(1px) scale(0.99);
 }
 
 input,
@@ -115,11 +105,10 @@ textarea {
 }
 
 .glass-panel {
-  background: linear-gradient(180deg, rgba(28, 17, 41, 0.88) 0%, rgba(16, 10, 25, 0.92) 100%);
+  background: linear-gradient(180deg, rgba(24, 16, 35, 0.96) 0%, rgba(14, 10, 22, 0.98) 100%);
   border: 1px solid var(--panel-border);
   box-shadow: var(--shadow);
   border-radius: 28px;
-  backdrop-filter: blur(18px);
 }
 
 .brand-panel,
@@ -191,9 +180,8 @@ h3 {
 }
 
 .nav-item.active {
-  background: linear-gradient(135deg, rgba(187, 16, 230, 0.22), rgba(230, 16, 180, 0.18) 55%, rgba(230, 80, 16, 0.16));
+  background: linear-gradient(135deg, rgba(187, 16, 230, 0.16), rgba(230, 16, 180, 0.14) 55%, rgba(230, 80, 16, 0.12));
   border-color: rgba(255, 255, 255, 0.16);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
 
 .nav-label {
@@ -264,7 +252,7 @@ h3 {
   color: white;
   border-color: transparent;
   background: linear-gradient(135deg, var(--brand-a), var(--brand-b) 56%, var(--brand-c));
-  box-shadow: 0 10px 24px rgba(230, 16, 180, 0.22);
+  box-shadow: 0 6px 16px rgba(230, 16, 180, 0.18);
 }
 
 .secondary-button,
@@ -356,7 +344,7 @@ h3 {
 .run-item.active,
 .message-card.active {
   border-color: rgba(255, 255, 255, 0.16);
-  background: linear-gradient(135deg, rgba(187, 16, 230, 0.18), rgba(255, 255, 255, 0.06));
+  background: linear-gradient(135deg, rgba(187, 16, 230, 0.1), rgba(255, 255, 255, 0.04));
 }
 
 .session-item .session-meta,
@@ -548,7 +536,7 @@ textarea {
 .telemetry-console {
   border-radius: 22px;
   padding: 12px;
-  background: rgba(5, 4, 9, 0.66);
+  background: rgba(5, 4, 9, 0.82);
   border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
@@ -588,6 +576,7 @@ textarea {
   top: 18px;
   align-self: start;
   max-height: calc(100vh - 36px);
+  overflow: hidden;
 }
 
 .inspector-card {

@@ -111,6 +111,7 @@
   - Alfred orchestration now runs an explicit completion-evaluator pass after successful tool/delegation results, feeds evaluator notes back into planner context as reflection hints, and exits to a final answer when the latest result is already sufficient.
   - Lead-agent planning no longer mutates the model’s chosen action on search-failure or novelty patterns; those domain-specific overrides were replaced with reflection hints in planner context so the model remains in control while still seeing the failure pattern clearly.
   - Alfred now delegates specialist work through a generic skill registry and `runAgentLoop` dispatcher, with `lead_agent` registered as a first-class runtime skill instead of being hardcoded directly into the orchestrator.
+  - Delegated skill runs now carry parent/delegation metadata plus a lightweight scratchpad scaffold, and Alfred emits explicit delegation start/result events so future sub-agents can share bounded run context without changing the current lead workflow semantics.
   - Additional resiliency and production hardening tasks remain for later iterations.
 
 ## Remaining Follow-ups

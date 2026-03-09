@@ -5,6 +5,9 @@ import type { LeadAgentDefaults } from "../types.js";
 import type { executeLeadSubReactPipeline } from "../../tools/lead/subReactPipeline.js";
 
 export interface AgentSkillRunOptions {
+  parentRunId?: string;
+  delegationId?: string;
+  scratchpad?: Record<string, unknown>;
   runStore: RunStore;
   searchManager: SearchManager;
   workspaceDir: string;

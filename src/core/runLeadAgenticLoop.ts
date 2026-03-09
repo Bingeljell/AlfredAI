@@ -182,6 +182,9 @@ const PLANNER_OUTPUT_JSON_SCHEMA = {
 } as const;
 
 export interface LeadAgentRuntimeOptions {
+  parentRunId?: string;
+  delegationId?: string;
+  scratchpad?: Record<string, unknown>;
   runStore: RunStore;
   searchManager: SearchManager;
   workspaceDir: string;
@@ -1676,6 +1679,9 @@ export async function runLeadAgenticLoop(options: LeadAgentRuntimeOptions): Prom
       maxToolCalls: options.maxToolCalls,
       llmCallBudget,
       initialBudgetMode: currentBudgetMode,
+      parentRunId: options.parentRunId ?? null,
+      delegationId: options.delegationId ?? null,
+      scratchpadKeys: Object.keys(options.scratchpad ?? {}).sort(),
       toolAllowlist: allowlist ?? null,
       availableToolNames: Array.from(availableTools.keys()).sort(),
       promptStack: {

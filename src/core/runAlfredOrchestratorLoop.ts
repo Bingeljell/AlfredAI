@@ -34,6 +34,7 @@ interface AlfredOrchestratorOptions {
   policyMode: PolicyMode;
   isCancellationRequested: () => Promise<boolean>;
   structuredChatRunner?: typeof openAiClient.runOpenAiStructuredChatWithDiagnostics;
+  agentLoopRunner?: typeof runAgentLoop;
 }
 
 interface AlfredPlannerOutput {
@@ -282,8 +283,13 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   let toolCallsUsed = 0;
   let lastDelegationSummary = "No delegation attempted yet.";
   let lastCompletionNote = "No completion evaluation yet.";
+  const scratchpad: Record<string, unknown> = {
+    currentTurnObjective: options.message
+  };
   const structuredChatRunner = options.structuredChatRunner ?? openAiClient.runOpenAiStructuredChatWithDiagnostics;
+  const agentLoopRunner = options.agentLoopRunner ?? runAgentLoop;
   const buildLeadAgentRuntimeOptions = (message: string): LeadAgentRuntimeOptions => ({
+    scratchpad,
     runStore: options.runStore,
     searchManager: options.searchManager,
     workspaceDir: options.workspaceDir,
@@ -333,7 +339,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     }
 
     if (!options.openAiApiKey) {
-      const leadOutcome = await runAgentLoop({
+      const leadOutcome = await agentLoopRunner({
         skillName: "lead_agent",
         ...buildLeadAgentRuntimeOptions(options.message)
       });
@@ -421,9 +427,47 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       }
 
       const delegatedMessage = (plan.delegateBrief ?? options.message).slice(0, 1200);
-      const leadOutcome = await runAgentLoop({
+      const delegationId = `delegation_${iteration}`;
+      scratchpad[`delegation.${delegationId}.brief`] = delegatedMessage;
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "thought",
+        eventType: "agent_delegated",
+        payload: {
+          iteration,
+          delegationId,
+          agentName,
+          brief: delegatedMessage,
+          scratchpadKeys: Object.keys(scratchpad).sort()
+        },
+        timestamp: nowIso()
+      });
+      const leadOutcome = await agentLoopRunner({
         skillName: agentName,
+        parentRunId: options.runId,
+        delegationId,
         ...buildLeadAgentRuntimeOptions(delegatedMessage)
+      });
+      scratchpad[`delegation.${delegationId}.result`] = {
+        status: leadOutcome.status,
+        assistantText: (leadOutcome.assistantText ?? "").slice(0, 400),
+        artifactPaths: leadOutcome.artifactPaths ?? []
+      };
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "observe",
+        eventType: "agent_delegation_result",
+        payload: {
+          iteration,
+          delegationId,
+          agentName,
+          status: leadOutcome.status,
+          artifactCount: leadOutcome.artifactPaths?.length ?? 0,
+          scratchpadKeys: Object.keys(scratchpad).sort()
+        },
+        timestamp: nowIso()
       });
 
       const runRecord = await options.runStore.getRun(options.runId);

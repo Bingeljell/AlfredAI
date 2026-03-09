@@ -10,6 +10,8 @@ Alfred is intended to become a true personal second brain: a reliable agent that
 
 The target end-state is not a single-purpose bot, but an always-on execution layer that can run practical tasks end-to-end with transparent logs, controlled guardrails, and durable memory.
 
+The intended interaction model is conversational first: Alfred should retain recent session context naturally, form a canonical task brief only when execution begins, and rely on memory compaction/retrieval only when the conversation outgrows the comfortable live context window.
+
 To begin with, Alfred is a local-first AI agent for lead generation. 
 
 ## Why Lead Gen First

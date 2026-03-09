@@ -27,7 +27,39 @@ Alfred runs the classic **ReAct (Reason + Act)** loop in every session:
 
 **Gateway/Orchestrator** runs all loops (one per session), picks the best model per task, and routes inline vs queued execution.
 
-### 2.1 Master vs Specialist Separation
+### 2.1 Conversation Handling Model
+Alfred should behave like a continuous conversational agent, not a stateless form processor.
+
+- **Live context first**:
+  - Recent turns in the active session stay in raw conversational form and are passed directly into Alfred's loop.
+  - Alfred should rely on recent chat the same way a strong frontier model handles an active conversation: no artificial amnesia for the last few turns.
+- **Canonical brief only when execution begins**:
+  - When Alfred decides to perform work, it produces a structured task brief from the live conversation.
+  - That brief is the contract for downstream tools and specialist agents.
+  - The brief must preserve explicit user requirements exactly; downstream systems cannot silently rewrite them.
+- **Deterministic code validates, but does not interpret**:
+  - Deterministic logic exists to preserve invariants (schema validity, budgets, safety, cancellation, persistence).
+  - Deterministic helper functions must not become the source of truth for user intent.
+
+### 2.2 Brief Preservation Rules
+The canonical task brief is the stable execution contract for a run.
+
+- Explicit user requirements are immutable unless the user relaxes them:
+  - requested count
+  - geography
+  - company type / industry
+  - email/contact requirements
+  - size bands
+  - output format
+- Agentic freedom applies to tactics, not to rewriting the brief:
+  - search phrasing
+  - tool choice
+  - retry strategy
+  - breadth vs depth sequencing
+  - when to stop and report blockage
+- Evaluation happens against the preserved brief, not against planner-invented targets.
+
+### 2.3 Master vs Specialist Separation
 - **Alfred (Master Agent)** is domain-agnostic and owns orchestration, policy, memory continuity, and user-facing outcomes.
 - **Specialist Agents** (starting with LeadGenAgent) own domain execution details.
 - Deterministic logic is limited to guardrails (budget/time/safety), while specialist business behavior remains model-driven and objective-led.
@@ -39,6 +71,19 @@ Alfred runs the classic **ReAct (Reason + Act)** loop in every session:
 - SOUL.md personality is shared across all sessions.  
 - Unlimited parallel sessions (hardware permitting).  
 - Switch/start sessions via web UI, Telegram, or command.
+
+### 3.1 Session Context Layers
+Session continuity should be layered instead of forcing all history into every prompt.
+
+1. **Live session context**
+   - Recent turns remain raw and directly available to Alfred.
+   - This is what should handle normal follow-ups like "paste them" or "do that again".
+2. **Session working memory**
+   - A compact structured summary of the active thread, recent outputs, artifacts, and unresolved items.
+   - Used to support continuity without replaying the full transcript every turn.
+3. **Durable logs and memory**
+   - Full run logs and daily transcripts remain available for audit, debug, and later retrieval.
+   - These are not injected wholesale into the active loop unless explicitly needed.
 
 ## 4. Broad & Varied Use Cases
 1. **Build Email List** – “Generate 100 fintech leads in India → verified emails → CSV (I’ll send manually).”  
@@ -116,6 +161,22 @@ Example tone:
 - Retrieval: **QMD** (lightweight keyword + semantic search) — fast, human-readable, git-friendly.  https://github.com/tobi/qmd <-- src for QMD
 - Per-session isolation.  
 - You can open the entire knowledge base in Obsidian or any editor.
+
+### 8.1 Memory Strategy
+Alfred should not rely on retrieval for recent conversation that still fits comfortably in the model context window.
+
+- **Up to the comfortable context budget**:
+  - Keep recent session turns live in prompt context.
+  - Do not replace fresh conversational continuity with summaries prematurely.
+- **When context pressure appears**:
+  - Compact older session history into structured working memory plus a concise narrative summary.
+  - Preserve key decisions, goals, artifacts, blockers, and unresolved threads.
+- **End-of-day / background compaction**:
+  - Full daily logs remain persisted.
+  - A background compaction pass can distill them into durable memory for later QMD retrieval.
+- **Design rule**:
+  - raw recent context -> structured session memory -> retrievable long-term memory
+  - not "summarize everything immediately"
 
 ## 9. Authentication & Model Support
 - **Primary**: Direct API keys (Grok-4 via @ai-sdk/xai, Gemini, Claude).  

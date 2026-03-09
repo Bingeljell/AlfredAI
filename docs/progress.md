@@ -108,6 +108,7 @@
   - Refined README positioning copy to emphasize the “There is no Batman without Alfred” framing and clearly sequence long-term second-brain vision before the lead-gen starting scope.
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
+  - Alfred orchestration now runs an explicit completion-evaluator pass after successful tool/delegation results, feeds evaluator notes back into planner context as reflection hints, and exits to a final answer when the latest result is already sufficient.
   - Additional resiliency and production hardening tasks remain for later iterations.
 
 ## Remaining Follow-ups

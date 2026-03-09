@@ -116,6 +116,9 @@
   - Final lead-run artifacts now persist directly into run state, and Alfred now propagates delegated `artifactPaths` immediately so session-level continuity can reference prior CSV outputs without waiting for a later run-store refresh.
   - Session continuity now uses bounded working memory: completed runs update `lastRunId`, `lastCompletedRunId`, artifact references, and compact summaries, which are injected into Alfred as `[Session Context]` on later turns instead of relying on deterministic follow-up parsing.
   - `/newsession` now clears only session working memory while preserving stored run history, and `session_context_loaded` telemetry plus integration/smoke tests cover both follow-up context injection and memory reset behavior.
+  - Web UI pass completed: the browser client now uses a real Alfred cockpit shell with left-side navigation/sessions, a center workspace + telemetry/status/settings surface, and a right-rail for live heartbeat/thought/tool/budget context while keeping chat and raw telemetry rendering bounded for browser stability.
+  - Telemetry is now a proper session -> run -> trace workflow with formatted event logs, raw JSON view, and direct run export from the browser, making it much easier to capture exact run bundles for debugging.
+  - Frontend automated coverage is still limited to build/syntax validation (`pnpm run build`, `node --check webui/app.js`); a browser-level UI regression harness remains a follow-up item once the shell stabilizes.
   - Additional resiliency and production hardening tasks remain for later iterations.
 
 ## Remaining Follow-ups
@@ -123,3 +126,4 @@
 - Add robust lead parsing quality heuristics and optional provider-based verification.
 - Enable robots-aware scraping mode for production profile.
 - Add structured retry/backoff metrics and deeper async supervision dashboards.
+- Add lightweight browser-level regression coverage for the `webui/` shell once the new layout and telemetry interactions settle.

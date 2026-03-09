@@ -3,45 +3,255 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Alfred MVP Console</title>
+    <title>Alfred Agent Console</title>
     <link rel="stylesheet" href="/ui/styles.css" />
   </head>
   <body>
-    <main class="layout">
-      <aside class="panel">
-        <h1>Alfred Sessions</h1>
-        <div class="row">
-          <input id="session-name" type="text" placeholder="New session name" />
-          <button id="create-session">Create</button>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-panel glass-panel">
+          <p class="eyebrow">Alfred Web</p>
+          <h1>Agent Console</h1>
+          <p class="brand-copy">
+            Conversational control surface for Alfred, with live orchestration context and deep telemetry when things break.
+          </p>
         </div>
-        <ul id="session-list"></ul>
-        <div class="status" id="provider-status">Provider status loading...</div>
+
+        <nav class="nav-panel glass-panel" id="nav-list">
+          <button class="nav-item active" data-view="workspace">
+            <span class="nav-label">Workspace</span>
+            <span class="nav-desc">Chat, results, artifacts</span>
+          </button>
+          <button class="nav-item" data-view="telemetry">
+            <span class="nav-label">Telemetry</span>
+            <span class="nav-desc">Runs, events, JSON exports</span>
+          </button>
+          <button class="nav-item" data-view="status">
+            <span class="nav-label">Status</span>
+            <span class="nav-desc">Providers and runtime health</span>
+          </button>
+          <button class="nav-item" data-view="settings">
+            <span class="nav-label">Settings</span>
+            <span class="nav-desc">Skills, tools, future config</span>
+          </button>
+        </nav>
+
+        <section class="sidebar-section glass-panel">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Sessions</p>
+              <h2>Active Threads</h2>
+            </div>
+            <button class="ghost-button" id="refresh-sessions">Refresh</button>
+          </div>
+
+          <div class="create-session-row">
+            <input id="session-name" type="text" placeholder="New session name" />
+            <button id="create-session" class="primary-button">Create</button>
+          </div>
+
+          <div class="provider-banner" id="provider-status">Provider status loading...</div>
+          <div class="sidebar-actions">
+            <button id="reset-context" class="secondary-button">/newsession</button>
+          </div>
+          <div class="session-list" id="session-list"></div>
+        </section>
       </aside>
 
-      <section class="panel main-panel">
-        <h2>Chat</h2>
-        <div class="row">
-          <label><input id="request-job" type="checkbox" /> Run async</label>
-        </div>
-        <textarea id="message" rows="4" placeholder="Example: Find 50 fintech leads in India"></textarea>
-        <div class="row">
-          <button id="send">Run</button>
-          <span id="run-meta"></span>
-        </div>
-        <pre id="assistant-output"></pre>
-      </section>
+      <main class="main-column">
+        <header class="main-header glass-panel">
+          <div>
+            <p id="page-kicker" class="eyebrow">Workspace</p>
+            <h2 id="page-title">Alfred Workspace</h2>
+            <p id="page-subtitle" class="page-subtitle">Run Alfred, review results, and keep the conversation moving.</p>
+          </div>
+          <div class="header-badges">
+            <span id="active-session-badge" class="status-pill">No session</span>
+            <span id="active-run-badge" class="status-pill">No run</span>
+          </div>
+        </header>
 
-      <section class="panel">
-        <h2>Run Timeline</h2>
-        <div class="row">
-          <input id="run-id-input" type="text" placeholder="Run ID" />
-          <button id="load-run">Load</button>
-          <button id="cancel-run">Cancel Run</button>
-          <button id="export-run">Export JSON</button>
-        </div>
-        <pre id="timeline"></pre>
-      </section>
-    </main>
+        <section id="workspace-page" class="page active">
+          <div class="workspace-stack">
+            <div id="workspace-summary" class="glass-panel summary-panel"></div>
+
+            <section class="glass-panel workspace-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Conversation</p>
+                  <h3>Session Chat</h3>
+                </div>
+                <div class="inline-actions">
+                  <button id="workspace-refresh" class="ghost-button">Refresh</button>
+                  <button id="open-telemetry" class="ghost-button">Open Telemetry</button>
+                </div>
+              </div>
+
+              <div id="chat-history" class="chat-history"></div>
+
+              <div class="composer-panel">
+                <textarea
+                  id="message"
+                  rows="5"
+                  placeholder="Tell Alfred what you want. Example: Find 12 MSP leads in the US with emails, then paste the best five."
+                ></textarea>
+                <div class="composer-footer">
+                  <label class="toggle-row"><input id="request-job" type="checkbox" /> Run async</label>
+                  <div class="inline-actions">
+                    <button id="clear-message" class="ghost-button">Clear</button>
+                    <button id="send" class="primary-button">Run Alfred</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="telemetry-page" class="page hidden">
+          <div class="telemetry-grid">
+            <section class="glass-panel telemetry-runs-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Run Explorer</p>
+                  <h3>Runs In Session</h3>
+                </div>
+                <div class="inline-actions">
+                  <input id="telemetry-filter" type="text" placeholder="Filter by run id or message" />
+                  <button id="refresh-runs" class="ghost-button">Refresh</button>
+                </div>
+              </div>
+              <div id="telemetry-runs" class="telemetry-runs"></div>
+            </section>
+
+            <section class="glass-panel telemetry-console-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Detailed Log</p>
+                  <h3>Run Trace</h3>
+                </div>
+                <div class="inline-actions">
+                  <button id="telemetry-format" class="ghost-button active">Formatted</button>
+                  <button id="telemetry-raw" class="ghost-button">Raw JSON</button>
+                  <button id="telemetry-export" class="ghost-button">Export JSON</button>
+                </div>
+              </div>
+              <div id="telemetry-meta" class="telemetry-meta"></div>
+              <div id="telemetry-console" class="telemetry-console"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="status-page" class="page hidden">
+          <div class="status-grid">
+            <section class="glass-panel status-card">
+              <p class="eyebrow">Providers</p>
+              <h3>Search Health</h3>
+              <div id="status-provider-card" class="stacked-copy"></div>
+            </section>
+            <section class="glass-panel status-card">
+              <p class="eyebrow">Sessions</p>
+              <h3>Recent Activity</h3>
+              <div id="status-session-card" class="stacked-copy"></div>
+            </section>
+            <section class="glass-panel status-card">
+              <p class="eyebrow">Channels</p>
+              <h3>External Connections</h3>
+              <div class="stacked-copy">
+                <p>Telegram, WhatsApp, and app connections are not wired yet.</p>
+                <p>This panel will become the channel/runtime status surface once those adapters exist.</p>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="settings-page" class="page hidden">
+          <div class="settings-grid">
+            <section class="glass-panel settings-card">
+              <p class="eyebrow">Current UI</p>
+              <h3>Client Limits</h3>
+              <div id="settings-ui-card" class="stacked-copy"></div>
+            </section>
+            <section class="glass-panel settings-card">
+              <p class="eyebrow">Server Config</p>
+              <h3>Tooling And Skills</h3>
+              <div class="stacked-copy">
+                <p>Server-side settings editing is not wired from the browser yet.</p>
+                <p>Search providers, model keys, and skill toggles will belong here once the backend exposes a safe settings API.</p>
+              </div>
+            </section>
+            <section class="glass-panel settings-card">
+              <p class="eyebrow">Notes</p>
+              <h3>Implementation Direction</h3>
+              <div class="stacked-copy">
+                <p>Keep browser settings thin. The important path is: conversational workspace, live right-rail context, and usable telemetry.</p>
+                <p>Framework migration can happen later if the UI logic outgrows this vanilla shell.</p>
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
+
+      <aside class="inspector">
+        <section class="glass-panel inspector-card">
+          <div class="panel-header compact">
+            <div>
+              <p class="eyebrow">Heartbeat</p>
+              <h3>Live Run</h3>
+            </div>
+            <span id="inspector-run-status" class="status-pill">idle</span>
+          </div>
+          <div id="live-pulse" class="stacked-copy"></div>
+        </section>
+
+        <section class="glass-panel inspector-card">
+          <div class="panel-header compact">
+            <div>
+              <p class="eyebrow">Model Trace</p>
+              <h3>Thoughts</h3>
+            </div>
+          </div>
+          <div id="thought-feed" class="event-feed"></div>
+        </section>
+
+        <section class="glass-panel inspector-card">
+          <div class="panel-header compact">
+            <div>
+              <p class="eyebrow">Tools</p>
+              <h3>Recent Activity</h3>
+            </div>
+          </div>
+          <div id="tool-feed" class="event-feed"></div>
+        </section>
+
+        <section class="glass-panel inspector-card">
+          <div class="panel-header compact">
+            <div>
+              <p class="eyebrow">Budget</p>
+              <h3>Tokens And Time</h3>
+            </div>
+          </div>
+          <div id="budget-grid" class="metric-grid"></div>
+        </section>
+
+        <section class="glass-panel inspector-card">
+          <div class="panel-header compact">
+            <div>
+              <p class="eyebrow">Run Controls</p>
+              <h3>Inspect / Export</h3>
+            </div>
+          </div>
+          <div class="manual-run-row">
+            <input id="run-id-input" type="text" placeholder="Paste run id" />
+            <button id="load-run" class="ghost-button">Load</button>
+          </div>
+          <div class="inline-actions full-width-actions">
+            <button id="cancel-run" class="ghost-button">Cancel Run</button>
+            <button id="export-run" class="ghost-button">Export JSON</button>
+          </div>
+          <div id="artifact-list" class="artifact-list"></div>
+        </section>
+      </aside>
+    </div>
 
     <script type="module" src="/ui/app.js"></script>
   </body>

@@ -398,10 +398,9 @@ export const leadDedupeForTests = {
 };
 
 export const plannerFailureGuardrailsForTests = {
-  applyFailureGuardrail,
   extractObservationSignals,
   applySearchQueryGuardrail,
-  applyNoveltyGuardrail
+  buildReflectionHints
 };
 
 export const plannerContextForTests = {
@@ -814,42 +813,6 @@ function extractObservationSignals(results: ToolRunResult[]): {
   };
 }
 
-function applyFailureGuardrail(action: AgentAction, observations: LeadAgentObservation[]): {
-  action: AgentAction;
-  adjusted: boolean;
-  reason?: string;
-} {
-  const lastObservation = observations.at(-1);
-  if (!lastObservation) {
-    return { action, adjusted: false };
-  }
-
-  const hasLeadPipelineCall =
-    action.type === "single"
-      ? action.tool === "lead_pipeline"
-      : action.tools.some((item) => item.tool === "lead_pipeline");
-
-  if (!hasLeadPipelineCall || lastObservation.searchFailureCount === 0) {
-    return { action, adjusted: false };
-  }
-
-  const alreadyCheckedSearch =
-    lastObservation.toolNames.includes("search_status") || lastObservation.toolNames.includes("recover_search");
-  if (alreadyCheckedSearch) {
-    return { action, adjusted: false };
-  }
-
-  return {
-    action: {
-      type: "single",
-      tool: "search_status",
-      input: {}
-    },
-    adjusted: true,
-    reason: "search_failures_detected_in_previous_iteration"
-  };
-}
-
 function fallbackSearchQueryFromMessage(message: string): string {
   const normalized = message.replace(/\s+/g, " ").trim();
   if (normalized.length >= 2) {
@@ -907,69 +870,51 @@ function applySearchQueryGuardrail(
   };
 }
 
-function applyNoveltyGuardrail(
-  action: AgentAction,
+function buildReflectionHints(
   observations: LeadAgentObservation[],
-  message: string,
   threshold: number
-): {
-  action: AgentAction;
-  adjusted: boolean;
-  reason?: string;
-} {
-  const hasLeadPipelineCall =
-    action.type === "single"
-      ? action.tool === "lead_pipeline"
-      : action.tools.some((item) => item.tool === "lead_pipeline");
-  if (!hasLeadPipelineCall) {
-    return { action, adjusted: false };
+): string[] {
+  const hints: string[] = [];
+  const lastObservation = observations.at(-1);
+  if (
+    lastObservation &&
+    lastObservation.searchFailureCount > 0 &&
+    !lastObservation.toolNames.includes("search_status") &&
+    !lastObservation.toolNames.includes("recover_search")
+  ) {
+    hints.push(
+      "Recent search failures occurred before any recovery check. Consider using search_status first and recover_search if the provider looks unhealthy before retrying deep discovery."
+    );
   }
 
   const recentLeadAttempts = observations
     .filter((item) => item.yieldRelevant && item.toolNames.includes("lead_pipeline"))
     .slice(-2);
   if (recentLeadAttempts.length < 2) {
-    return { action, adjusted: false };
+    return hints;
   }
 
   const repeatedLowYield = recentLeadAttempts.every((item) => item.newLeadCount < threshold);
   if (!repeatedLowYield) {
-    return { action, adjusted: false };
+    return hints;
   }
 
   const hadSemanticMiss = recentLeadAttempts.some(
     (item) => (item.semanticMissCount ?? 0) > 0 || (item.failureCodes ?? []).includes("semantic_miss")
   );
   if (!hadSemanticMiss) {
-    return { action, adjusted: false };
-  }
-
-  const currentLeadInputSummary = (action.type === "single" ? [action] : action.tools)
-    .filter((call) => call.tool === "lead_pipeline")
-    .map((call) => summarizeLeadPipelineInput(call.input))
-    .join("|");
-  if (!currentLeadInputSummary) {
-    return { action, adjusted: false };
+    return hints;
   }
 
   const recentInputSummaries = recentLeadAttempts.flatMap((item) => item.leadPipelineInputSummaries ?? []);
-  if (!recentInputSummaries.includes(currentLeadInputSummary)) {
-    return { action, adjusted: false };
+  if (recentInputSummaries.length === 0) {
+    return hints;
   }
 
-  const diversifiedQuery =
-    "top companies directory and contact leads matching user objective site:clutch.co OR site:goodfirms.co OR site:linkedin.com/company";
-  return {
-    action: {
-      type: "single",
-      tool: "search",
-      input: {
-        query: normalizeSearchQuery(message) ?? diversifiedQuery
-      }
-    },
-    adjusted: true,
-    reason: "repeated_low_yield_pattern"
-  };
+  hints.push(
+    `Two recent lead_pipeline attempts were low-yield with semantic miss signals. Avoid repeating the same pipeline shape (${recentInputSummaries.slice(-2).join(" | ")}). Broaden retrieval strategy, diversify search wording or domains, or reduce strictness before another deep pass.`
+  );
+  return hints;
 }
 
 function buildDeterministicAssistantSummary(args: {
@@ -1309,7 +1254,7 @@ function fallbackPlan(args: {
 
 function buildLeadPlannerSystemPrompt(): string {
   const plannerDirectives =
-    "Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. Prioritize lead-focused tools (lead_pipeline, search, web_fetch, email_enrich, search_status, recover_search, write_csv); only use filesystem/shell/process tools when they are strictly required for debugging or recovery. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, semanticMissCount, retrievalBlockedCount, hadLlmBudgetExhausted), a capped pastActionsSummary, recentPerformanceSummary, and failureCodeSummary. Treat failure codes as informative signals, not rigid deterministic instructions. React to failures explicitly: if searchFailureCount > 0, prioritize search_status before retrying lead_pipeline, and use recover_search when recovery is supported. If semanticMissCount > 0, prefer retrieval strategy changes (query diversification, directory-focused search) before repeating identical lead_pipeline settings. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. If failedToolCount > 0 across recent observations, your thought must acknowledge that failure signal before choosing the next action. Budget mode is dynamic: when budgetMode is conserve or emergency, prioritize high-yield/low-cost actions (search_status/search/web_fetch) before deep full-pipeline runs; use smaller lead_pipeline inputs and avoid expensive retries unless signal quality is high. If budget.remainingMs < 60000, prefer lightweight diagnostic/retrieval actions or stop instead of launching heavy pipelines. Honor expectedCapThisIteration by keeping lead_pipeline.llmMaxCalls at or below that value unless there is a strong, explicit reason. If deficitStrategy.recommendation is polish_only, choose lightweight polishing actions over broad discovery; if no polish-capable tools exist, stop with explanation. If yieldSignal.status is low, explicitly choose one diversification strategy and mention it in thought: strategy=query_diversify | strategy=relax_confidence | strategy=volume_no_email | strategy=deeper_crawl | strategy=stop. Avoid repeating identical search queries across consecutive low-yield iterations; diversify query wording using the user objective, nearby synonyms, and alternate directory sources. For lead_pipeline actions, you may set runEmailEnrichment=false when budget is constrained and lead deficit remains high, then use email_enrich later on shortlisted leads. Use pastActionsSummary and recentPerformanceSummary to avoid repeating low-yield actions with nearly identical inputs. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\").";
+    "Decide the next best tool action (single or parallel) to reach lead targets. Prefer actions that improve yield and avoid unnecessary calls. Prioritize lead-focused tools (lead_pipeline, search, web_fetch, email_enrich, search_status, recover_search, write_csv); only use filesystem/shell/process tools when they are strictly required for debugging or recovery. You will receive structured failure signals per iteration (searchFailureCount, browseFailureCount, extractionFailureCount, semanticMissCount, retrievalBlockedCount, hadLlmBudgetExhausted), a capped pastActionsSummary, recentPerformanceSummary, failureCodeSummary, and optional reflectionHints. Treat all of these as informative signals, not rigid deterministic instructions. React to failures explicitly: if searchFailureCount > 0, check provider health before blindly retrying deep lead discovery; if semanticMissCount > 0, prefer retrieval strategy changes (query diversification, directory-focused search, lighter fetch passes) before repeating identical lead_pipeline settings. If hadLlmBudgetExhausted is true, reduce llmMaxCalls/extraction scope on the next lead_pipeline action. If failedToolCount > 0 across recent observations, your thought must acknowledge that failure signal before choosing the next action. Budget mode is dynamic: when budgetMode is conserve or emergency, prioritize high-yield/low-cost actions (search_status/search/web_fetch) before deep full-pipeline runs; use smaller lead_pipeline inputs and avoid expensive retries unless signal quality is high. If budget.remainingMs < 60000, prefer lightweight diagnostic/retrieval actions or stop instead of launching heavy pipelines. Honor expectedCapThisIteration by keeping lead_pipeline.llmMaxCalls at or below that value unless there is a strong, explicit reason. If deficitStrategy.recommendation is polish_only, choose lightweight polishing actions over broad discovery; if no polish-capable tools exist, stop with explanation. If yieldSignal.status is low, explicitly choose one diversification strategy and mention it in thought: strategy=query_diversify | strategy=relax_confidence | strategy=volume_no_email | strategy=deeper_crawl | strategy=stop. Avoid repeating identical search queries across consecutive low-yield iterations; diversify query wording using the user objective, nearby synonyms, and alternate directory sources. For lead_pipeline actions, you may set runEmailEnrichment=false when budget is constrained and lead deficit remains high, then use email_enrich later on shortlisted leads. Use pastActionsSummary, recentPerformanceSummary, and reflectionHints to avoid repeating low-yield actions with nearly identical inputs. Treat service recovery as agentic work you should attempt before stopping. Respect tool constraints: lead_pipeline.maxPages <= 25, browseConcurrency <= 6, extractionBatchSize <= 6, llmMaxCalls <= 20, minConfidence between 0 and 1. For action inputs, always return inputJson as a valid JSON object string (for example: \"{}\" or \"{\\\"maxPages\\\":20}\").";
 
   return composeSystemPrompt([
     {
@@ -1411,6 +1356,7 @@ async function decidePlannerAction(
   const lastObservations = observations.slice(-options.observationWindow);
   const pastActionsSummary = buildPastActionsSummary(lastObservations);
   const recentPerformanceSummary = buildRecentPerformanceSummary(lastObservations, options.diminishingThreshold);
+  const reflectionHints = buildReflectionHints(lastObservations, options.diminishingThreshold);
   const leadDeficit = deficitStrategy.deficit;
   const emailStrategyHint =
     budgetSnapshot.mode === "normal"
@@ -1470,6 +1416,7 @@ async function decidePlannerAction(
             recentObservations: lastObservations,
             aggregateFailures,
             failureCodeSummary,
+            reflectionHints,
             pastActionsSummary,
             recentPerformanceSummary
           })
@@ -1806,6 +1753,7 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       emailRequested: emailRequestedByUser
     });
     const yieldSignalForPlan = computeYieldPerTokenSignal(observations);
+    const reflectionHintsForPlan = buildReflectionHints(observations.slice(-options.observationWindow), options.diminishingThreshold);
 
     const plannerDecision = await decidePlannerAction(
       options,
@@ -1848,6 +1796,7 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
         expectedLlmCapThisIteration: expectedLlmCapForPlan,
         deficitStrategy: deficitStrategyForPlan,
         yieldSignal: yieldSignalForPlan,
+        reflectionHints: reflectionHintsForPlan,
         budgetSnapshot: budgetSnapshotBeforePlan
       },
       timestamp: nowIso()
@@ -1866,40 +1815,7 @@ export async function runLeadAgenticLoop(options: AgenticLoopOptions): Promise<R
       };
       break;
     }
-
-    const guardedPlan = applyFailureGuardrail(initialAction, observations);
-    const noveltyGuardedPlan = applyNoveltyGuardrail(guardedPlan.action, observations, options.message, options.diminishingThreshold);
-    const action = noveltyGuardedPlan.action;
-
-    if (guardedPlan.adjusted) {
-      await options.runStore.appendEvent({
-        runId: options.runId,
-        sessionId: options.sessionId,
-        phase: "thought",
-        eventType: "agent_plan_adjusted",
-        payload: {
-          iteration,
-          reason: guardedPlan.reason,
-          originalAction: initialAction,
-          adjustedAction: action
-        },
-        timestamp: nowIso()
-      });
-    }
-    if (noveltyGuardedPlan.adjusted) {
-      await options.runStore.appendEvent({
-        runId: options.runId,
-        sessionId: options.sessionId,
-        phase: "thought",
-        eventType: "agent_plan_adjusted",
-        payload: {
-          iteration,
-          reason: noveltyGuardedPlan.reason,
-          adjustedAction: action
-        },
-        timestamp: nowIso()
-      });
-    }
+    const action = initialAction;
 
     const budgetSnapshotBeforeAction = computeBudgetSnapshot("pre_action");
     const remainingMsBeforeAction = budgetSnapshotBeforeAction.remainingMs;

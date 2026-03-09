@@ -2,13 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { diminishingReturnsForTests, plannerContextForTests, plannerFailureGuardrailsForTests } from "../../src/core/runLeadAgenticLoop.js";
 
-test("failure guardrail forces search_status after lead_pipeline search failures", () => {
-  const guarded = plannerFailureGuardrailsForTests.applyFailureGuardrail(
-    {
-      type: "single",
-      tool: "lead_pipeline",
-      input: { maxPages: 20 }
-    },
+test("reflection hints suggest search health check after unresolved search failures", () => {
+  const hints = plannerFailureGuardrailsForTests.buildReflectionHints(
     [
       {
         iteration: 2,
@@ -25,14 +20,11 @@ test("failure guardrail forces search_status after lead_pipeline search failures
         hadLlmBudgetExhausted: false,
         note: "lead_pipeline ok, added 0, total leads 7, search failures 5"
       }
-    ]
+    ],
+    2
   );
 
-  assert.equal(guarded.adjusted, true);
-  assert.equal(guarded.action.type, "single");
-  if (guarded.action.type === "single") {
-    assert.equal(guarded.action.tool, "search_status");
-  }
+  assert.ok(hints.some((hint) => hint.includes("search_status")));
 });
 
 test("extractObservationSignals captures structured tool failure counts", () => {
@@ -309,20 +301,8 @@ test("search query guardrail fills missing/invalid query from user message", () 
   assert.equal(guarded.calls[0]?.input.query, "Find 20 MSP/SI leads in USA with emails");
 });
 
-test("novelty guardrail switches repeated low-yield lead pipeline to search diversification", () => {
-  const guarded = plannerFailureGuardrailsForTests.applyNoveltyGuardrail(
-    {
-      type: "single",
-      tool: "lead_pipeline",
-      input: {
-        maxPages: 10,
-        llmMaxCalls: 12,
-        extractionBatchSize: 6,
-        browseConcurrency: 6,
-        minConfidence: 0.7,
-        runEmailEnrichment: true
-      }
-    },
+test("reflection hints flag repeated low-yield semantic misses without forcing a replacement action", () => {
+  const hints = plannerFailureGuardrailsForTests.buildReflectionHints(
     [
       {
         iteration: 1,
@@ -363,17 +343,11 @@ test("novelty guardrail switches repeated low-yield lead pipeline to search dive
         note: "second low-yield pass"
       }
     ],
-    "Find 20 MSP/SI leads in USA with emails",
     2
   );
 
-  assert.equal(guarded.adjusted, true);
-  assert.equal(guarded.reason, "repeated_low_yield_pattern");
-  assert.equal(guarded.action.type, "single");
-  if (guarded.action.type === "single") {
-    assert.equal(guarded.action.tool, "search");
-    assert.equal(typeof guarded.action.input.query, "string");
-  }
+  assert.ok(hints.some((hint) => hint.includes("semantic miss")));
+  assert.ok(hints.some((hint) => hint.includes("maxPages=10")));
 });
 
 test("yield-per-token signal uses rolling last two yield attempts", () => {

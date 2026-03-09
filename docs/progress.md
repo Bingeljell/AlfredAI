@@ -109,6 +109,7 @@
   - Deferred roadmap tracking moved to `docs/to_revisit.md` for browse-budget controls and LLM cap expansion after validation.
   - Test/build script wrappers were migrated from `npm` to `pnpm`, and `pnpm-lock.yaml` is now committed with `package-lock.json` removed.
   - Alfred orchestration now runs an explicit completion-evaluator pass after successful tool/delegation results, feeds evaluator notes back into planner context as reflection hints, and exits to a final answer when the latest result is already sufficient.
+  - Lead-agent planning no longer mutates the model’s chosen action on search-failure or novelty patterns; those domain-specific overrides were replaced with reflection hints in planner context so the model remains in control while still seeing the failure pattern clearly.
   - Additional resiliency and production hardening tasks remain for later iterations.
 
 ## Remaining Follow-ups

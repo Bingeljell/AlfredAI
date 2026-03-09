@@ -87,6 +87,7 @@ test("runLeadAgenticLoop logs delegation and scratchpad context at loop start", 
 
   const updatedRun = await runStore.getRun(run.runId);
   assert.ok(updatedRun);
+  assert.ok(updatedRun?.artifactPaths?.[0]?.endsWith("leads.csv"));
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
   const started = events.find((event) => event.eventType === "agent_loop_started");
   assert.ok(started);

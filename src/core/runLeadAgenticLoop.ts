@@ -2212,6 +2212,12 @@ export async function runLeadAgenticLoop(options: LeadAgentRuntimeOptions): Prom
     });
   }
 
+  if (state.artifacts.length > 0) {
+    await options.runStore.updateRun(options.runId, {
+      artifactPaths: [...state.artifacts]
+    });
+  }
+
   await options.runStore.appendEvent({
     runId: options.runId,
     sessionId: options.sessionId,

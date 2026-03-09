@@ -473,6 +473,11 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       const runRecord = await options.runStore.getRun(options.runId);
       const recentToolCalls = runRecord?.toolCalls.slice(-6) ?? [];
       toolCallsUsed = runRecord?.toolCalls.length ?? toolCallsUsed;
+      if (leadOutcome.artifactPaths?.length) {
+        for (const artifact of leadOutcome.artifactPaths) {
+          addArtifact(artifact);
+        }
+      }
       if (runRecord?.artifactPaths?.length) {
         for (const artifact of runRecord.artifactPaths) {
           addArtifact(artifact);

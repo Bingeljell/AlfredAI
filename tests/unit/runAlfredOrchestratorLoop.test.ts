@@ -208,6 +208,7 @@ test("runAlfredOrchestratorLoop records delegation telemetry and passes scratchp
 
   assert.equal(outcome.status, "completed");
   assert.equal(outcome.assistantText, "Delegated result accepted.");
+  assert.deepEqual(outcome.artifactPaths, ["/tmp/fake-leads.csv"]);
   assert.equal(delegatedInput?.skillName, "lead_agent");
   assert.equal(delegatedInput?.parentRunId, run.runId);
   assert.equal(delegatedInput?.delegationId, "delegation_1");

@@ -113,6 +113,7 @@
   - Alfred now delegates specialist work through a generic skill registry and `runAgentLoop` dispatcher, with `lead_agent` registered as a first-class runtime skill instead of being hardcoded directly into the orchestrator.
   - Delegated skill runs now carry parent/delegation metadata plus a lightweight scratchpad scaffold, and Alfred emits explicit delegation start/result events so future sub-agents can share bounded run context without changing the current lead workflow semantics.
   - Delegation telemetry and scratchpad scaffolding now have direct orchestrator unit coverage, verifying that Alfred emits delegation start/result events and passes bounded turn context into delegated skill runs.
+  - Final lead-run artifacts now persist directly into run state, and Alfred now propagates delegated `artifactPaths` immediately so session-level continuity can reference prior CSV outputs without waiting for a later run-store refresh.
   - Additional resiliency and production hardening tasks remain for later iterations.
 
 ## Remaining Follow-ups

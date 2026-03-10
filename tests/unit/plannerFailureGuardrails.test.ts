@@ -177,6 +177,22 @@ test("recent performance summary includes yield and diagnostics counters", () =>
   assert.match(summary, /searchFailures=5/);
 });
 
+test("atomic next-action hint prefers shortlist before heavier retrieval", () => {
+  const hint = plannerContextForTests.determineAtomicNextActionHint({
+    objectiveQuery: "managed service providers usa",
+    shortlistedUrlsCount: 0,
+    fetchedPagesCount: 0,
+    leadCount: 0,
+    emailRequested: true,
+    budgetMode: "normal",
+    expectedLlmCapThisIteration: 8,
+    targetLeadCount: 3
+  });
+
+  assert.equal(hint.tool, "lead_search_shortlist");
+  assert.match(hint.rationale, /shortlist/i);
+});
+
 test("diminishing returns ignores diagnostic-only actions", () => {
   const shouldNotStop = diminishingReturnsForTests.computeDiminishingReturns(
     [

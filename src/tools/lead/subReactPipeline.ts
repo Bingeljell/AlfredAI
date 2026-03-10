@@ -334,6 +334,33 @@ export interface LeadSubReactResult {
   llmUsage: LlmUsageTotals;
 }
 
+export interface LeadPageExtractionOptions {
+  pages: PagePayload[];
+  message: string;
+  openAiApiKey?: string;
+  extractionBatchSize: number;
+  llmMaxCalls: number;
+  minConfidence: number;
+  requestedLeadCount: number;
+  executionBrief?: LeadExecutionBrief;
+  filters?: NormalizedLeadPipelineFilters;
+  deadlineAtMs?: number;
+  isCancellationRequested?: () => Promise<boolean>;
+}
+
+export interface LeadPageExtractionResult {
+  leads: LeadCandidate[];
+  rawCandidateCount: number;
+  finalCandidateCount: number;
+  deficitCount: number;
+  extractionFailureCount: number;
+  extractionFailureSamples: Array<{ batchIndex: number; reason: string }>;
+  llmCallsUsed: number;
+  llmCallsRemaining: number;
+  llmUsage: LlmUsageTotals;
+  stoppedEarlyReason?: string;
+}
+
 interface QueryPlanResult {
   queries: string[];
   targetLeadCount?: number;
@@ -439,6 +466,13 @@ function isEmailRequested(message: string, filters: NormalizedLeadPipelineFilter
   }
 
   return /\bemails?\b|\bcontact\s+(?:email|details?)\b|\bemail\s+contacts?\b/i.test(message);
+}
+
+function isEmailRequired(options: Pick<LeadSubReactOptions, "message" | "filters" | "executionBrief">): boolean {
+  if (typeof options.executionBrief?.emailRequired === "boolean") {
+    return options.executionBrief.emailRequired;
+  }
+  return isEmailRequested(options.message, options.filters);
 }
 
 function toPositiveInt(value: number | undefined | null): number | undefined {
@@ -686,6 +720,15 @@ function fallbackQueryExpansion(message: string, filters: NormalizedLeadPipeline
     .map((query) => query.replace(/\s+/g, " ").trim())
     .filter((query) => query.length >= 3)
     .slice(0, 5);
+}
+
+function fallbackQueryExpansionFromBrief(
+  message: string,
+  filters: NormalizedLeadPipelineFilters | undefined,
+  executionBrief?: LeadExecutionBrief
+): string[] {
+  const baseMessage = executionBrief?.objectiveBrief.objectiveSummary ?? message;
+  return fallbackQueryExpansion(baseMessage, filters);
 }
 
 function normalizeWebsite(url: string | undefined): string | undefined {
@@ -1315,10 +1358,10 @@ function diagnosticDetails(diagnostic: StructuredChatDiagnostic<unknown>, attemp
 
 async function buildQueryPlan(message: string, options: LeadSubReactOptions, budget: LlmBudgetManager): Promise<QueryPlanResult> {
   const fallbackObjectiveBrief = options.executionBrief?.objectiveBrief
-    ?? inferFallbackObjectiveBrief(message, options.filters, isEmailRequested(message, options.filters));
+    ?? inferFallbackObjectiveBrief(message, options.filters, isEmailRequired(options));
   if (!options.openAiApiKey || !budget.consume()) {
     return {
-      queries: fallbackQueryExpansion(message, options.filters),
+      queries: fallbackQueryExpansionFromBrief(message, options.filters, options.executionBrief),
       objectiveBrief: fallbackObjectiveBrief,
       usedModelPlan: false,
       plannerFailureReason: !options.openAiApiKey ? "missing_api_key" : "llm_budget_exhausted",
@@ -1351,7 +1394,7 @@ async function buildQueryPlan(message: string, options: LeadSubReactOptions, bud
 
   if (!diagnostic.result) {
     return {
-      queries: fallbackQueryExpansion(message, options.filters),
+      queries: fallbackQueryExpansionFromBrief(message, options.filters, options.executionBrief),
       objectiveBrief: fallbackObjectiveBrief,
       usedModelPlan: false,
       plannerFailureReason: formatDiagnosticReason(diagnostic),
@@ -1395,10 +1438,12 @@ function buildExtractionPrompt(
   batch: PagePayload[],
   requestMessage: string,
   filters: NormalizedLeadPipelineFilters | undefined,
-  objectiveBrief: LeadObjectiveBrief
+  objectiveBrief: LeadObjectiveBrief,
+  executionBrief?: LeadExecutionBrief
 ): string {
   return [
-    `User request: ${requestMessage}`,
+    `User request: ${executionBrief?.objectiveBrief.objectiveSummary ?? requestMessage}`,
+    `Canonical lead brief: ${JSON.stringify(executionBrief ?? null)}`,
     `Objective brief: ${JSON.stringify(objectiveBrief)}`,
     `Filters: ${JSON.stringify(filters ?? {})}`,
     "Page payloads (batched):",
@@ -1455,7 +1500,7 @@ async function extractBatch(
         },
         {
           role: "user",
-          content: buildExtractionPrompt(batch, options.message, options.filters, objectiveBrief)
+          content: buildExtractionPrompt(batch, options.message, options.filters, objectiveBrief, options.executionBrief)
         }
       ]
     },
@@ -1515,7 +1560,7 @@ async function extractBatch(
         },
         {
           role: "user",
-          content: buildExtractionPrompt(retryBatch, options.message, options.filters, objectiveBrief)
+          content: buildExtractionPrompt(retryBatch, options.message, options.filters, objectiveBrief, options.executionBrief)
         }
       ]
     },
@@ -1798,13 +1843,92 @@ async function enrichLeadEmails(
   }
 }
 
+export async function extractLeadsFromPagePayloads(options: LeadPageExtractionOptions): Promise<LeadPageExtractionResult> {
+  const budget = new LlmBudgetManager(options.llmMaxCalls);
+  const llmUsage = emptyLlmUsageTotals();
+  const targetEmployeeRange = resolveTargetEmployeeRange(options.message, options.filters);
+  const emailRequested = isEmailRequired(options);
+  const objectiveBrief = options.executionBrief?.objectiveBrief
+    ?? inferFallbackObjectiveBrief(options.message, options.filters, emailRequested);
+  const batches = chunk(options.pages, options.extractionBatchSize);
+  const extractedLeads: LeadCandidate[] = [];
+  const extractionFailureSamples: Array<{ batchIndex: number; reason: string }> = [];
+  let stoppedEarlyReason: string | undefined;
+
+  for (let index = 0; index < batches.length; index += 1) {
+    if (options.deadlineAtMs && Date.now() >= options.deadlineAtMs) {
+      stoppedEarlyReason = "deadline_exhausted";
+      break;
+    }
+    if (options.isCancellationRequested && await options.isCancellationRequested()) {
+      stoppedEarlyReason = "cancelled";
+      break;
+    }
+
+    const extraction = await extractBatch(
+      batches[index] ?? [],
+      {
+        runId: "lead_extract",
+        sessionId: "lead_extract",
+        message: options.message,
+        runStore: undefined as never,
+        searchManager: undefined as never,
+        openAiApiKey: options.openAiApiKey,
+        searchMaxResults: 0,
+        maxPages: options.pages.length,
+        browseConcurrency: 1,
+        extractionBatchSize: options.extractionBatchSize,
+        llmMaxCalls: options.llmMaxCalls,
+        minConfidence: options.minConfidence,
+        runEmailEnrichment: false,
+        executionBrief: options.executionBrief,
+        filters: options.filters,
+        deadlineAtMs: options.deadlineAtMs,
+        isCancellationRequested: options.isCancellationRequested
+      },
+      budget,
+      objectiveBrief
+    );
+
+    addLlmUsage(llmUsage, extraction.llmUsage);
+    extractedLeads.push(...extraction.leads);
+    for (const reason of extraction.failureReasons) {
+      extractionFailureSamples.push({
+        batchIndex: index + 1,
+        reason: reason.slice(0, 220)
+      });
+    }
+  }
+
+  const gated = qualityGate(
+    extractedLeads,
+    options.requestedLeadCount,
+    options.minConfidence,
+    targetEmployeeRange,
+    emailRequested
+  );
+
+  return {
+    leads: gated.leads,
+    rawCandidateCount: extractedLeads.length,
+    finalCandidateCount: gated.finalCandidateCount,
+    deficitCount: gated.deficitCount,
+    extractionFailureCount: extractionFailureSamples.length,
+    extractionFailureSamples: extractionFailureSamples.slice(0, 12),
+    llmCallsUsed: budget.used,
+    llmCallsRemaining: budget.remaining,
+    llmUsage: { ...llmUsage, callCount: budget.used },
+    stoppedEarlyReason
+  };
+}
+
 export async function executeLeadSubReactPipeline(options: LeadSubReactOptions): Promise<LeadSubReactResult> {
   const budget = new LlmBudgetManager(options.llmMaxCalls);
   const llmUsage = emptyLlmUsageTotals();
   const explicitRequestedLeadCount = options.executionBrief?.requestedLeadCount ?? extractRequestedLeadCount(options.message);
   const fallbackRequestedLeadCount = parseRequestedLeadCount(options.message);
   const targetEmployeeRange = resolveTargetEmployeeRange(options.message, options.filters);
-  const emailRequested = isEmailRequested(options.message, options.filters);
+  const emailRequested = isEmailRequired(options);
 
   await emitStep(options.runStore, options.runId, options.sessionId, "query_expansion", {
     status: "started",

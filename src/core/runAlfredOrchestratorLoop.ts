@@ -557,10 +557,11 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           {
             role: "user",
             content: JSON.stringify({
-              turnObjective: options.message,
-              iteration,
-              remainingMs: Math.max(0, deadlineAtMs - Date.now()),
-              availableAgents,
+            turnObjective: options.message,
+            currentLeadExecutionBrief: (scratchpad.currentLeadExecutionBrief as LeadExecutionBrief | undefined) ?? null,
+            iteration,
+            remainingMs: Math.max(0, deadlineAtMs - Date.now()),
+            availableAgents,
               availableTools: availableToolSpecs,
               recentObservations: observations.slice(-5),
               lastDelegationSummary,
@@ -636,6 +637,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       const delegationId = `delegation_${iteration}`;
       scratchpad[`delegation.${delegationId}.brief`] = delegatedMessage;
       if (leadExecutionBrief) {
+        scratchpad.currentLeadExecutionBrief = leadExecutionBrief;
         scratchpad[`delegation.${delegationId}.leadExecutionBrief`] = leadExecutionBrief;
       }
       await options.runStore.appendEvent({

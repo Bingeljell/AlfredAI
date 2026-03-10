@@ -6,6 +6,7 @@ test("auto-discovers lead agent tools from definitions folder", async () => {
   const tools = await discoverLeadAgentTools();
 
   assert.ok(tools.has("lead_pipeline"));
+  assert.ok(tools.has("lead_extract"));
   assert.ok(tools.has("recover_search"));
   assert.ok(tools.has("search"));
   assert.ok(tools.has("web_fetch"));

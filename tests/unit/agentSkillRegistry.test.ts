@@ -16,9 +16,11 @@ class FakeSearchManager {
   }
 }
 
-test("agent skill registry exposes lead_agent metadata", () => {
+test("agent skill registry exposes specialist metadata", () => {
   const skills = listAgentSkills();
   assert.ok(skills.some((skill) => skill.name === "lead_agent"));
+  assert.ok(skills.some((skill) => skill.name === "research_agent"));
+  assert.ok(skills.some((skill) => skill.name === "ops_agent"));
 
   const leadSkill = getAgentSkill("lead_agent");
   assert.ok(leadSkill);
@@ -27,6 +29,18 @@ test("agent skill registry exposes lead_agent metadata", () => {
   assert.ok(leadSkill?.toolAllowlist?.includes("lead_pipeline"));
   assert.ok(leadSkill?.toolAllowlist?.includes("lead_extract"));
   assert.ok(leadSkill?.toolAllowlist?.includes("lead_search_shortlist"));
+
+  const researchSkill = getAgentSkill("research_agent");
+  assert.ok(researchSkill);
+  assert.match(researchSkill?.description ?? "", /research/i);
+  assert.ok(researchSkill?.toolAllowlist?.includes("search"));
+  assert.ok(researchSkill?.toolAllowlist?.includes("writer_agent"));
+
+  const opsSkill = getAgentSkill("ops_agent");
+  assert.ok(opsSkill);
+  assert.match(opsSkill?.description ?? "", /operations/i);
+  assert.ok(opsSkill?.toolAllowlist?.includes("shell_exec"));
+  assert.ok(opsSkill?.toolAllowlist?.includes("file_edit"));
 });
 
 test("runAgentLoop returns failure for unknown skill", async () => {

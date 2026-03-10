@@ -1,7 +1,9 @@
 import type { AgentSkillDefinition } from "./types.js";
 import { leadAgentSkill } from "./leadAgentSkill.js";
+import { researchAgentSkill } from "./researchAgentSkill.js";
+import { opsAgentSkill } from "./opsAgentSkill.js";
 
-const SKILLS: AgentSkillDefinition[] = [leadAgentSkill];
+const SKILLS: AgentSkillDefinition[] = [leadAgentSkill, researchAgentSkill, opsAgentSkill];
 
 export function listAgentSkills(): AgentSkillDefinition[] {
   return [...SKILLS];

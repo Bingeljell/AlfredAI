@@ -66,6 +66,33 @@ interface AlfredLeadBriefOutput {
   objectiveBrief: LeadExecutionBrief["objectiveBrief"];
 }
 
+type AlfredTaskType = "lead_generation" | "general";
+
+interface AlfredActionSnapshot {
+  iteration: number;
+  actionType: "delegate_agent" | "call_tool" | "respond" | "system";
+  name: string;
+  status: "planned" | "completed" | "failed" | "cancelled";
+  summary: string;
+}
+
+interface AlfredTurnState {
+  turnObjective: string;
+  taskType: AlfredTaskType;
+  canonicalLeadBrief: LeadExecutionBrief | null;
+  completionCriteria: string[];
+  facts: {
+    requestedLeadCount: number | null;
+    collectedLeadCount: number;
+    collectedEmailCount: number;
+    artifactCount: number;
+    fetchedPageCount: number;
+    shortlistedUrlCount: number;
+    outputFormat: string | null;
+  };
+  lastAction: AlfredActionSnapshot | null;
+}
+
 const ALFRED_PLANNER_OUTPUT_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -356,6 +383,51 @@ function truncateForPrompt(value: unknown, maxLength = 2400): string {
   return serialized.slice(0, maxLength);
 }
 
+function buildCompletionCriteria(message: string, leadExecutionBrief?: LeadExecutionBrief | null): string[] {
+  if (leadExecutionBrief) {
+    const criteria = [`Return exactly ${leadExecutionBrief.requestedLeadCount} leads.`];
+    if (leadExecutionBrief.emailRequired) {
+      criteria.push("Include email data for returned leads when required by the user.");
+    }
+    if (leadExecutionBrief.outputFormat) {
+      criteria.push(`Produce or preserve the requested output format: ${leadExecutionBrief.outputFormat}.`);
+    }
+    if (leadExecutionBrief.objectiveBrief.geography) {
+      criteria.push(`Keep the results within ${leadExecutionBrief.objectiveBrief.geography}.`);
+    }
+    return criteria;
+  }
+
+  return [`Answer the current turn directly and honestly: ${message.replace(/\s+/g, " ").trim().slice(0, 240)}`];
+}
+
+function buildAlfredTurnState(args: {
+  message: string;
+  leadExecutionBrief?: LeadExecutionBrief | null;
+  leadState: LeadAgentState;
+  lastAction: AlfredActionSnapshot | null;
+}): AlfredTurnState {
+  const canonicalLeadBrief = args.leadExecutionBrief ?? args.leadState.executionBrief ?? null;
+  const collectedEmailCount = args.leadState.leads.filter((lead) => Boolean(lead.email)).length;
+
+  return {
+    turnObjective: args.message,
+    taskType: canonicalLeadBrief ? "lead_generation" : "general",
+    canonicalLeadBrief,
+    completionCriteria: buildCompletionCriteria(args.message, canonicalLeadBrief),
+    facts: {
+      requestedLeadCount: canonicalLeadBrief?.requestedLeadCount ?? null,
+      collectedLeadCount: args.leadState.leads.length,
+      collectedEmailCount,
+      artifactCount: args.leadState.artifacts.length,
+      fetchedPageCount: args.leadState.fetchedPages.length,
+      shortlistedUrlCount: args.leadState.shortlistedUrls?.length ?? 0,
+      outputFormat: canonicalLeadBrief?.outputFormat ?? null
+    },
+    lastAction: args.lastAction
+  };
+}
+
 async function runCompletionEvaluator(args: {
   apiKey?: string;
   structuredChatRunner: typeof openAiClient.runOpenAiStructuredChatWithDiagnostics;
@@ -363,6 +435,7 @@ async function runCompletionEvaluator(args: {
   leadExecutionBrief?: LeadExecutionBrief;
   iteration: number;
   remainingMs: number;
+  turnState: AlfredTurnState;
   recentObservations: Array<{ iteration: number; summary: string; outcome: string }>;
   lastDelegationSummary: string;
   actionSummary: string;
@@ -384,6 +457,7 @@ async function runCompletionEvaluator(args: {
           content: JSON.stringify({
             turnObjective: args.message,
             canonicalTaskBrief: args.leadExecutionBrief ?? null,
+            turnState: args.turnState,
             iteration: args.iteration,
             remainingMs: args.remainingMs,
             actionSummary: args.actionSummary,
@@ -418,7 +492,8 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     leads: [],
     artifacts: [],
     requestedLeadCount: 0,
-    fetchedPages: []
+    fetchedPages: [],
+    shortlistedUrls: []
   };
   const addLeads: LeadAgentToolContext["addLeads"] = (incoming) => {
     let addedCount = 0;
@@ -444,6 +519,10 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     alfredState.fetchedPages = pages;
   };
   const getFetchedPages: LeadAgentToolContext["getFetchedPages"] = () => alfredState.fetchedPages;
+  const setShortlistedUrls: LeadAgentToolContext["setShortlistedUrls"] = (urls) => {
+    alfredState.shortlistedUrls = Array.from(new Set(urls.map((item) => item.trim()).filter(Boolean)));
+  };
+  const getShortlistedUrls: LeadAgentToolContext["getShortlistedUrls"] = () => alfredState.shortlistedUrls ?? [];
 
   const toolContext: LeadAgentToolContext = {
     runId: options.runId,
@@ -463,7 +542,9 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     addLeads,
     addArtifact,
     setFetchedPages,
-    getFetchedPages
+    getFetchedPages,
+    setShortlistedUrls,
+    getShortlistedUrls
   };
 
   const observations: Array<{ iteration: number; summary: string; outcome: string }> = [];
@@ -471,9 +552,21 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   let toolCallsUsed = 0;
   let lastDelegationSummary = "No delegation attempted yet.";
   let lastCompletionNote = "No completion evaluation yet.";
+  let lastAction: AlfredActionSnapshot | null = null;
   const scratchpad: Record<string, unknown> = {
     currentTurnObjective: options.message
   };
+  const refreshTurnState = (): AlfredTurnState => {
+    const turnState = buildAlfredTurnState({
+      message: options.message,
+      leadExecutionBrief: (scratchpad.currentLeadExecutionBrief as LeadExecutionBrief | undefined) ?? undefined,
+      leadState: alfredState,
+      lastAction
+    });
+    scratchpad.currentTurnState = turnState;
+    return turnState;
+  };
+  refreshTurnState();
   const structuredChatRunner = options.structuredChatRunner ?? openAiClient.runOpenAiStructuredChatWithDiagnostics;
   const agentLoopRunner = options.agentLoopRunner ?? runAgentLoop;
   const buildLeadAgentRuntimeOptions = (message: string, leadExecutionBrief?: LeadExecutionBrief): LeadAgentRuntimeOptions => ({
@@ -513,6 +606,17 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         master: ALFRED_MASTER_PROMPT_VERSION
       },
       sessionContextLoaded: Boolean(options.sessionContext)
+    },
+    timestamp: nowIso()
+  });
+  await options.runStore.appendEvent({
+    runId: options.runId,
+    sessionId: options.sessionId,
+    phase: "thought",
+    eventType: "alfred_turn_state_updated",
+    payload: {
+      iteration: 0,
+      turnState: scratchpad.currentTurnState
     },
     timestamp: nowIso()
   });
@@ -557,11 +661,12 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           {
             role: "user",
             content: JSON.stringify({
-            turnObjective: options.message,
-            currentLeadExecutionBrief: (scratchpad.currentLeadExecutionBrief as LeadExecutionBrief | undefined) ?? null,
-            iteration,
-            remainingMs: Math.max(0, deadlineAtMs - Date.now()),
-            availableAgents,
+              turnObjective: options.message,
+              currentLeadExecutionBrief: (scratchpad.currentLeadExecutionBrief as LeadExecutionBrief | undefined) ?? null,
+              turnState: refreshTurnState(),
+              iteration,
+              remainingMs: Math.max(0, deadlineAtMs - Date.now()),
+              availableAgents,
               availableTools: availableToolSpecs,
               recentObservations: observations.slice(-5),
               lastDelegationSummary,
@@ -591,6 +696,13 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     }
 
     const plan = plannerDiagnostic.result;
+    lastAction = {
+      iteration,
+      actionType: plan.actionType,
+      name: plan.delegateAgent ?? plan.toolName ?? "respond",
+      status: "planned",
+      summary: plan.thought
+    };
     await options.runStore.appendEvent({
       runId: options.runId,
       sessionId: options.sessionId,
@@ -601,12 +713,20 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         thought: plan.thought,
         actionType: plan.actionType,
         delegateAgent: plan.delegateAgent,
-        toolName: plan.toolName
+        toolName: plan.toolName,
+        turnState: refreshTurnState()
       },
       timestamp: nowIso()
     });
 
     if (plan.actionType === "respond") {
+      lastAction = {
+        iteration,
+        actionType: "respond",
+        name: "respond",
+        status: "completed",
+        summary: (plan.responseText ?? lastDelegationSummary).slice(0, 280)
+      };
       return {
         status: "completed",
         assistantText: plan.responseText ?? lastDelegationSummary,
@@ -617,6 +737,13 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     if (plan.actionType === "delegate_agent") {
       const agentName = plan.delegateAgent?.trim().toLowerCase();
       if (!agentName || !availableAgents.some((agent) => agent.name === agentName)) {
+        lastAction = {
+          iteration,
+          actionType: "delegate_agent",
+          name: plan.delegateAgent ?? "unknown",
+          status: "failed",
+          summary: "unsupported_delegate_agent"
+        };
         observations.push({
           iteration,
           summary: `unsupported_delegate:${plan.delegateAgent ?? "null"}`,
@@ -638,6 +765,8 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       scratchpad[`delegation.${delegationId}.brief`] = delegatedMessage;
       if (leadExecutionBrief) {
         scratchpad.currentLeadExecutionBrief = leadExecutionBrief;
+        alfredState.executionBrief = leadExecutionBrief;
+        toolContext.leadExecutionBrief = leadExecutionBrief;
         scratchpad[`delegation.${delegationId}.leadExecutionBrief`] = leadExecutionBrief;
       }
       await options.runStore.appendEvent({
@@ -701,6 +830,25 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         `assistantText=${(leadOutcome.assistantText ?? "").slice(0, 400)}`,
         `recentTools=${recentToolCalls.map((call) => `${call.toolName}:${call.status}`).join(", ")}`
       ].join(" | ");
+      lastAction = {
+        iteration,
+        actionType: "delegate_agent",
+        name: agentName,
+        status: leadOutcome.status === "cancelled" ? "cancelled" : "completed",
+        summary: lastDelegationSummary.slice(0, 280)
+      };
+      const delegatedTurnState = refreshTurnState();
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "thought",
+        eventType: "alfred_turn_state_updated",
+        payload: {
+          iteration,
+          turnState: delegatedTurnState
+        },
+        timestamp: nowIso()
+      });
 
       observations.push({
         iteration,
@@ -720,6 +868,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           leadExecutionBrief,
           iteration,
           remainingMs: Math.max(0, deadlineAtMs - Date.now()),
+          turnState: delegatedTurnState,
           recentObservations: observations,
           lastDelegationSummary,
           actionSummary: `delegate_agent:${agentName}`,
@@ -778,6 +927,13 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       const toolName = plan.toolName?.trim() ?? "";
       const tool = availableTools.get(toolName);
       if (!tool) {
+        lastAction = {
+          iteration,
+          actionType: "call_tool",
+          name: toolName || "unknown",
+          status: "failed",
+          summary: "tool_not_found"
+        };
         observations.push({
           iteration,
           summary: `tool_not_found:${toolName || "null"}`,
@@ -787,6 +943,13 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       }
       const input = parseToolInputJson(plan.toolInputJson);
       if (!input) {
+        lastAction = {
+          iteration,
+          actionType: "call_tool",
+          name: toolName,
+          status: "failed",
+          summary: "invalid_tool_input"
+        };
         observations.push({
           iteration,
           summary: `invalid_tool_input:${toolName}`,
@@ -796,6 +959,13 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       }
       const parsedInput = tool.inputSchema.safeParse(input);
       if (!parsedInput.success) {
+        lastAction = {
+          iteration,
+          actionType: "call_tool",
+          name: toolName,
+          status: "failed",
+          summary: parsedInput.error.message.slice(0, 180)
+        };
         observations.push({
           iteration,
           summary: `tool_schema_error:${toolName}`,
@@ -825,6 +995,13 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           summary: `tool:${toolName}:ok`,
           outcome: JSON.stringify(output).slice(0, 260)
         });
+        lastAction = {
+          iteration,
+          actionType: "call_tool",
+          name: toolName,
+          status: "completed",
+          summary: JSON.stringify(output).slice(0, 280)
+        };
       } catch (error) {
         toolCallsUsed += 1;
         const errorMessage = error instanceof Error ? error.message.slice(0, 220) : "tool_execution_failed";
@@ -841,7 +1018,26 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           summary: `tool:${toolName}:error`,
           outcome: errorMessage
         });
+        lastAction = {
+          iteration,
+          actionType: "call_tool",
+          name: toolName,
+          status: "failed",
+          summary: errorMessage
+        };
       }
+      const postToolTurnState = refreshTurnState();
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "thought",
+        eventType: "alfred_turn_state_updated",
+        payload: {
+          iteration,
+          turnState: postToolTurnState
+        },
+        timestamp: nowIso()
+      });
 
       if (toolExecutedSuccessfully && plannerCallsUsed < options.plannerMaxCalls) {
         const completionDiagnostic = await runCompletionEvaluator({
@@ -851,6 +1047,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           leadExecutionBrief: undefined,
           iteration,
           remainingMs: Math.max(0, deadlineAtMs - Date.now()),
+          turnState: postToolTurnState,
           recentObservations: observations,
           lastDelegationSummary,
           actionSummary: `call_tool:${toolName}`,

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { PolicyMode, RunOutcome, SessionPromptContext } from "../types.js";
+import type { PolicyMode, RunOutcome, RunRecord, SessionPromptContext } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import * as openAiClient from "../services/openAiClient.js";
@@ -81,6 +81,9 @@ interface AlfredTurnState {
   taskType: AlfredTaskType;
   canonicalLeadBrief: LeadExecutionBrief | null;
   completionCriteria: string[];
+  completedCriteria: string[];
+  missingRequirements: string[];
+  blockingIssues: string[];
   facts: {
     requestedLeadCount: number | null;
     collectedLeadCount: number;
@@ -253,7 +256,7 @@ function buildAlfredPlannerSystemPrompt(sessionContext?: SessionPromptContext): 
     {
       label: "Directives",
       content:
-        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. Prefer delegating lead-generation execution to lead_agent. Use call_tool for lightweight diagnostics or direct retrieval when that is higher-value than full delegation. After receiving specialist output, evaluate against the turn objective and either respond or re-delegate with a refined brief. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
+        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. Prefer delegating lead-generation execution to lead_agent. Use call_tool for lightweight diagnostics or direct retrieval when that is higher-value than full delegation. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. After receiving specialist output, evaluate against the turn objective and either respond or re-delegate with a refined brief. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
     },
     {
       label: "Session Context",
@@ -276,7 +279,7 @@ function buildAlfredCompletionEvaluatorSystemPrompt(sessionContext?: SessionProm
     {
       label: "Directives",
       content:
-        "Respond `shouldRespond=true` only when the latest successful tool or delegated agent result is sufficient to answer the current turn with reasonable honesty. If the result is partial, missing key evidence, or needs another action, set `shouldRespond=false` and explain exactly what is still missing. Keep this prompt-driven; do not invent facts beyond the observed result."
+        "Respond `shouldRespond=true` only when the latest successful tool or delegated agent result is sufficient to answer the current turn with reasonable honesty. Use `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical checklist. If the result is partial, missing key evidence, or needs another action, set `shouldRespond=false` and explain exactly what is still missing. Keep this prompt-driven; do not invent facts beyond the observed result."
     },
     {
       label: "Session Context",
@@ -401,25 +404,113 @@ function buildCompletionCriteria(message: string, leadExecutionBrief?: LeadExecu
   return [`Answer the current turn directly and honestly: ${message.replace(/\s+/g, " ").trim().slice(0, 240)}`];
 }
 
+function findNumericField(source: unknown, keys: string[]): number | null {
+  if (!source || typeof source !== "object") {
+    return null;
+  }
+  const record = source as Record<string, unknown>;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function inferLeadFactsFromRunRecord(runRecord: RunRecord | undefined): { collectedLeadCount: number; collectedEmailCount: number } {
+  let collectedLeadCount = 0;
+  let collectedEmailCount = 0;
+
+  for (const toolCall of [...(runRecord?.toolCalls ?? [])].reverse()) {
+    if (toolCall.status !== "ok") {
+      continue;
+    }
+    if (collectedLeadCount === 0) {
+      collectedLeadCount =
+        findNumericField(toolCall.outputRedacted, ["finalCandidateCount", "candidateCount", "totalCount"]) ??
+        findNumericField(toolCall.inputRedacted, ["candidateCount"]) ??
+        0;
+    }
+    if (collectedEmailCount === 0) {
+      collectedEmailCount =
+        findNumericField(toolCall.outputRedacted, ["emailLeadCount", "emailCount", "enrichedEmailCount"]) ?? 0;
+    }
+    if (collectedLeadCount > 0 && collectedEmailCount > 0) {
+      break;
+    }
+  }
+
+  return { collectedLeadCount, collectedEmailCount };
+}
+
 function buildAlfredTurnState(args: {
   message: string;
   leadExecutionBrief?: LeadExecutionBrief | null;
   leadState: LeadAgentState;
   lastAction: AlfredActionSnapshot | null;
+  runRecord?: RunRecord;
 }): AlfredTurnState {
   const canonicalLeadBrief = args.leadExecutionBrief ?? args.leadState.executionBrief ?? null;
-  const collectedEmailCount = args.leadState.leads.filter((lead) => Boolean(lead.email)).length;
+  const inferredFacts = inferLeadFactsFromRunRecord(args.runRecord);
+  const collectedLeadCount = Math.max(args.leadState.leads.length, inferredFacts.collectedLeadCount);
+  const collectedEmailCount = Math.max(
+    args.leadState.leads.filter((lead) => Boolean(lead.email)).length,
+    inferredFacts.collectedEmailCount
+  );
+  const completedCriteria: string[] = [];
+  const missingRequirements: string[] = [];
+  const blockingIssues: string[] = [];
+
+  if (canonicalLeadBrief) {
+    if (collectedLeadCount >= canonicalLeadBrief.requestedLeadCount) {
+      completedCriteria.push(`Lead count met (${collectedLeadCount}/${canonicalLeadBrief.requestedLeadCount}).`);
+    } else {
+      missingRequirements.push(
+        `Need ${canonicalLeadBrief.requestedLeadCount - collectedLeadCount} more leads to satisfy the request.`
+      );
+    }
+
+    if (canonicalLeadBrief.emailRequired) {
+      if (collectedEmailCount >= canonicalLeadBrief.requestedLeadCount) {
+        completedCriteria.push(`Email coverage met (${collectedEmailCount}/${canonicalLeadBrief.requestedLeadCount}).`);
+      } else {
+        missingRequirements.push(
+          `Need email coverage for ${canonicalLeadBrief.requestedLeadCount - collectedEmailCount} more requested leads.`
+        );
+      }
+    }
+
+    if (canonicalLeadBrief.outputFormat) {
+      if (args.leadState.artifacts.length > 0 || (args.runRecord?.artifactPaths?.length ?? 0) > 0) {
+        completedCriteria.push(`Requested output format is available (${canonicalLeadBrief.outputFormat}).`);
+      } else {
+        missingRequirements.push(`Need a ${canonicalLeadBrief.outputFormat} artifact before the task is complete.`);
+      }
+    }
+  } else if (args.lastAction?.status !== "completed") {
+    missingRequirements.push("Need either a successful action result or a direct answer for the current turn.");
+  }
+
+  if (args.lastAction?.status === "failed") {
+    blockingIssues.push(`Last action failed: ${args.lastAction.summary}`);
+  } else if (args.lastAction?.status === "cancelled") {
+    blockingIssues.push(`Last action was cancelled: ${args.lastAction.summary}`);
+  }
 
   return {
     turnObjective: args.message,
     taskType: canonicalLeadBrief ? "lead_generation" : "general",
     canonicalLeadBrief,
     completionCriteria: buildCompletionCriteria(args.message, canonicalLeadBrief),
+    completedCriteria,
+    missingRequirements,
+    blockingIssues,
     facts: {
       requestedLeadCount: canonicalLeadBrief?.requestedLeadCount ?? null,
-      collectedLeadCount: args.leadState.leads.length,
+      collectedLeadCount,
       collectedEmailCount,
-      artifactCount: args.leadState.artifacts.length,
+      artifactCount: Math.max(args.leadState.artifacts.length, args.runRecord?.artifactPaths?.length ?? 0),
       fetchedPageCount: args.leadState.fetchedPages.length,
       shortlistedUrlCount: args.leadState.shortlistedUrls?.length ?? 0,
       outputFormat: canonicalLeadBrief?.outputFormat ?? null
@@ -553,6 +644,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   let lastDelegationSummary = "No delegation attempted yet.";
   let lastCompletionNote = "No completion evaluation yet.";
   let lastAction: AlfredActionSnapshot | null = null;
+  let latestRunRecord: RunRecord | undefined;
   const scratchpad: Record<string, unknown> = {
     currentTurnObjective: options.message
   };
@@ -561,7 +653,8 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       message: options.message,
       leadExecutionBrief: (scratchpad.currentLeadExecutionBrief as LeadExecutionBrief | undefined) ?? undefined,
       leadState: alfredState,
-      lastAction
+      lastAction,
+      runRecord: latestRunRecord
     });
     scratchpad.currentTurnState = turnState;
     return turnState;
@@ -812,6 +905,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       });
 
       const runRecord = await options.runStore.getRun(options.runId);
+      latestRunRecord = runRecord ?? latestRunRecord;
       const recentToolCalls = runRecord?.toolCalls.slice(-6) ?? [];
       toolCallsUsed = runRecord?.toolCalls.length ?? toolCallsUsed;
       if (leadOutcome.artifactPaths?.length) {
@@ -1026,6 +1120,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           summary: errorMessage
         };
       }
+      latestRunRecord = (await options.runStore.getRun(options.runId)) ?? latestRunRecord;
       const postToolTurnState = refreshTurnState();
       await options.runStore.appendEvent({
         runId: options.runId,

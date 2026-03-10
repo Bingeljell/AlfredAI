@@ -173,10 +173,11 @@ test("runAlfredOrchestratorLoop records delegation telemetry and passes scratchp
 
     if (options.schemaName === "alfred_orchestrator_plan") {
       const plannerInput = JSON.parse(options.messages?.[1]?.content ?? "{}") as {
-        turnState?: { turnObjective?: string; completionCriteria?: string[] };
+        turnState?: { turnObjective?: string; completionCriteria?: string[]; missingRequirements?: string[] };
       };
       assert.equal(plannerInput.turnState?.turnObjective, "Find 3 leads with emails");
       assert.ok(Array.isArray(plannerInput.turnState?.completionCriteria));
+      assert.ok(Array.isArray(plannerInput.turnState?.missingRequirements));
       return {
         result: {
           thought: "Delegate to the lead specialist.",

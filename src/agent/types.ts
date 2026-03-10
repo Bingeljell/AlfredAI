@@ -20,6 +20,7 @@ export interface LeadAgentState {
   artifacts: string[];
   requestedLeadCount: number;
   fetchedPages: PagePayload[];
+  shortlistedUrls?: string[];
   executionBrief?: LeadExecutionBrief;
 }
 
@@ -43,6 +44,8 @@ export interface LeadAgentToolContext {
   addArtifact: (artifactPath: string) => void;
   setFetchedPages: (pages: PagePayload[]) => void;
   getFetchedPages: () => PagePayload[];
+  setShortlistedUrls?: (urls: string[]) => void;
+  getShortlistedUrls?: () => string[];
 }
 
 export interface LeadAgentToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {

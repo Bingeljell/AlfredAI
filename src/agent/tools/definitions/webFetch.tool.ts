@@ -7,12 +7,13 @@ export const WebFetchToolInputSchema = z
   .object({
     query: z.string().min(2).max(400).optional(),
     urls: z.array(z.string().url()).max(30).optional(),
+    useStoredUrls: z.boolean().optional(),
     maxResults: z.number().int().min(1).max(15).optional(),
     maxPages: z.number().int().min(1).max(25).optional(),
     browseConcurrency: z.number().int().min(1).max(6).optional()
   })
-  .refine((value) => Boolean(value.query || (value.urls && value.urls.length > 0)), {
-    message: "Provide query or urls"
+  .refine((value) => Boolean(value.query || value.useStoredUrls || (value.urls && value.urls.length > 0)), {
+    message: "Provide query, stored urls, or explicit urls"
   });
 
 function dedupeUrls(urls: string[]): string[] {
@@ -66,7 +67,8 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WebFetchToolInputSch
       }
     }
 
-    const requestedUrls = input.urls ?? [];
+    const storedUrls = input.useStoredUrls ? (context.getShortlistedUrls?.() ?? []) : [];
+    const requestedUrls = [...(input.urls ?? []), ...storedUrls];
     const mergedUrls = dedupeUrls([...requestedUrls, ...searchUrls]).slice(0, maxPages);
     if (mergedUrls.length === 0) {
       context.setFetchedPages([]);

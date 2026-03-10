@@ -26,6 +26,7 @@ test("agent skill registry exposes lead_agent metadata", () => {
   assert.ok(Array.isArray(leadSkill?.toolAllowlist));
   assert.ok(leadSkill?.toolAllowlist?.includes("lead_pipeline"));
   assert.ok(leadSkill?.toolAllowlist?.includes("lead_extract"));
+  assert.ok(leadSkill?.toolAllowlist?.includes("lead_search_shortlist"));
 });
 
 test("runAgentLoop returns failure for unknown skill", async () => {

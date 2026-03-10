@@ -403,3 +403,110 @@ test("runAlfredOrchestratorLoop avoids clarification-only first response for exe
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
   assert.ok(events.some((event) => event.eventType === "alfred_plan_adjusted"));
 });
+
+test("runAlfredOrchestratorLoop answers diagnostic turns from run evidence without delegating", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-diagnostic-turn");
+  const runStore = new RunStore(workspace);
+  const previousRun = await runStore.createRun("session-1", "Find 20 leads in Texas", "completed");
+  await runStore.addToolCall(previousRun.runId, {
+    toolName: "lead_pipeline",
+    inputRedacted: { maxPages: 8 },
+    outputRedacted: {
+      finalCandidateCount: 0,
+      requestedLeadCount: 20
+    },
+    durationMs: 63_000,
+    status: "ok",
+    timestamp: new Date().toISOString()
+  });
+  await runStore.updateRun(previousRun.runId, {
+    status: "completed",
+    assistantText: "Leads collected: 0/20. Stop: budget_exhausted.",
+    artifactPaths: ["/tmp/prev-leads.csv"],
+    llmUsage: {
+      promptTokens: 3000,
+      completionTokens: 800,
+      totalTokens: 3800,
+      callCount: 5
+    }
+  });
+  await runStore.appendEvent({
+    runId: previousRun.runId,
+    sessionId: "session-1",
+    phase: "final",
+    eventType: "agent_stop",
+    payload: {
+      reason: "budget_exhausted"
+    },
+    timestamp: new Date().toISOString()
+  });
+  await runStore.appendEvent({
+    runId: previousRun.runId,
+    sessionId: "session-1",
+    phase: "final",
+    eventType: "final_answer",
+    payload: {
+      candidateCount: 0,
+      requestedLeadCount: 20
+    },
+    timestamp: new Date().toISOString()
+  });
+
+  const run = await runStore.createRun(
+    "session-1",
+    "Why did you waste so many tokens and tool calls?",
+    "running"
+  );
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message: "Why did you waste so many tokens and tool calls?",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run for diagnostic turn");
+    },
+    maxIterations: 4,
+    maxDurationMs: 60_000,
+    maxToolCalls: 4,
+    maxParallelTools: 1,
+    plannerMaxCalls: 4,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner: async () => {
+      throw new Error("planner should not run for diagnostic turn");
+    },
+    agentLoopRunner: async () => {
+      throw new Error("delegation should not run for diagnostic turn");
+    },
+    sessionContext: {
+      lastCompletedRun: {
+        runId: previousRun.runId
+      }
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.ok((outcome.assistantText ?? "").includes(`Run diagnosis for ${previousRun.runId}:`));
+  assert.ok((outcome.assistantText ?? "").includes("Stop reason: budget_exhausted"));
+  assert.deepEqual(outcome.artifactPaths, ["/tmp/prev-leads.csv"]);
+
+  const updatedRun = await runStore.getRun(run.runId);
+  assert.equal(updatedRun?.toolCalls.length, 0);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(events.some((event) => event.eventType === "alfred_turn_mode_selected"));
+  assert.ok(events.some((event) => event.eventType === "alfred_diagnostic_response"));
+});

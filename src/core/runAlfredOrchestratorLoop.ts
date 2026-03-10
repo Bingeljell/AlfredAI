@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { PolicyMode, RunOutcome, RunRecord, SessionPromptContext } from "../types.js";
+import type { PolicyMode, RunEvent, RunOutcome, RunRecord, SessionPromptContext } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import * as openAiClient from "../services/openAiClient.js";
@@ -96,12 +96,63 @@ interface AlfredTurnState {
   lastAction: AlfredActionSnapshot | null;
 }
 
+type AlfredTurnMode = "diagnostic" | "execute";
+
 function looksLikeExecutableLeadRequest(message: string): boolean {
   const normalized = message.toLowerCase();
   const hasLeadIntent = /\b(find|get|list|collect|source|prospect)\b/.test(normalized);
   const hasLeadEntity = /\bleads?\b|\bmsp\b|systems?\s+integrator|\bcontacts?\b/.test(normalized);
   const hasCount = /\b\d{1,3}\b/.test(normalized);
   return hasLeadIntent && hasLeadEntity && hasCount;
+}
+
+function detectTurnMode(message: string): AlfredTurnMode {
+  const normalized = message.toLowerCase();
+  const diagnosticMarkers = [
+    /\bwhy\b/,
+    /\bwhat happened\b/,
+    /\bexplain\b/,
+    /\bdebug\b/,
+    /\banaly[sz]e\b/,
+    /\beval(uate)?\b/,
+    /\brun timeline\b/,
+    /\btool calls?\b/,
+    /\btokens?\b/,
+    /\bfailed?\b/,
+    /\bissue\b/
+  ];
+  const executeMarkers = [
+    /\bfind\b/,
+    /\bcollect\b/,
+    /\bgenerate\b/,
+    /\bcreate\b/,
+    /\bwrite\b/,
+    /\bbuild\b/,
+    /\brun\b/,
+    /\brerun\b/,
+    /\bretry\b/,
+    /\bproceed\b/,
+    /\bgo ahead\b/,
+    /\bdo it\b/
+  ];
+  const hasDiagnosticMarker = diagnosticMarkers.some((pattern) => pattern.test(normalized));
+  const hasExecuteMarker = executeMarkers.some((pattern) => pattern.test(normalized));
+  if (hasDiagnosticMarker && !hasExecuteMarker) {
+    return "diagnostic";
+  }
+  if (normalized.startsWith("why ") || normalized.startsWith("what ") || normalized.startsWith("how ")) {
+    if (!hasExecuteMarker) {
+      return "diagnostic";
+    }
+  }
+  return "execute";
+}
+
+const RUN_ID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
+
+function extractRunIdFromMessage(message: string): string | null {
+  const match = message.match(RUN_ID_PATTERN);
+  return match?.[0] ?? null;
 }
 
 const ALFRED_PLANNER_OUTPUT_JSON_SCHEMA = {
@@ -329,7 +380,7 @@ function buildAlfredLeadBriefSystemPrompt(sessionContext?: SessionPromptContext)
     {
       label: "Directives",
       content:
-        "Use the current turn and relevant recent session context to infer the lead request. Preserve explicit user requirements exactly. Do not inflate counts, broaden geography, or weaken required contact/output requirements. The brief is an execution contract for downstream specialist work, not a place to reinterpret the request."
+        "Use the current turn as the primary source of truth. Preserve explicit user requirements exactly. Do not inflate counts, broaden geography, or weaken required contact/output requirements. Prior session constraints are INACTIVE by default unless the user explicitly references them (for example: 'same as before', 'reuse previous constraints'). The brief is an execution contract for downstream specialist work, not a place to reinterpret the request."
     },
     {
       label: "Session Context",
@@ -415,6 +466,92 @@ function truncateForPrompt(value: unknown, maxLength = 2400): string {
           return nestedValue;
         });
   return serialized.slice(0, maxLength);
+}
+
+function parseIsoMs(value: string | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function readNumberField(source: unknown, keys: string[]): number | null {
+  if (!source || typeof source !== "object") {
+    return null;
+  }
+  const record = source as Record<string, unknown>;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function summarizeTopToolDurations(run: RunRecord): string {
+  const top = [...run.toolCalls]
+    .sort((a, b) => b.durationMs - a.durationMs)
+    .slice(0, 3)
+    .map((call) => `${call.toolName} (${call.durationMs}ms${call.status === "error" ? ", error" : ""})`);
+  return top.length > 0 ? top.join(", ") : "none";
+}
+
+function getFinalAnswerPayload(events: RunEvent[]): Record<string, unknown> | null {
+  for (const event of [...events].reverse()) {
+    if (event.eventType === "final_answer") {
+      return event.payload;
+    }
+  }
+  return null;
+}
+
+function getAgentStopReason(events: RunEvent[]): string | null {
+  for (const event of [...events].reverse()) {
+    if (event.eventType === "agent_stop") {
+      const reason = event.payload.reason;
+      if (typeof reason === "string" && reason.trim()) {
+        return reason.trim();
+      }
+    }
+  }
+  return null;
+}
+
+function buildDiagnosticResponse(run: RunRecord, events: RunEvent[]): string {
+  const createdMs = parseIsoMs(run.createdAt);
+  const updatedMs = parseIsoMs(run.updatedAt);
+  const elapsedMs = createdMs !== null && updatedMs !== null ? Math.max(0, updatedMs - createdMs) : null;
+  const okToolCalls = run.toolCalls.filter((call) => call.status === "ok").length;
+  const errorToolCalls = run.toolCalls.filter((call) => call.status === "error").length;
+  const finalPayload = getFinalAnswerPayload(events);
+  const candidateCount =
+    readNumberField(finalPayload, ["candidateCount", "finalCandidateCount"]) ??
+    inferLeadFactsFromRunRecord(run).collectedLeadCount;
+  const requestedLeadCount = readNumberField(finalPayload, ["requestedLeadCount"]);
+  const stopReason = getAgentStopReason(events);
+  const lines: string[] = [
+    `Run diagnosis for ${run.runId}:`,
+    `- Request: ${run.message.replace(/\s+/g, " ").trim().slice(0, 220)}`,
+    `- Status: ${run.status}${elapsedMs !== null ? ` (elapsed ${Math.round(elapsedMs / 1000)}s)` : ""}`,
+    `- LLM usage: ${
+      run.llmUsage
+        ? `${run.llmUsage.totalTokens} tokens (prompt ${run.llmUsage.promptTokens}, completion ${run.llmUsage.completionTokens}) across ${run.llmUsage.callCount} calls`
+        : "not recorded"
+    }`,
+    `- Tool calls: ${run.toolCalls.length} total (${okToolCalls} ok, ${errorToolCalls} error)`,
+    `- Slowest tools: ${summarizeTopToolDurations(run)}`,
+    `- Lead outcome: ${candidateCount}${requestedLeadCount !== null ? ` / ${requestedLeadCount}` : ""} collected`,
+    `- Stop reason: ${stopReason ?? "not reported"}`
+  ];
+  if (run.artifactPaths?.length) {
+    lines.push(`- Artifacts: ${run.artifactPaths.join(", ")}`);
+  }
+  if (run.assistantText) {
+    lines.push(`- Final assistant summary: ${run.assistantText.replace(/\s+/g, " ").trim().slice(0, 280)}`);
+  }
+  return lines.join("\n");
 }
 
 function buildCompletionCriteria(message: string, leadExecutionBrief?: LeadExecutionBrief | null): string[] {
@@ -744,6 +881,47 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     },
     timestamp: nowIso()
   });
+
+  const turnMode = detectTurnMode(options.message);
+  await options.runStore.appendEvent({
+    runId: options.runId,
+    sessionId: options.sessionId,
+    phase: "thought",
+    eventType: "alfred_turn_mode_selected",
+    payload: {
+      turnMode
+    },
+    timestamp: nowIso()
+  });
+
+  if (turnMode === "diagnostic") {
+    const explicitRunId = extractRunIdFromMessage(options.message);
+    const targetRunId = explicitRunId ?? options.sessionContext?.lastCompletedRun?.runId ?? options.sessionContext?.lastRunId;
+    const targetRun = targetRunId ? await options.runStore.getRun(targetRunId) : undefined;
+    const targetEvents = targetRun ? await options.runStore.listRunEvents(targetRun) : [];
+    const diagnosticText = targetRun
+      ? buildDiagnosticResponse(targetRun, targetEvents)
+      : "No prior run evidence was found for this diagnostic request. Share a run id and I will analyze it directly.";
+
+    await options.runStore.appendEvent({
+      runId: options.runId,
+      sessionId: options.sessionId,
+      phase: "thought",
+      eventType: "alfred_diagnostic_response",
+      payload: {
+        targetRunId: targetRunId ?? null,
+        evidenceFound: Boolean(targetRun),
+        eventCount: targetEvents.length
+      },
+      timestamp: nowIso()
+    });
+
+    return {
+      status: "completed",
+      assistantText: diagnosticText,
+      artifactPaths: targetRun?.artifactPaths
+    };
+  }
 
   for (let iteration = 1; iteration <= options.maxIterations; iteration += 1) {
     if (await options.isCancellationRequested()) {

@@ -312,9 +312,32 @@ test("search query guardrail fills missing/invalid query from user message", () 
   );
 
   assert.equal(guarded.adjusted, true);
-  assert.equal(guarded.reason, "search_query_missing_or_invalid");
+  assert.equal(guarded.reason, "search_query_or_shortlist_input_adjusted");
   assert.equal(guarded.calls[0]?.tool, "search");
   assert.equal(guarded.calls[0]?.input.query, "Find 20 MSP/SI leads in USA with emails");
+});
+
+test("search query guardrail clamps invalid lead_search_shortlist sizes", () => {
+  const guarded = plannerFailureGuardrailsForTests.applySearchQueryGuardrail(
+    [
+      {
+        tool: "lead_search_shortlist",
+        input: {
+          query: "x".repeat(500),
+          maxResults: 30,
+          maxUrls: 100
+        }
+      }
+    ],
+    "Find 12 MSP/SI leads in USA"
+  );
+
+  assert.equal(guarded.adjusted, true);
+  assert.equal(guarded.calls[0]?.tool, "lead_search_shortlist");
+  assert.equal(typeof guarded.calls[0]?.input.query, "string");
+  assert.ok((guarded.calls[0]?.input.query as string).length <= 320);
+  assert.equal(guarded.calls[0]?.input.maxResults, 15);
+  assert.equal(guarded.calls[0]?.input.maxUrls, 25);
 });
 
 test("reflection hints flag repeated low-yield semantic misses without forcing a replacement action", () => {

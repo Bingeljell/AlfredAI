@@ -873,7 +873,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         ? await buildLeadExecutionBrief({
             apiKey: options.openAiApiKey,
             structuredChatRunner,
-            message: delegatedMessage,
+            message: options.message,
             sessionContext: options.sessionContext
           })
         : undefined;

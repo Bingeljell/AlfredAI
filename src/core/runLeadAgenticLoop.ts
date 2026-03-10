@@ -868,33 +868,48 @@ function applySearchQueryGuardrail(
   let adjusted = false;
   const fallbackQuery = fallbackSearchQueryFromBrief(message, leadExecutionBrief);
   const nextCalls = calls.map((call) => {
-    if (call.tool !== "search") {
+    if (call.tool !== "search" && call.tool !== "lead_search_shortlist") {
       return call;
     }
     const query = normalizeSearchQuery(call.input.query);
-    if (query) {
-      return {
-        ...call,
-        input: {
-          ...call.input,
-          query
-        }
-      };
+    const nextInput: Record<string, unknown> = {
+      ...call.input,
+      query: query ?? fallbackQuery
+    };
+
+    if (query === undefined) {
+      adjusted = true;
     }
-    adjusted = true;
+
+    if (call.tool === "lead_search_shortlist") {
+      const maxResultsValue = call.input.maxResults;
+      if (typeof maxResultsValue === "number" && Number.isFinite(maxResultsValue)) {
+        const clamped = Math.max(1, Math.min(15, Math.round(maxResultsValue)));
+        if (clamped !== maxResultsValue) {
+          adjusted = true;
+        }
+        nextInput.maxResults = clamped;
+      }
+      const maxUrlsValue = call.input.maxUrls;
+      if (typeof maxUrlsValue === "number" && Number.isFinite(maxUrlsValue)) {
+        const clamped = Math.max(1, Math.min(25, Math.round(maxUrlsValue)));
+        if (clamped !== maxUrlsValue) {
+          adjusted = true;
+        }
+        nextInput.maxUrls = clamped;
+      }
+    }
+
     return {
       ...call,
-      input: {
-        ...call.input,
-        query: fallbackQuery
-      }
+      input: nextInput
     };
   });
 
   return {
     calls: nextCalls,
     adjusted,
-    reason: adjusted ? "search_query_missing_or_invalid" : undefined
+    reason: adjusted ? "search_query_or_shortlist_input_adjusted" : undefined
   };
 }
 

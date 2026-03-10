@@ -649,6 +649,13 @@ function isEmailRequestedMessage(message: string): boolean {
   return /\bemails?\b|\bemail\s+addresses?\b|\bcontact\s+emails?\b/.test(normalized);
 }
 
+function isEmailRequired(options: { message: string; leadExecutionBrief?: LeadExecutionBrief }): boolean {
+  if (typeof options.leadExecutionBrief?.emailRequired === "boolean") {
+    return options.leadExecutionBrief.emailRequired;
+  }
+  return isEmailRequestedMessage(options.message);
+}
+
 function computeDeficitStrategy(args: {
   requestedLeadCount: number;
   currentLeadCount: number;
@@ -826,6 +833,14 @@ function fallbackSearchQueryFromMessage(message: string): string {
   return "find company leads matching the user objective";
 }
 
+function fallbackSearchQueryFromBrief(message: string, brief?: LeadExecutionBrief): string {
+  const briefSummary = brief?.objectiveBrief?.objectiveSummary?.replace(/\s+/g, " ").trim();
+  if (briefSummary && briefSummary.length >= 2) {
+    return briefSummary.slice(0, 320);
+  }
+  return fallbackSearchQueryFromMessage(message);
+}
+
 function normalizeSearchQuery(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -836,14 +851,15 @@ function normalizeSearchQuery(value: unknown): string | undefined {
 
 function applySearchQueryGuardrail(
   calls: Array<{ tool: string; input: Record<string, unknown> }>,
-  message: string
+  message: string,
+  leadExecutionBrief?: LeadExecutionBrief
 ): {
   calls: Array<{ tool: string; input: Record<string, unknown> }>;
   adjusted: boolean;
   reason?: string;
 } {
   let adjusted = false;
-  const fallbackQuery = fallbackSearchQueryFromMessage(message);
+  const fallbackQuery = fallbackSearchQueryFromBrief(message, leadExecutionBrief);
   const nextCalls = calls.map((call) => {
     if (call.tool !== "search") {
       return call;
@@ -1526,7 +1542,10 @@ export async function runLeadAgenticLoop(options: LeadAgentRuntimeOptions): Prom
     fetchedPages: [],
     executionBrief: options.leadExecutionBrief
   };
-  const emailRequestedByUser = isEmailRequestedMessage(options.message);
+  const emailRequestedByUser = isEmailRequired({
+    message: options.message,
+    leadExecutionBrief: options.leadExecutionBrief
+  });
 
   const addLeads: LeadAgentToolContext["addLeads"] = (incoming) => {
     let addedCount = 0;
@@ -1907,7 +1926,7 @@ export async function runLeadAgenticLoop(options: LeadAgentRuntimeOptions): Prom
         )
       };
     });
-    const searchGuardrail = applySearchQueryGuardrail(modeAdjustedCalls, options.message);
+    const searchGuardrail = applySearchQueryGuardrail(modeAdjustedCalls, options.message, options.leadExecutionBrief);
     const calls = searchGuardrail.calls;
     if (searchGuardrail.adjusted) {
       await options.runStore.appendEvent({

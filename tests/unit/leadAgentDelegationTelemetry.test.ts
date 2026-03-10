@@ -23,6 +23,20 @@ test("runLeadAgenticLoop logs delegation and scratchpad context at loop start", 
   await runLeadAgenticLoop({
     parentRunId: "parent-run-1",
     delegationId: "delegation_1",
+    leadExecutionBrief: {
+      requestedLeadCount: 5,
+      emailRequired: true,
+      outputFormat: "csv",
+      objectiveBrief: {
+        objectiveSummary: "Find 5 leads with emails.",
+        companyType: null,
+        industry: null,
+        geography: null,
+        businessModel: null,
+        contactRequirement: "email required",
+        constraintsMissing: []
+      }
+    },
     scratchpad: {
       currentTurnObjective: "find 5 leads",
       "delegation.delegation_1.brief": "find 5 leads"
@@ -93,5 +107,6 @@ test("runLeadAgenticLoop logs delegation and scratchpad context at loop start", 
   assert.ok(started);
   assert.equal(started?.payload.parentRunId, "parent-run-1");
   assert.equal(started?.payload.delegationId, "delegation_1");
+  assert.equal((started?.payload as { leadExecutionBrief?: { requestedLeadCount?: number } } | undefined)?.leadExecutionBrief?.requestedLeadCount, 5);
   assert.deepEqual(started?.payload.scratchpadKeys, ["currentTurnObjective", "delegation.delegation_1.brief"]);
 });

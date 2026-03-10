@@ -360,6 +360,7 @@ async function runCompletionEvaluator(args: {
   apiKey?: string;
   structuredChatRunner: typeof openAiClient.runOpenAiStructuredChatWithDiagnostics;
   message: string;
+  leadExecutionBrief?: LeadExecutionBrief;
   iteration: number;
   remainingMs: number;
   recentObservations: Array<{ iteration: number; summary: string; outcome: string }>;
@@ -382,6 +383,7 @@ async function runCompletionEvaluator(args: {
           role: "user",
           content: JSON.stringify({
             turnObjective: args.message,
+            canonicalTaskBrief: args.leadExecutionBrief ?? null,
             iteration: args.iteration,
             remainingMs: args.remainingMs,
             actionSummary: args.actionSummary,
@@ -713,6 +715,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           apiKey: options.openAiApiKey,
           structuredChatRunner,
           message: options.message,
+          leadExecutionBrief,
           iteration,
           remainingMs: Math.max(0, deadlineAtMs - Date.now()),
           recentObservations: observations,
@@ -843,6 +846,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           apiKey: options.openAiApiKey,
           structuredChatRunner,
           message: options.message,
+          leadExecutionBrief: undefined,
           iteration,
           remainingMs: Math.max(0, deadlineAtMs - Date.now()),
           recentObservations: observations,

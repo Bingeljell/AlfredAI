@@ -285,3 +285,121 @@ test("runAlfredOrchestratorLoop records delegation telemetry and passes scratchp
   assert.equal(resultEvent?.payload.delegationId, "delegation_1");
   assert.equal((delegatedEvent?.payload as { leadExecutionBrief?: { requestedLeadCount?: number } } | undefined)?.leadExecutionBrief?.requestedLeadCount, 3);
 });
+
+test("runAlfredOrchestratorLoop avoids clarification-only first response for executable lead request", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-clarification-guardrail");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "Find 12 leads", "running");
+
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_lead_execution_brief") {
+      return {
+        result: {
+          thought: "Build brief from user turn.",
+          requestedLeadCount: 12,
+          emailRequired: true,
+          outputFormat: "csv",
+          objectiveBrief: {
+            objectiveSummary: "Find 12 MSP leads in USA with emails.",
+            companyType: "MSP/SI",
+            industry: null,
+            geography: "USA",
+            businessModel: null,
+            contactRequirement: "email required",
+            constraintsMissing: []
+          }
+        },
+        usage: {
+          promptTokens: 40,
+          completionTokens: 10,
+          totalTokens: 50
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      return {
+        result: {
+          thought: "Need clarifications first.",
+          actionType: "respond" as const,
+          delegateAgent: null,
+          delegateBrief: null,
+          toolName: null,
+          toolInputJson: null,
+          responseText: "Please clarify exclusions."
+        },
+        usage: {
+          promptTokens: 60,
+          completionTokens: 20,
+          totalTokens: 80
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_completion_evaluation") {
+      return {
+        result: {
+          thought: "Delegated output is enough.",
+          shouldRespond: true,
+          responseText: "Executed.",
+          continueReason: null,
+          confidence: 0.8
+        },
+        usage: {
+          promptTokens: 30,
+          completionTokens: 10,
+          totalTokens: 40
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  let delegated = false;
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message: "Find me 12 MSP leads with emails in USA",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in clarification guardrail test");
+    },
+    maxIterations: 4,
+    maxDurationMs: 60_000,
+    maxToolCalls: 4,
+    maxParallelTools: 1,
+    plannerMaxCalls: 4,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner,
+    agentLoopRunner: async () => {
+      delegated = true;
+      return {
+        status: "completed",
+        assistantText: "Lead run done.",
+        artifactPaths: ["/tmp/guardrail.csv"]
+      };
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.equal(delegated, true);
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(events.some((event) => event.eventType === "alfred_plan_adjusted"));
+});

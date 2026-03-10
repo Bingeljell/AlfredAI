@@ -411,6 +411,7 @@ export const leadDedupeForTests = {
 export const plannerFailureGuardrailsForTests = {
   extractObservationSignals,
   applySearchQueryGuardrail,
+  applyDiagnosticStallGuardrail,
   buildReflectionHints
 };
 
@@ -911,6 +912,65 @@ function applySearchQueryGuardrail(
     adjusted,
     reason: adjusted ? "search_query_or_shortlist_input_adjusted" : undefined
   };
+}
+
+function applyDiagnosticStallGuardrail(args: {
+  action: AgentAction;
+  observations: LeadAgentObservation[];
+  availableToolNames: Set<string>;
+  objectiveQuery: string;
+}): {
+  action: AgentAction;
+  adjusted: boolean;
+  reason?: string;
+} {
+  if (args.action.type !== "single" || args.action.tool !== "search_status") {
+    return { action: args.action, adjusted: false };
+  }
+
+  const recent = args.observations.slice(-2);
+  const repeatedSearchStatus =
+    recent.length >= 2 &&
+    recent.every(
+      (item) =>
+        item.toolNames.length === 1 &&
+        item.toolNames[0] === "search_status" &&
+        item.newLeadCount === 0 &&
+        item.failedToolCount === 0
+    );
+  if (!repeatedSearchStatus) {
+    return { action: args.action, adjusted: false };
+  }
+
+  if (args.availableToolNames.has("recover_search")) {
+    return {
+      action: {
+        type: "single",
+        tool: "recover_search",
+        input: {}
+      },
+      adjusted: true,
+      reason: "repeated_search_status_without_progress"
+    };
+  }
+
+  if (args.availableToolNames.has("lead_search_shortlist")) {
+    return {
+      action: {
+        type: "single",
+        tool: "lead_search_shortlist",
+        input: {
+          query: args.objectiveQuery,
+          maxResults: 12,
+          maxUrls: 8
+        }
+      },
+      adjusted: true,
+      reason: "repeated_search_status_without_progress"
+    };
+  }
+
+  return { action: args.action, adjusted: false };
 }
 
 function buildReflectionHints(
@@ -1675,10 +1735,18 @@ async function decidePlannerAction(
     };
   }
 
+  const diagnosticGuardrail = applyDiagnosticStallGuardrail({
+    action,
+    observations: lastObservations,
+    availableToolNames: toolNames,
+    objectiveQuery
+  });
+
   return {
     thought: diagnostic.result.thought,
-    action,
+    action: diagnosticGuardrail.action,
     usedFallback: false,
+    plannerFailureReason: diagnosticGuardrail.adjusted ? diagnosticGuardrail.reason : undefined,
     llmUsage: diagnostic.usage
   };
 }

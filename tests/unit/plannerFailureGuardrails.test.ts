@@ -340,6 +340,55 @@ test("search query guardrail clamps invalid lead_search_shortlist sizes", () => 
   assert.equal(guarded.calls[0]?.input.maxUrls, 25);
 });
 
+test("diagnostic stall guardrail pivots repeated search_status to recovery", () => {
+  const guarded = plannerFailureGuardrailsForTests.applyDiagnosticStallGuardrail({
+    action: {
+      type: "single",
+      tool: "search_status",
+      input: {}
+    },
+    observations: [
+      {
+        iteration: 1,
+        actionType: "single",
+        toolNames: ["search_status"],
+        yieldRelevant: false,
+        llmTokensUsed: 0,
+        newLeadCount: 0,
+        totalLeadCount: 0,
+        failedToolCount: 0,
+        searchFailureCount: 1,
+        browseFailureCount: 0,
+        extractionFailureCount: 0,
+        hadLlmBudgetExhausted: false,
+        note: "status check"
+      },
+      {
+        iteration: 2,
+        actionType: "single",
+        toolNames: ["search_status"],
+        yieldRelevant: false,
+        llmTokensUsed: 0,
+        newLeadCount: 0,
+        totalLeadCount: 0,
+        failedToolCount: 0,
+        searchFailureCount: 1,
+        browseFailureCount: 0,
+        extractionFailureCount: 0,
+        hadLlmBudgetExhausted: false,
+        note: "status check again"
+      }
+    ],
+    availableToolNames: new Set(["search_status", "recover_search"]),
+    objectiveQuery: "managed service provider usa"
+  });
+
+  assert.equal(guarded.adjusted, true);
+  assert.equal(guarded.reason, "repeated_search_status_without_progress");
+  assert.equal(guarded.action.type, "single");
+  assert.equal(guarded.action.tool, "recover_search");
+});
+
 test("reflection hints flag repeated low-yield semantic misses without forcing a replacement action", () => {
   const hints = plannerFailureGuardrailsForTests.buildReflectionHints(
     [

@@ -96,6 +96,14 @@ interface AlfredTurnState {
   lastAction: AlfredActionSnapshot | null;
 }
 
+function looksLikeExecutableLeadRequest(message: string): boolean {
+  const normalized = message.toLowerCase();
+  const hasLeadIntent = /\b(find|get|list|collect|source|prospect)\b/.test(normalized);
+  const hasLeadEntity = /\bleads?\b|\bmsp\b|systems?\s+integrator|\bcontacts?\b/.test(normalized);
+  const hasCount = /\b\d{1,3}\b/.test(normalized);
+  return hasLeadIntent && hasLeadEntity && hasCount;
+}
+
 const ALFRED_PLANNER_OUTPUT_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -811,7 +819,37 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       continue;
     }
 
-    const plan = plannerDiagnostic.result;
+    let plan = plannerDiagnostic.result;
+    const earlyClarificationGuardrailTriggered =
+      iteration === 1 &&
+      observations.length === 0 &&
+      plan.actionType === "respond" &&
+      looksLikeExecutableLeadRequest(options.message);
+    if (earlyClarificationGuardrailTriggered) {
+      plan = {
+        ...plan,
+        thought: `${plan.thought} (adjusted: executable lead request should run before asking optional clarifications)`,
+        actionType: "delegate_agent",
+        delegateAgent: "lead_agent",
+        delegateBrief: options.message,
+        toolName: null,
+        toolInputJson: null,
+        responseText: null
+      };
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "thought",
+        eventType: "alfred_plan_adjusted",
+        payload: {
+          iteration,
+          reason: "avoid_early_clarification_only_response",
+          originalActionType: plannerDiagnostic.result.actionType,
+          adjustedActionType: plan.actionType
+        },
+        timestamp: nowIso()
+      });
+    }
     lastAction = {
       iteration,
       actionType: plan.actionType,

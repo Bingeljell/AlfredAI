@@ -53,7 +53,21 @@ test("runReActLoop produces a completed outcome with artifact", async () => {
       },
       lastArtifacts: ["/tmp/prev.csv"],
       lastOutcomeSummary: "Found 3 leads and saved CSV.",
-      sessionSummary: "Previous turn found 3 leads."
+      sessionSummary: "Previous turn found 3 leads.",
+      recentTurns: [
+        {
+          role: "user",
+          content: "Find 3 leads",
+          runId: "run-prev",
+          timestamp: "2026-03-09T10:00:00.000Z"
+        },
+        {
+          role: "assistant",
+          content: "Found 3 leads",
+          runId: "run-prev",
+          timestamp: "2026-03-09T10:00:05.000Z"
+        }
+      ]
     },
     isCancellationRequested: async () => false,
     leadPipelineExecutor: async () => ({
@@ -108,4 +122,6 @@ test("runReActLoop produces a completed outcome with artifact", async () => {
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
   assert.ok(events.some((event) => event.eventType === "alfred_loop_started"));
   assert.ok(events.some((event) => event.eventType === "session_context_loaded"));
+  const sessionEvent = events.find((event) => event.eventType === "session_context_loaded");
+  assert.equal(sessionEvent?.payload.recentTurnCount, 2);
 });

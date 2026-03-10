@@ -12,6 +12,14 @@ export interface SessionWorkingMemory {
   lastArtifacts?: string[];
   lastOutcomeSummary?: string;
   sessionSummary?: string;
+  recentTurns?: SessionTurnSnippet[];
+}
+
+export interface SessionTurnSnippet {
+  role: "user" | "assistant";
+  content: string;
+  runId?: string;
+  timestamp: string;
 }
 
 export interface SessionPromptContext {
@@ -27,6 +35,7 @@ export interface SessionPromptContext {
   lastArtifacts?: string[];
   lastOutcomeSummary?: string;
   sessionSummary?: string;
+  recentTurns?: SessionTurnSnippet[];
 }
 
 export interface SessionRecord {

@@ -63,7 +63,8 @@ export async function runReActLoop(
         hasActiveObjective: Boolean(options.sessionContext.activeObjective),
         hasLastCompletedRun: Boolean(options.sessionContext.lastCompletedRun?.runId),
         artifactCount: options.sessionContext.lastArtifacts?.length ?? options.sessionContext.lastCompletedRun?.artifactPaths?.length ?? 0,
-        hasSessionSummary: Boolean(options.sessionContext.sessionSummary)
+        hasSessionSummary: Boolean(options.sessionContext.sessionSummary),
+        recentTurnCount: options.sessionContext.recentTurns?.length ?? 0
       },
       timestamp: nowIso()
     });

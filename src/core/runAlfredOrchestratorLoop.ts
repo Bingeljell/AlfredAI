@@ -242,6 +242,17 @@ function formatSessionContextBlock(sessionContext?: SessionPromptContext): strin
   return lines.join("\n");
 }
 
+function formatRecentTurnsBlock(sessionContext?: SessionPromptContext): string {
+  const turns = sessionContext?.recentTurns?.slice(-6) ?? [];
+  if (turns.length === 0) {
+    return "";
+  }
+
+  return turns
+    .map((turn) => `- ${turn.role} (${turn.timestamp}): ${turn.content}`)
+    .join("\n");
+}
+
 function buildAlfredPlannerSystemPrompt(sessionContext?: SessionPromptContext): string {
   return composeSystemPrompt([
     {
@@ -261,6 +272,10 @@ function buildAlfredPlannerSystemPrompt(sessionContext?: SessionPromptContext): 
     {
       label: "Session Context",
       content: formatSessionContextBlock(sessionContext)
+    },
+    {
+      label: "Recent Conversation",
+      content: formatRecentTurnsBlock(sessionContext)
     }
   ]);
 }
@@ -284,6 +299,10 @@ function buildAlfredCompletionEvaluatorSystemPrompt(sessionContext?: SessionProm
     {
       label: "Session Context",
       content: formatSessionContextBlock(sessionContext)
+    },
+    {
+      label: "Recent Conversation",
+      content: formatRecentTurnsBlock(sessionContext)
     }
   ]);
 }
@@ -307,6 +326,10 @@ function buildAlfredLeadBriefSystemPrompt(sessionContext?: SessionPromptContext)
     {
       label: "Session Context",
       content: formatSessionContextBlock(sessionContext)
+    },
+    {
+      label: "Recent Conversation",
+      content: formatRecentTurnsBlock(sessionContext)
     }
   ]);
 }

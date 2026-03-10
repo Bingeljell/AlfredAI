@@ -91,14 +91,24 @@ test("chat service injects session context on follow-up turns and supports /news
 
   assert.equal(followUp.status, "completed");
   assert.equal(capturedContexts.length, 2);
-  assert.equal(capturedContexts[0], undefined);
+  const firstContext = capturedContexts[0] as {
+    recentTurns?: Array<{ role: string; content: string }>;
+  };
+  assert.equal(firstContext.recentTurns?.length, 1);
+  assert.equal(firstContext.recentTurns?.[0]?.role, "user");
+  assert.equal(firstContext.recentTurns?.[0]?.content, "Find 3 leads");
   const secondContext = capturedContexts[1] as {
     lastCompletedRun?: { message?: string; artifactPaths?: string[] };
     lastOutcomeSummary?: string;
+    recentTurns?: Array<{ role: string; content: string }>;
   };
   assert.equal(secondContext.lastCompletedRun?.message, "Find 3 leads");
   assert.deepEqual(secondContext.lastCompletedRun?.artifactPaths, ["/tmp/leads.csv"]);
   assert.match(secondContext.lastOutcomeSummary ?? "", /Handled: Find 3 leads/);
+  assert.ok(secondContext.recentTurns?.some((turn) => turn.role === "user" && turn.content === "Find 3 leads"));
+  assert.ok(secondContext.recentTurns?.some((turn) => turn.role === "assistant" && /Handled: Find 3 leads/.test(turn.content)));
+  assert.equal(secondContext.recentTurns?.at(-1)?.role, "user");
+  assert.equal(secondContext.recentTurns?.at(-1)?.content, "Paste them");
 
   const reset = await chatService.handleTurn({
     sessionId: session.id,

@@ -1,4 +1,4 @@
-import type { RunOutcome, RunStatus, SessionPromptContext, SessionRecord, SessionWorkingMemory } from "../types.js";
+import type { RunOutcome, RunStatus, SessionPromptContext, SessionRecord, SessionTurnSnippet, SessionWorkingMemory } from "../types.js";
 import { runReActLoop } from "../core/runReActLoop.js";
 import type { SessionStore } from "../memory/sessionStore.js";
 import type { RunStore } from "../runs/runStore.js";
@@ -39,6 +39,18 @@ interface ChatServiceOptions {
 
 export class ChatService {
   constructor(private readonly options: ChatServiceOptions) {}
+
+  private appendRecentTurn(
+    turns: SessionTurnSnippet[] | undefined,
+    turn: Omit<SessionTurnSnippet, "timestamp"> & { timestamp?: string }
+  ): SessionTurnSnippet[] {
+    const nextTurn: SessionTurnSnippet = {
+      ...turn,
+      timestamp: turn.timestamp ?? new Date().toISOString(),
+      content: turn.content.replace(/\s+/g, " ").trim().slice(0, 600)
+    };
+    return [...(turns ?? []), nextTurn].slice(-8);
+  }
 
   private buildOutcomeSummary(message: string, outcome: RunOutcome): string {
     const assistantSummary = outcome.assistantText?.replace(/\s+/g, " ").trim().slice(0, 280);
@@ -92,7 +104,8 @@ export class ChatService {
       lastCompletedRun,
       lastArtifacts: memory.lastArtifacts?.slice(0, 5),
       lastOutcomeSummary: memory.lastOutcomeSummary,
-      sessionSummary: memory.sessionSummary
+      sessionSummary: memory.sessionSummary,
+      recentTurns: memory.recentTurns?.slice(-6)
     };
 
     return Object.values(context).some((value) => {
@@ -110,10 +123,17 @@ export class ChatService {
 
   private async persistQueuedRunStart(sessionId: string, runId: string, message: string): Promise<void> {
     const activeObjective = message.trim().slice(0, 240);
+    const existingMemory = (await this.options.sessionStore.getSession(sessionId))?.workingMemory;
     await this.options.sessionStore.updateWorkingMemory(sessionId, {
       activeObjective,
       lastRunId: runId,
+      recentTurns: this.appendRecentTurn(existingMemory?.recentTurns, {
+        role: "user",
+        content: message,
+        runId
+      }),
       sessionSummary: this.buildSessionSummary({
+        ...(existingMemory ?? {}),
         activeObjective,
         lastRunId: runId
       })
@@ -134,8 +154,15 @@ export class ChatService {
       memoryPatch.lastCompletedAt = new Date().toISOString();
     }
 
+    const existingMemory = (await this.options.sessionStore.getSession(sessionId))?.workingMemory;
+    memoryPatch.recentTurns = this.appendRecentTurn(existingMemory?.recentTurns, {
+      role: "assistant",
+      content: outcome.assistantText ?? "",
+      runId
+    });
+
     const mergedForSummary: SessionWorkingMemory = {
-      ...(await this.options.sessionStore.getSession(sessionId))?.workingMemory,
+      ...(existingMemory ?? {}),
       ...memoryPatch
     };
     memoryPatch.sessionSummary = this.buildSessionSummary(mergedForSummary);
@@ -289,7 +316,6 @@ export class ChatService {
     }
 
     await this.options.sessionStore.touchSession(input.sessionId);
-    const sessionContext = await this.buildSessionContext(session);
     const run = await this.options.runStore.createRun(input.sessionId, input.message, input.requestJob ? "queued" : "running");
 
     await this.options.runStore.appendEvent({
@@ -303,8 +329,9 @@ export class ChatService {
 
     if (input.requestJob) {
       await this.persistQueuedRunStart(input.sessionId, run.runId, input.message);
+      const queuedSessionContext = await this.buildSessionContext((await this.options.sessionStore.getSession(input.sessionId)) ?? session);
       this.options.queue.enqueue(async () => {
-        const outcome = await this.executeRun(run.runId, input.sessionId, input.message, sessionContext);
+        const outcome = await this.executeRun(run.runId, input.sessionId, input.message, queuedSessionContext);
         await this.persistRunOutcome(input.sessionId, run.runId, input.message, outcome);
       });
 
@@ -314,6 +341,8 @@ export class ChatService {
       };
     }
 
+    await this.persistQueuedRunStart(input.sessionId, run.runId, input.message);
+    const sessionContext = await this.buildSessionContext((await this.options.sessionStore.getSession(input.sessionId)) ?? session);
     const outcome = await this.executeRun(run.runId, input.sessionId, input.message, sessionContext);
     await this.persistRunOutcome(input.sessionId, run.runId, input.message, outcome);
 

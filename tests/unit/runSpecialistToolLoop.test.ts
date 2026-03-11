@@ -128,3 +128,60 @@ test("runSpecialistToolLoop enforces research contract before allowing respond",
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
   assert.ok(events.some((event) => event.eventType === "specialist_contract_blocked"));
 });
+
+test("runSpecialistToolLoop triggers loop-shape guard after repeated search-only iterations", async () => {
+  const workspace = await createTempWorkspace("specialist-loop-shape-guard");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "research this", "running");
+
+  const outcome = await runSpecialistToolLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as never,
+    workspaceDir: workspace,
+    message: "Research this topic",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in this test");
+    },
+    maxIterations: 6,
+    maxDurationMs: 60_000,
+    maxToolCalls: 10,
+    maxParallelTools: 1,
+    plannerMaxCalls: 6,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    skillName: "research_agent",
+    skillDescription: "Research skill",
+    skillSystemPrompt: "Do research",
+    toolAllowlist: ["search"],
+    structuredChatRunner: async <T>() =>
+      ({
+        result: {
+          thought: "Search first.",
+          actionType: "single",
+          singleTool: "search",
+          singleInputJson: JSON.stringify({ query: "ai news", maxResults: 5 }),
+          parallelActions: null,
+          responseText: null
+        }
+      }) as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>
+  });
+
+  assert.equal(outcome.status, "completed");
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(events.some((event) => event.eventType === "specialist_loop_guard_triggered"));
+});

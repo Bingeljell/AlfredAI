@@ -101,6 +101,9 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+const SEARCH_FAMILY_TOOLS = new Set(["search", "lead_search_shortlist", "search_status"]);
+const DOWNSTREAM_PROGRESS_TOOLS = new Set(["web_fetch", "lead_extract", "writer_agent", "file_write", "write_csv"]);
+
 function buildSpecialistPlannerSystemPrompt(options: Pick<SpecialistToolLoopOptions, "skillSystemPrompt">): string {
   return composeSystemPrompt([
     {
@@ -391,6 +394,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
   let plannerCallsUsed = 0;
   let toolCallsUsed = 0;
   let consecutivePlannerFailures = 0;
+  let consecutiveSearchOnlyIterations = 0;
 
   await options.runStore.appendEvent({
     runId: options.runId,
@@ -449,6 +453,9 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
                 fetchedPageCount: progress.fetchedPageCount,
                 draftWordCount: progress.draftWordCount,
                 citationCount: progress.citationCount
+              },
+              loopShape: {
+                consecutiveSearchOnlyIterations
               },
               availableTools: Array.from(availableTools.values()).map((tool) => ({
                 name: tool.name,
@@ -622,6 +629,16 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       updateSpecialistProgress(progress, execution);
     }
 
+    const hadSearchFamilyAction = executions.some((item) => SEARCH_FAMILY_TOOLS.has(item.tool));
+    const hadDownstreamProgress = executions.some(
+      (item) => item.status === "ok" && DOWNSTREAM_PROGRESS_TOOLS.has(item.tool)
+    );
+    if (hadSearchFamilyAction && !hadDownstreamProgress) {
+      consecutiveSearchOnlyIterations += 1;
+    } else {
+      consecutiveSearchOnlyIterations = 0;
+    }
+
     toolCallsUsed += executions.length;
     const summary = formatObservationSummary(executions);
     observations.push({
@@ -653,6 +670,22 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       },
       timestamp: nowIso()
     });
+
+    if (consecutiveSearchOnlyIterations >= 3) {
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "observe",
+        eventType: "specialist_loop_guard_triggered",
+        payload: {
+          skillName: options.skillName,
+          guard: "search_only_no_downstream_progress",
+          consecutiveSearchOnlyIterations
+        },
+        timestamp: nowIso()
+      });
+      break;
+    }
   }
 
   const unmetContract = evaluateSpecialistContractGate({

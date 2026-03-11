@@ -32,6 +32,7 @@
   - `ALFRED_ENV=dev|prod` policy behavior wired through approval decision logic.
 - **Phase 7**: In progress
   - Core tests added (unit/integration/smoke/security).
+  - Orchestrator contract pass completed: Alfred now enforces per-turn execution permission (`execute` vs `plan_only`), routes run-id failure-analysis prompts to diagnostic mode more reliably, carries delegated tool evidence into completion evaluation, and specialist loops now return structured last-result summaries with a repeated-no-change success guard to avoid long status-only thrash.
   - Added standalone `web_fetch` and `email_enrich` tools so retrieval and contact enrichment can be executed independently of the monolithic `lead_pipeline` path.
   - Runtime separation is now active: `runReActLoop` enters an Alfred master-orchestrator loop that can delegate to `LeadGenAgent`, evaluate specialist outcomes against the current turn objective, and re-delegate under the same run budget/safety guardrails.
   - Explicit requested lead counts are now preserved end-to-end for small asks (`find 3 leads` stays `3`), preventing lead-agent deficit logic from drifting to inflated planner targets.

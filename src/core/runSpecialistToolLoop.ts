@@ -177,6 +177,48 @@ function buildFallbackAssistantText(skillName: string, observations: Array<{ ite
   return `${skillName} stopped by runtime guardrails. Recent observations: ${recent}`;
 }
 
+function buildSpecialistResultAssistantText(
+  skillName: string,
+  result: Pick<ToolExecutionResult, "tool" | "result" | "durationMs">
+): string {
+  const payload = result.result ?? {};
+  if (result.tool === "process_list") {
+    const processes = Array.isArray(payload.processes) ? payload.processes : [];
+    const rendered = processes
+      .slice(0, 20)
+      .map((item) => {
+        if (!item || typeof item !== "object") {
+          return null;
+        }
+        const record = item as Record<string, unknown>;
+        const pid = typeof record.pid === "number" ? record.pid : "unknown";
+        const command = typeof record.command === "string" ? record.command : "";
+        const args = typeof record.args === "string" ? record.args : "";
+        return `- pid=${pid} command=${command} args=${args}`.slice(0, 240);
+      })
+      .filter((line): line is string => Boolean(line));
+    const totalMatched = typeof payload.totalMatched === "number" ? payload.totalMatched : processes.length;
+    return [
+      `${skillName} completed process inspection via process_list (${result.durationMs}ms).`,
+      `Matched processes: ${totalMatched}.`,
+      rendered.length > 0 ? rendered.join("\n") : "No process rows were returned."
+    ].join("\n");
+  }
+
+  if (result.tool === "file_read") {
+    const path = typeof payload.path === "string" ? payload.path : "unknown";
+    const truncated = payload.truncatedByChars === true;
+    const content = typeof payload.content === "string" ? payload.content : "";
+    return [
+      `${skillName} read file content from ${path} (${result.durationMs}ms).`,
+      truncated ? "Note: content is truncated by char limit." : "Content was read within current bounds.",
+      content.slice(0, 1800)
+    ].join("\n");
+  }
+
+  return `${skillName} latest successful tool result (${result.tool}): ${truncateForPrompt(payload, 1800)}`;
+}
+
 function buildSpecialistTaskContract(options: Pick<SpecialistToolLoopOptions, "skillName" | "message">): SpecialistTaskContract {
   const normalized = options.message.toLowerCase();
   const isResearchSkill = options.skillName === "research_agent";
@@ -395,6 +437,9 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
   let toolCallsUsed = 0;
   let consecutivePlannerFailures = 0;
   let consecutiveSearchOnlyIterations = 0;
+  let repeatedStableSuccessIterations = 0;
+  let previousIterationSignature: string | null = null;
+  let lastSuccessfulExecution: ToolExecutionResult | null = null;
 
   await options.runStore.appendEvent({
     runId: options.runId,
@@ -627,6 +672,9 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     );
     for (const execution of executions) {
       updateSpecialistProgress(progress, execution);
+      if (execution.status === "ok") {
+        lastSuccessfulExecution = execution;
+      }
     }
 
     const hadSearchFamilyAction = executions.some((item) => SEARCH_FAMILY_TOOLS.has(item.tool));
@@ -641,6 +689,21 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
 
     toolCallsUsed += executions.length;
     const summary = formatObservationSummary(executions);
+    const allSucceeded = executions.length > 0 && executions.every((item) => item.status === "ok");
+    const iterationSignature = executions
+      .map((item) => {
+        if (item.status === "ok") {
+          return `${item.tool}:ok:${truncateForPrompt(item.result, 220)}`;
+        }
+        return `${item.tool}:error:${item.error ?? "execution_failed"}`;
+      })
+      .join("|");
+    if (allSucceeded && previousIterationSignature === iterationSignature) {
+      repeatedStableSuccessIterations += 1;
+    } else {
+      repeatedStableSuccessIterations = 0;
+    }
+    previousIterationSignature = iterationSignature;
     observations.push({
       iteration,
       summary
@@ -686,6 +749,21 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       });
       break;
     }
+    if (options.skillName !== "research_agent" && repeatedStableSuccessIterations >= 2) {
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "observe",
+        eventType: "specialist_loop_guard_triggered",
+        payload: {
+          skillName: options.skillName,
+          guard: "repeated_no_change_success",
+          repeatedStableSuccessIterations
+        },
+        timestamp: nowIso()
+      });
+      break;
+    }
   }
 
   const unmetContract = evaluateSpecialistContractGate({
@@ -696,7 +774,9 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
   const assistantText =
     options.skillName === "research_agent" && !unmetContract.satisfied
       ? buildResearchFailureSummary(progress, observations)
-      : buildFallbackAssistantText(options.skillName, observations);
+      : lastSuccessfulExecution
+        ? buildSpecialistResultAssistantText(options.skillName, lastSuccessfulExecution)
+        : buildFallbackAssistantText(options.skillName, observations);
   await options.runStore.appendEvent({
     runId: options.runId,
     sessionId: options.sessionId,

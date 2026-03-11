@@ -185,3 +185,68 @@ test("runSpecialistToolLoop triggers loop-shape guard after repeated search-only
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
   assert.ok(events.some((event) => event.eventType === "specialist_loop_guard_triggered"));
 });
+
+test("runSpecialistToolLoop returns latest structured tool output for ops tasks", async () => {
+  const workspace = await createTempWorkspace("specialist-ops-structured-output");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "Read changelog file", "running");
+
+  const outcome = await runSpecialistToolLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as never,
+    workspaceDir: workspace,
+    message: "Read the changelog file and summarize it",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in this test");
+    },
+    maxIterations: 6,
+    maxDurationMs: 60_000,
+    maxToolCalls: 10,
+    maxParallelTools: 1,
+    plannerMaxCalls: 6,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    skillName: "ops_agent",
+    skillDescription: "Ops skill",
+    skillSystemPrompt: "Inspect file contents",
+    toolAllowlist: ["file_read"],
+    structuredChatRunner: async <T>() =>
+      ({
+        result: {
+          thought: "Read the file first.",
+          actionType: "single",
+          singleTool: "file_read",
+          singleInputJson: JSON.stringify({ path: "docs/changelog.md" }),
+          parallelActions: null,
+          responseText: null
+        }
+      }) as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.match(outcome.assistantText ?? "", /read file content/i);
+  assert.match(outcome.assistantText ?? "", /changelog/i);
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(
+    events.some(
+      (event) =>
+        event.eventType === "specialist_loop_guard_triggered" &&
+        (event.payload as { guard?: string }).guard === "repeated_no_change_success"
+    )
+  );
+});

@@ -19,7 +19,7 @@ class FakeSearchManager {
 test("runAlfredOrchestratorLoop responds after successful tool when completion evaluator says enough", async () => {
   const workspace = await createTempWorkspace("alfred-orchestrator");
   const runStore = new RunStore(workspace);
-  const run = await runStore.createRun("session-1", "Diagnose this run", "running");
+  const run = await runStore.createRun("session-1", "Retry diagnostics for this run", "running");
 
   let plannerCalls = 0;
   const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
@@ -96,7 +96,7 @@ test("runAlfredOrchestratorLoop responds after successful tool when completion e
     runStore,
     searchManager: new FakeSearchManager() as unknown as SearchManager,
     workspaceDir: workspace,
-    message: "Diagnose this run",
+    message: "Retry diagnostics for this run",
     runId: run.runId,
     sessionId: "session-1",
     openAiApiKey: "test-key",
@@ -419,6 +419,179 @@ test("runAlfredOrchestratorLoop avoids clarification-only first response for exe
   const updatedRun = await runStore.getRun(run.runId);
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
   assert.ok(events.some((event) => event.eventType === "alfred_plan_adjusted"));
+});
+
+test("runAlfredOrchestratorLoop respects plan-only execution permission and does not execute", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-plan-only");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun(
+    "session-1",
+    "Before doing anything, list which agent/tool you would use for: find 20 MSP leads in Texas with emails. Do not execute",
+    "running"
+  );
+
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_lead_execution_brief") {
+      return {
+        result: {
+          thought: "Build execution brief from user request.",
+          requestedLeadCount: 20,
+          emailRequired: true,
+          outputFormat: null,
+          objectiveBrief: {
+            objectiveSummary: "Find 20 MSP leads in Texas with emails.",
+            companyType: "MSP",
+            industry: null,
+            geography: "Texas",
+            businessModel: null,
+            contactRequirement: "email required",
+            constraintsMissing: []
+          }
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      return {
+        result: {
+          thought: "Delegate to lead_agent for execution.",
+          actionType: "delegate_agent" as const,
+          delegateAgent: "lead_agent",
+          delegateBrief: "Find 20 MSP leads in Texas with emails.",
+          toolName: null,
+          toolInputJson: null,
+          responseText: null
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  let delegated = false;
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message:
+      "Before doing anything, list which agent/tool you would use for: find 20 MSP leads in Texas with emails. Do not execute",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in plan-only test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 30_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner,
+    agentLoopRunner: async () => {
+      delegated = true;
+      return {
+        status: "completed",
+        assistantText: "Should not be called."
+      };
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.equal(delegated, false);
+  assert.match(outcome.assistantText ?? "", /plan-only/i);
+
+  const updatedRun = await runStore.getRun(run.runId);
+  assert.equal(updatedRun?.toolCalls.length, 0);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(
+    events.some(
+      (event) =>
+        event.eventType === "alfred_turn_mode_selected" &&
+        (event.payload as { executionPermission?: string }).executionPermission === "plan_only"
+    )
+  );
+  assert.ok(
+    events.some(
+      (event) =>
+        event.eventType === "alfred_plan_adjusted" &&
+        (event.payload as { reason?: string }).reason === "execution_permission_plan_only"
+    )
+  );
+});
+
+test("runAlfredOrchestratorLoop treats run-id failure analysis prompts as diagnostic mode", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-run-id-diagnostic");
+  const runStore = new RunStore(workspace);
+  const prior = await runStore.createRun("session-1", "Sample prior run", "completed");
+  await runStore.updateRun(prior.runId, {
+    status: "completed",
+    assistantText: "Previous run completed with failures."
+  });
+
+  const run = await runStore.createRun("session-1", `Why did run ${prior.runId} fail?`, "running");
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message: `Why did run ${prior.runId} fail?`,
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in diagnostic mode test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 30_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner: async () => {
+      throw new Error("planner should not run for diagnostic mode");
+    },
+    agentLoopRunner: async () => {
+      throw new Error("delegation should not run for diagnostic mode");
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.match(outcome.assistantText ?? "", new RegExp(prior.runId));
+  const updatedRun = await runStore.getRun(run.runId);
+  assert.equal(updatedRun?.toolCalls.length, 0);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(
+    events.some(
+      (event) =>
+        event.eventType === "alfred_turn_mode_selected" &&
+        (event.payload as { turnMode?: string }).turnMode === "diagnostic"
+    )
+  );
 });
 
 test("runAlfredOrchestratorLoop answers diagnostic turns from run evidence without delegating", async () => {

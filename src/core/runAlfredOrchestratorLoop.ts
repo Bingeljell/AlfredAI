@@ -112,6 +112,7 @@ interface CompletionGateDecision {
 }
 
 type AlfredTurnMode = "diagnostic" | "execute";
+type AlfredExecutionPermission = "execute" | "plan_only";
 
 function looksLikeExecutableLeadRequest(message: string): boolean {
   const normalized = message.toLowerCase();
@@ -123,6 +124,7 @@ function looksLikeExecutableLeadRequest(message: string): boolean {
 
 function detectTurnMode(message: string): AlfredTurnMode {
   const normalized = message.toLowerCase();
+  const hasRunId = Boolean(extractRunIdFromMessage(message));
   const diagnosticMarkers = [
     /\bwhy\b/,
     /\bwhat happened\b/,
@@ -143,24 +145,71 @@ function detectTurnMode(message: string): AlfredTurnMode {
     /\bcreate\b/,
     /\bwrite\b/,
     /\bbuild\b/,
-    /\brun\b/,
     /\brerun\b/,
     /\bretry\b/,
     /\bproceed\b/,
     /\bgo ahead\b/,
-    /\bdo it\b/
+    /\bdo it\b/,
+    /\bexecute\b/,
+    /\brun again\b/
   ];
+  const forceExecuteMarkers = [/\brerun\b/, /\bretry\b/, /\brun again\b/, /\bexecute\b/, /\bgo ahead\b/, /\bdo it\b/];
   const hasDiagnosticMarker = diagnosticMarkers.some((pattern) => pattern.test(normalized));
   const hasExecuteMarker = executeMarkers.some((pattern) => pattern.test(normalized));
-  if (hasDiagnosticMarker && !hasExecuteMarker) {
+  const hasForceExecuteMarker = forceExecuteMarkers.some((pattern) => pattern.test(normalized));
+  if (hasRunId && hasDiagnosticMarker && !hasForceExecuteMarker) {
+    return "diagnostic";
+  }
+  if (hasDiagnosticMarker && !hasForceExecuteMarker) {
     return "diagnostic";
   }
   if (normalized.startsWith("why ") || normalized.startsWith("what ") || normalized.startsWith("how ")) {
-    if (!hasExecuteMarker) {
+    if (!hasForceExecuteMarker) {
       return "diagnostic";
     }
   }
+  if (!hasExecuteMarker && /\bdiagnos(e|is)|analysis|explain\b/.test(normalized)) {
+    return "diagnostic";
+  }
   return "execute";
+}
+
+function detectExecutionPermission(message: string): AlfredExecutionPermission {
+  const normalized = message.toLowerCase();
+  const planOnlyMarkers = [
+    /\bdo not execute\b/,
+    /\bdon't execute\b/,
+    /\bwithout executing\b/,
+    /\bdo not run\b/,
+    /\bdon't run\b/,
+    /\bplan only\b/,
+    /\bno execution\b/,
+    /\bbefore doing anything\b/
+  ];
+  return planOnlyMarkers.some((pattern) => pattern.test(normalized)) ? "plan_only" : "execute";
+}
+
+function buildPlanOnlyResponse(plan: AlfredPlannerOutput, message: string): string {
+  const cleanedObjective = message.replace(/\s+/g, " ").trim();
+  const lines = [
+    "Execution permission is plan-only. I will not execute tools or delegate agents in this turn.",
+    `Objective interpreted: ${cleanedObjective.slice(0, 220)}`
+  ];
+  if (plan.actionType === "delegate_agent" && plan.delegateAgent) {
+    lines.push(`Recommended specialist: ${plan.delegateAgent}.`);
+    if (plan.delegateBrief) {
+      lines.push(`Recommended brief: ${plan.delegateBrief.slice(0, 360)}`);
+    }
+  } else if (plan.actionType === "call_tool" && plan.toolName) {
+    lines.push(`Recommended first tool: ${plan.toolName}.`);
+    if (plan.toolInputJson) {
+      lines.push(`Suggested input: ${plan.toolInputJson.slice(0, 360)}`);
+    }
+  } else if (plan.responseText) {
+    lines.push(plan.responseText.slice(0, 500));
+  }
+  lines.push("Reply with 'proceed' (or remove the no-execution instruction) when you want me to run this plan.");
+  return lines.join("\n");
 }
 
 const RUN_ID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
@@ -341,7 +390,7 @@ function buildAlfredPlannerSystemPrompt(sessionContext?: SessionPromptContext): 
     {
       label: "Directives",
       content:
-        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. Delegate by objective: use lead_agent for lead generation/enrichment, research_agent for web research + drafting/synthesis tasks, and ops_agent for local file/process/shell tasks. Use call_tool for lightweight diagnostics or when a single direct tool action is clearly highest-value. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. After receiving specialist output, evaluate against the turn objective and either respond or re-delegate with a refined brief. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
+        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. Delegate by objective: use lead_agent for lead generation/enrichment, research_agent for web research + drafting/synthesis tasks, and ops_agent for local file/process/shell tasks. Use call_tool for lightweight diagnostics or when a single direct tool action is clearly highest-value. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. Respect execution permission: if `executionPermission` is `plan_only`, return `actionType=respond` with plan guidance and no execution. After receiving specialist output, evaluate against the turn objective and either respond or re-delegate with a refined brief. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
     },
     {
       label: "Session Context",
@@ -1007,6 +1056,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   let toolCallsUsed = 0;
   let lastDelegationSummary = "No delegation attempted yet.";
   let lastCompletionNote = "No completion evaluation yet.";
+  let lastSuccessfulActionSummary: string | null = null;
   let lastAction: AlfredActionSnapshot | null = null;
   let latestRunRecord: RunRecord | undefined;
   let consecutivePlannerFailures = 0;
@@ -1106,13 +1156,15 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   });
 
   const turnMode = detectTurnMode(options.message);
+  const executionPermission = detectExecutionPermission(options.message);
   await options.runStore.appendEvent({
     runId: options.runId,
     sessionId: options.sessionId,
     phase: "thought",
     eventType: "alfred_turn_mode_selected",
     payload: {
-      turnMode
+      turnMode,
+      executionPermission
     },
     timestamp: nowIso()
   });
@@ -1188,6 +1240,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
             role: "user",
             content: JSON.stringify({
               turnObjective: options.message,
+              executionPermission,
               objectiveContract,
               currentLeadExecutionBrief: (scratchpad.currentLeadExecutionBrief as LeadExecutionBrief | undefined) ?? null,
               turnState: refreshTurnState(),
@@ -1264,6 +1317,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       iteration === 1 &&
       observations.length === 0 &&
       plan.actionType === "respond" &&
+      executionPermission === "execute" &&
       looksLikeExecutableLeadRequest(options.message);
     if (earlyClarificationGuardrailTriggered) {
       plan = {
@@ -1284,6 +1338,32 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         payload: {
           iteration,
           reason: "avoid_early_clarification_only_response",
+          originalActionType: plannerDiagnostic.result.actionType,
+          adjustedActionType: plan.actionType
+        },
+        timestamp: nowIso()
+      });
+    }
+    const planOnlyGuardrailTriggered = executionPermission === "plan_only" && plan.actionType !== "respond";
+    if (planOnlyGuardrailTriggered) {
+      plan = {
+        ...plan,
+        thought: `${plan.thought} (adjusted: executionPermission=plan_only)`,
+        actionType: "respond",
+        delegateAgent: null,
+        delegateBrief: null,
+        toolName: null,
+        toolInputJson: null,
+        responseText: buildPlanOnlyResponse(plan, options.message)
+      };
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "thought",
+        eventType: "alfred_plan_adjusted",
+        payload: {
+          iteration,
+          reason: "execution_permission_plan_only",
           originalActionType: plannerDiagnostic.result.actionType,
           adjustedActionType: plan.actionType
         },
@@ -1425,6 +1505,13 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         `assistantText=${(leadOutcome.assistantText ?? "").slice(0, 400)}`,
         `recentTools=${recentToolCalls.map((call) => `${call.toolName}:${call.status}`).join(", ")}`
       ].join(" | ");
+      lastSuccessfulActionSummary = lastDelegationSummary;
+      const delegationEvidence = recentToolCalls.map((call) => ({
+        toolName: call.toolName,
+        status: call.status,
+        durationMs: call.durationMs,
+        output: truncateForPrompt(call.outputRedacted, 600)
+      }));
       lastAction = {
         iteration,
         actionType: "delegate_agent",
@@ -1470,7 +1557,8 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           latestResult: {
             status: leadOutcome.status,
             assistantText: leadOutcome.assistantText,
-            artifactPaths: leadOutcome.artifactPaths
+            artifactPaths: leadOutcome.artifactPaths,
+            delegationEvidence
           },
           sessionContext: options.sessionContext
         });
@@ -1487,7 +1575,8 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
             latestResult: {
               status: leadOutcome.status,
               assistantText: leadOutcome.assistantText,
-              artifactPaths: leadOutcome.artifactPaths
+              artifactPaths: leadOutcome.artifactPaths,
+              delegationEvidence
             }
           });
           if (!completionGate.allowed) {
@@ -1616,6 +1705,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           summary: `tool:${toolName}:ok`,
           outcome: JSON.stringify(output).slice(0, 260)
         });
+        lastSuccessfulActionSummary = `tool:${toolName}: ${JSON.stringify(output).slice(0, 480)}`;
         lastAction = {
           iteration,
           actionType: "call_tool",
@@ -1745,8 +1835,9 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     }
   }
 
-  const fallbackText =
-    lastDelegationSummary !== "No delegation attempted yet."
+  const fallbackText = lastSuccessfulActionSummary
+    ? `Alfred orchestration stopped by budget guardrails. Latest successful action: ${lastSuccessfulActionSummary}`
+    : lastDelegationSummary !== "No delegation attempted yet."
       ? `Alfred orchestration stopped by budget guardrails. Latest specialist result: ${lastDelegationSummary}`
       : "Alfred orchestration stopped by budget guardrails before producing a conclusive result.";
   return {

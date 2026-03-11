@@ -14,6 +14,8 @@ export interface ToolExecutionEnvelope {
   status: "ok" | "error";
   durationMs: number;
   requiresApproval: boolean;
+  inputRepairApplied: boolean;
+  inputRepairStrategy: string | null;
   input: Record<string, unknown> | null;
   result: Record<string, unknown> | null;
   error: string | null;
@@ -32,9 +34,44 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function parseToolInputJson(inputJson: string): Record<string, unknown> | null {
+interface ParsedToolInput {
+  input: Record<string, unknown> | null;
+  repaired: boolean;
+  strategy: string | null;
+}
+
+function parseToolInputJson(inputJson: string): ParsedToolInput {
+  const parsedDirect = parseJsonObjectCandidate(inputJson);
+  if (parsedDirect) {
+    return {
+      input: parsedDirect,
+      repaired: false,
+      strategy: null
+    };
+  }
+
+  const repaired = repairJsonLikeObject(inputJson);
+  if (repaired) {
+    return {
+      input: repaired.input,
+      repaired: true,
+      strategy: repaired.strategy
+    };
+  }
+
+  return {
+    input: null,
+    repaired: false,
+    strategy: null
+  };
+}
+
+function parseJsonObjectCandidate(candidate: string): Record<string, unknown> | null {
   try {
-    const parsed = JSON.parse(inputJson) as unknown;
+    const parsed = JSON.parse(candidate) as unknown;
+    if (typeof parsed === "string") {
+      return parseJsonObjectCandidate(parsed);
+    }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return null;
     }
@@ -42,6 +79,84 @@ function parseToolInputJson(inputJson: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+function stripMarkdownJsonFence(text: string): string {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced?.[1]) {
+    return fenced[1].trim();
+  }
+  return trimmed;
+}
+
+function extractFirstObjectLikeBlock(text: string): string | null {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) {
+    return null;
+  }
+  return text.slice(start, end + 1);
+}
+
+function normalizeUnicodeQuotes(text: string): string {
+  return text
+    .replaceAll("“", "\"")
+    .replaceAll("”", "\"")
+    .replaceAll("‘", "'")
+    .replaceAll("’", "'");
+}
+
+function convertSingleQuotedJson(text: string): string {
+  return text
+    .replace(/([{,]\s*)'([^']+?)'\s*:/g, "$1\"$2\":")
+    .replace(/:\s*'([^']*?)'(\s*[,}])/g, ": \"$1\"$2");
+}
+
+function stripTrailingCommas(text: string): string {
+  return text.replace(/,\s*([}\]])/g, "$1");
+}
+
+function repairJsonLikeObject(inputJson: string): { input: Record<string, unknown>; strategy: string } | null {
+  const candidates: Array<{ value: string; strategy: string }> = [];
+  const trimmed = inputJson.trim();
+  const deFenced = stripMarkdownJsonFence(trimmed);
+  if (deFenced !== trimmed) {
+    candidates.push({ value: deFenced, strategy: "strip_markdown_fence" });
+  }
+  const extracted = extractFirstObjectLikeBlock(deFenced);
+  if (extracted && extracted !== deFenced) {
+    candidates.push({ value: extracted, strategy: "extract_object_block" });
+  }
+  const normalizedQuotes = normalizeUnicodeQuotes(extracted ?? deFenced);
+  if (normalizedQuotes !== (extracted ?? deFenced)) {
+    candidates.push({ value: normalizedQuotes, strategy: "normalize_unicode_quotes" });
+  }
+  const singleQuoted = convertSingleQuotedJson(normalizedQuotes);
+  if (singleQuoted !== normalizedQuotes) {
+    candidates.push({ value: singleQuoted, strategy: "convert_single_quotes" });
+  }
+  const withoutTrailingCommas = stripTrailingCommas(singleQuoted);
+  if (withoutTrailingCommas !== singleQuoted) {
+    candidates.push({ value: withoutTrailingCommas, strategy: "strip_trailing_commas" });
+  }
+
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const normalized = candidate.value.trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    const parsed = parseJsonObjectCandidate(normalized);
+    if (parsed) {
+      return {
+        input: parsed,
+        strategy: candidate.strategy
+      };
+    }
+  }
+  return null;
 }
 
 function definitionsDir(): string {
@@ -93,6 +208,8 @@ export async function executeToolWithEnvelope(args: ExecuteToolWithEnvelopeArgs)
       status: "error",
       durationMs: Date.now() - started,
       requiresApproval: false,
+      inputRepairApplied: false,
+      inputRepairStrategy: null,
       input: null,
       result: null,
       error: "tool_not_available"
@@ -100,13 +217,16 @@ export async function executeToolWithEnvelope(args: ExecuteToolWithEnvelopeArgs)
   }
 
   const requiresApproval = tool.requiresApproval === true;
-  const rawInput = parseToolInputJson(args.inputJson);
+  const parsedInputJson = parseToolInputJson(args.inputJson);
+  const rawInput = parsedInputJson.input;
   if (!rawInput) {
     return {
       tool: args.toolName,
       status: "error",
       durationMs: Date.now() - started,
       requiresApproval,
+      inputRepairApplied: parsedInputJson.repaired,
+      inputRepairStrategy: parsedInputJson.strategy,
       input: null,
       result: null,
       error: "invalid_input_json"
@@ -120,6 +240,8 @@ export async function executeToolWithEnvelope(args: ExecuteToolWithEnvelopeArgs)
       status: "error",
       durationMs: Date.now() - started,
       requiresApproval,
+      inputRepairApplied: parsedInputJson.repaired,
+      inputRepairStrategy: parsedInputJson.strategy,
       input: rawInput,
       result: null,
       error: `tool_schema_validation_failed: ${parsedInput.error.message.slice(0, 200)}`
@@ -132,6 +254,8 @@ export async function executeToolWithEnvelope(args: ExecuteToolWithEnvelopeArgs)
       status: "error",
       durationMs: Date.now() - started,
       requiresApproval: true,
+      inputRepairApplied: parsedInputJson.repaired,
+      inputRepairStrategy: parsedInputJson.strategy,
       input: rawInput,
       result: null,
       error: "approval_required_not_supported"
@@ -155,6 +279,8 @@ export async function executeToolWithEnvelope(args: ExecuteToolWithEnvelopeArgs)
       status: "ok",
       durationMs,
       requiresApproval: false,
+      inputRepairApplied: parsedInputJson.repaired,
+      inputRepairStrategy: parsedInputJson.strategy,
       input: rawInput,
       result: outputRecord,
       error: null
@@ -175,6 +301,8 @@ export async function executeToolWithEnvelope(args: ExecuteToolWithEnvelopeArgs)
       status: "error",
       durationMs,
       requiresApproval: false,
+      inputRepairApplied: parsedInputJson.repaired,
+      inputRepairStrategy: parsedInputJson.strategy,
       input: rawInput,
       result: null,
       error: errorMessage

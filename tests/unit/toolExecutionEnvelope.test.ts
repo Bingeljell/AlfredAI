@@ -107,6 +107,8 @@ test("executeToolWithEnvelope returns standardized success envelope and persists
 
   assert.equal(result.status, "ok");
   assert.equal(result.requiresApproval, false);
+  assert.equal(result.inputRepairApplied, false);
+  assert.equal(result.inputRepairStrategy, null);
   assert.deepEqual(result.input, { value: "hello" });
   assert.deepEqual(result.result, { echoed: "hello" });
   assert.equal(result.error, null);
@@ -147,8 +149,45 @@ test("executeToolWithEnvelope blocks approval-gated tools with standardized erro
 
   assert.equal(result.status, "error");
   assert.equal(result.requiresApproval, true);
+  assert.equal(result.inputRepairApplied, false);
+  assert.equal(result.inputRepairStrategy, null);
   assert.equal(result.error, "approval_required_not_supported");
 
   const updatedRun = await runStore.getRun(run.runId);
   assert.equal(updatedRun?.toolCalls.length, 0);
+});
+
+test("executeToolWithEnvelope auto-repairs markdown-fenced JSON input", async () => {
+  const workspace = await createTempWorkspace("tool-envelope-repair");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "test", "running");
+  const context = makeToolContext(runStore);
+  context.runId = run.runId;
+
+  const schema = z.object({ value: z.string().min(1) });
+  const tool: LeadAgentToolDefinition<typeof schema> = {
+    name: "sample_tool",
+    description: "sample",
+    inputSchema: schema,
+    inputHint: "sample",
+    async execute(input) {
+      return {
+        echoed: input.value
+      };
+    }
+  };
+
+  const result = await executeToolWithEnvelope({
+    toolName: "sample_tool",
+    inputJson: "```json\n{\"value\":\"hello\"}\n```",
+    tools: new Map([[tool.name, tool]]),
+    context,
+    runStore,
+    runId: run.runId
+  });
+
+  assert.equal(result.status, "ok");
+  assert.equal(result.inputRepairApplied, true);
+  assert.equal(result.inputRepairStrategy, "strip_markdown_fence");
+  assert.deepEqual(result.input, { value: "hello" });
 });

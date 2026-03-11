@@ -644,6 +644,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
           durationMs: item.durationMs,
           summary: item.summary,
           requiresApproval: item.requiresApproval,
+          inputRepairApplied: item.inputRepairApplied,
+          inputRepairStrategy: item.inputRepairStrategy,
           input: item.input,
           result: item.result,
           error: item.error

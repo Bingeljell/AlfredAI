@@ -1,6 +1,7 @@
 import type { RunOutcome, RunStatus, SessionPromptContext, SessionRecord, SessionTurnSnippet, SessionWorkingMemory } from "../types.js";
 import { runReActLoop } from "../core/runReActLoop.js";
 import { TurnRuntime } from "../core/turnRuntime.js";
+import { ThreadRuntimeManager } from "../core/threadRuntime.js";
 import type { SessionStore } from "../memory/sessionStore.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
@@ -39,7 +40,44 @@ interface ChatServiceOptions {
 }
 
 export class ChatService {
-  constructor(private readonly options: ChatServiceOptions) {}
+  private readonly threadRuntimeManager: ThreadRuntimeManager;
+  private readonly subscribedThreadSessions = new Set<string>();
+
+  constructor(private readonly options: ChatServiceOptions) {
+    this.threadRuntimeManager = new ThreadRuntimeManager({
+      queue: this.options.queue,
+      createTurnRuntime: (_sessionId) =>
+        new TurnRuntime({
+          runStore: this.options.runStore,
+          executeUserInput: async (payload) =>
+            this.executeRunCore(payload.runId, payload.sessionId, payload.message, payload.sessionContext),
+          requestCancellation: async (targetRunId) => {
+            await this.options.runStore.requestCancellation(targetRunId);
+          }
+        })
+    });
+  }
+
+  private ensureThreadSubscription(sessionId: string): void {
+    if (this.subscribedThreadSessions.has(sessionId)) {
+      return;
+    }
+    this.subscribedThreadSessions.add(sessionId);
+    this.threadRuntimeManager.subscribe(sessionId, (event) => {
+      void this.options.runStore.appendEvent({
+        runId: event.runId,
+        sessionId: event.sessionId,
+        phase: "session",
+        eventType: `thread_${event.type}`,
+        payload: {
+          opType: event.opType,
+          queuedDepth: event.queuedDepth,
+          detail: event.detail
+        },
+        timestamp: event.timestamp
+      });
+    });
+  }
 
   private appendRecentTurn(
     turns: SessionTurnSnippet[] | undefined,
@@ -203,16 +241,8 @@ export class ChatService {
     message: string,
     sessionContext?: SessionPromptContext
   ): Promise<RunOutcome> {
-    const turnRuntime = new TurnRuntime({
-      runStore: this.options.runStore,
-      executeUserInput: async (payload) =>
-        this.executeRunCore(payload.runId, payload.sessionId, payload.message, payload.sessionContext),
-      requestCancellation: async (targetRunId) => {
-        await this.options.runStore.requestCancellation(targetRunId);
-      }
-    });
-
-    const dispatch = await turnRuntime.dispatch({
+    this.ensureThreadSubscription(sessionId);
+    const dispatch = await this.threadRuntimeManager.submit(sessionId, {
       type: "UserInput",
       payload: {
         runId,
@@ -364,9 +394,18 @@ export class ChatService {
     if (input.requestJob) {
       await this.persistQueuedRunStart(input.sessionId, run.runId, input.message);
       const queuedSessionContext = await this.buildSessionContext((await this.options.sessionStore.getSession(input.sessionId)) ?? session);
-      this.options.queue.enqueue(async () => {
-        const outcome = await this.executeRun(run.runId, input.sessionId, input.message, queuedSessionContext);
+      void this.executeRun(run.runId, input.sessionId, input.message, queuedSessionContext).then(async (outcome) => {
         await this.persistRunOutcome(input.sessionId, run.runId, input.message, outcome);
+      }).catch(async (error) => {
+        const failureOutcome: RunOutcome = {
+          status: "failed",
+          assistantText: error instanceof Error ? error.message : "Queued run failed"
+        };
+        await this.options.runStore.updateRun(run.runId, {
+          status: "failed",
+          assistantText: failureOutcome.assistantText
+        });
+        await this.persistRunOutcome(input.sessionId, run.runId, input.message, failureOutcome);
       });
 
       return {

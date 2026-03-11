@@ -106,6 +106,11 @@ interface AlfredTurnState {
   lastAction: AlfredActionSnapshot | null;
 }
 
+interface CompletionGateDecision {
+  allowed: boolean;
+  reason?: string;
+}
+
 type AlfredTurnMode = "diagnostic" | "execute";
 
 function looksLikeExecutableLeadRequest(message: string): boolean {
@@ -828,6 +833,100 @@ async function runCompletionEvaluator(args: {
   );
 }
 
+function looksLikeCitation(text: string): boolean {
+  return /https?:\/\/\S+/i.test(text) || /\b(source|citation|references?)\b/i.test(text);
+}
+
+function extractLeadCountHint(value: unknown): number {
+  const text =
+    typeof value === "string"
+      ? value
+      : typeof value === "object" && value !== null
+        ? JSON.stringify(value)
+        : "";
+  if (!text) {
+    return 0;
+  }
+  const match = text.match(/(\d{1,3})\s+leads?\b/i);
+  if (!match?.[1]) {
+    return 0;
+  }
+  const parsed = Number.parseInt(match[1], 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function evaluateCompletionContractGate(args: {
+  evaluation: AlfredCompletionEvaluation;
+  objectiveContract: AlfredObjectiveContract;
+  turnState: AlfredTurnState;
+  latestResult: unknown;
+}): CompletionGateDecision {
+  if (!args.evaluation.shouldRespond) {
+    return { allowed: true };
+  }
+
+  if (args.turnState.taskType === "lead_generation") {
+    const requested = args.turnState.facts.requestedLeadCount ?? 0;
+    const factualCount = Math.max(
+      args.turnState.facts.collectedLeadCount,
+      extractLeadCountHint(args.latestResult),
+      extractLeadCountHint(args.evaluation.responseText ?? "")
+    );
+    if (requested > 0 && factualCount < requested) {
+      return {
+        allowed: false,
+        reason: `contract_not_satisfied: lead count ${factualCount}/${requested}`
+      };
+    }
+    if (args.turnState.objectiveContract.hardConstraints.some((item) => /email/i.test(item))) {
+      const emailCovered =
+        args.turnState.facts.collectedEmailCount >= Math.max(1, requested) ||
+        /\bemail\b/i.test(JSON.stringify(args.latestResult ?? {}));
+      if (!emailCovered) {
+        return {
+          allowed: false,
+          reason: "contract_not_satisfied: required email coverage not met"
+        };
+      }
+    }
+    return { allowed: true };
+  }
+
+  if (args.turnState.missingRequirements.length > 0) {
+    return {
+      allowed: false,
+      reason: `contract_not_satisfied: ${args.turnState.missingRequirements[0]}`
+    };
+  }
+
+  const requiresCitations = args.objectiveContract.hardConstraints.some((item) => /citation|source/i.test(item));
+  if (requiresCitations) {
+    const evidenceText = [
+      args.evaluation.responseText ?? "",
+      typeof args.latestResult === "string" ? args.latestResult : JSON.stringify(args.latestResult ?? {})
+    ].join("\n");
+    if (!looksLikeCitation(evidenceText)) {
+      return {
+        allowed: false,
+        reason: "contract_not_satisfied: citation evidence missing"
+      };
+    }
+  }
+
+  const requiresDraft = /blog draft|draft text|blog/i.test(args.objectiveContract.requiredDeliverable);
+  if (requiresDraft) {
+    const responseLength = (args.evaluation.responseText ?? "").trim().length;
+    if (responseLength < 500) {
+      return {
+        allowed: false,
+        reason: "contract_not_satisfied: draft content is incomplete"
+      };
+    }
+  }
+
+  return { allowed: true };
+}
+
 export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptions): Promise<RunOutcome> {
   const startMs = Date.now();
   const deadlineAtMs = startMs + options.maxDurationMs;
@@ -1381,6 +1480,32 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         }
         const completionResult = completionDiagnostic.result;
         if (completionResult) {
+          const completionGate = evaluateCompletionContractGate({
+            evaluation: completionResult,
+            objectiveContract,
+            turnState: delegatedTurnState,
+            latestResult: {
+              status: leadOutcome.status,
+              assistantText: leadOutcome.assistantText,
+              artifactPaths: leadOutcome.artifactPaths
+            }
+          });
+          if (!completionGate.allowed) {
+            completionResult.shouldRespond = false;
+            completionResult.continueReason = completionGate.reason ?? completionResult.continueReason;
+            await options.runStore.appendEvent({
+              runId: options.runId,
+              sessionId: options.sessionId,
+              phase: "thought",
+              eventType: "alfred_completion_contract_blocked",
+              payload: {
+                iteration,
+                actionSummary: `delegate_agent:${agentName}`,
+                reason: completionGate.reason ?? "contract_not_satisfied"
+              },
+              timestamp: nowIso()
+            });
+          }
           lastCompletionNote = completionResult.shouldRespond
             ? `Completion evaluator: respond now (${completionResult.confidence.toFixed(2)} confidence).`
             : `Completion evaluator: continue gathering. ${completionResult.continueReason ?? completionResult.thought}`;
@@ -1557,6 +1682,28 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         }
         const completionResult = completionDiagnostic.result;
         if (completionResult) {
+          const completionGate = evaluateCompletionContractGate({
+            evaluation: completionResult,
+            objectiveContract,
+            turnState: postToolTurnState,
+            latestResult: latestToolOutput
+          });
+          if (!completionGate.allowed) {
+            completionResult.shouldRespond = false;
+            completionResult.continueReason = completionGate.reason ?? completionResult.continueReason;
+            await options.runStore.appendEvent({
+              runId: options.runId,
+              sessionId: options.sessionId,
+              phase: "thought",
+              eventType: "alfred_completion_contract_blocked",
+              payload: {
+                iteration,
+                actionSummary: `call_tool:${toolName}`,
+                reason: completionGate.reason ?? "contract_not_satisfied"
+              },
+              timestamp: nowIso()
+            });
+          }
           lastCompletionNote = completionResult.shouldRespond
             ? `Completion evaluator: respond now (${completionResult.confidence.toFixed(2)} confidence).`
             : `Completion evaluator: continue gathering. ${completionResult.continueReason ?? completionResult.thought}`;

@@ -227,6 +227,17 @@ test("runAlfredOrchestratorLoop records delegation telemetry and passes scratchp
     : never;
   const agentLoopRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["agentLoopRunner"]> = async (options) => {
     delegatedInput = options;
+    await runStore.addToolCall(run.runId, {
+      toolName: "lead_pipeline",
+      inputRedacted: { targetLeadCount: 3, includeEmails: true },
+      outputRedacted: { finalCandidateCount: 3, emailLeadCount: 3 },
+      durationMs: 1200,
+      status: "ok",
+      timestamp: new Date().toISOString()
+    });
+    await runStore.updateRun(run.runId, {
+      artifactPaths: ["/tmp/fake-leads.csv"]
+    });
     return {
       status: "completed",
       assistantText: "Lead agent found 3 leads.",
@@ -564,4 +575,99 @@ test("runAlfredOrchestratorLoop stops with policy_block when planner is unauthor
   const updatedRun = await runStore.getRun(run.runId);
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
   assert.ok(events.some((event) => event.eventType === "alfred_planner_failed"));
+});
+
+test("runAlfredOrchestratorLoop blocks respond when completion violates objective contract", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-completion-contract");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun(
+    "session-1",
+    "Research AI news for the week and draft a cited blog post.",
+    "running"
+  );
+
+  let planCalls = 0;
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      planCalls += 1;
+      if (planCalls === 1) {
+        return {
+          result: {
+            thought: "Run diagnostics first.",
+            actionType: "call_tool" as const,
+            delegateAgent: null,
+            delegateBrief: null,
+            toolName: "run_diagnostics",
+            toolInputJson: JSON.stringify({ runId: run.runId }),
+            responseText: null
+          }
+        } as StructuredChatDiagnostic<T>;
+      }
+      return {
+        result: {
+          thought: "No further action.",
+          actionType: "respond" as const,
+          delegateAgent: null,
+          delegateBrief: null,
+          toolName: null,
+          toolInputJson: null,
+          responseText: "Stopping."
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_completion_evaluation") {
+      return {
+        result: {
+          thought: "We should respond now.",
+          shouldRespond: true,
+          responseText: "Here is a short summary without citations.",
+          continueReason: null,
+          confidence: 0.9
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message: "Research AI news for the week and draft a cited blog post.",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in completion contract test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 30_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 3,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.notEqual(outcome.assistantText, "Here is a short summary without citations.");
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(events.some((event) => event.eventType === "alfred_completion_contract_blocked"));
 });

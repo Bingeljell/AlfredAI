@@ -340,6 +340,24 @@ h3 {
   background: rgba(255, 255, 255, 0.035);
 }
 
+.session-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.live-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #0b0f0b;
+  background: rgba(70, 216, 163, 0.95);
+}
+
 .session-item.active,
 .run-item.active,
 .chat-turn.active .chat-bubble {
@@ -444,22 +462,34 @@ h3 {
 .chat-history {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 12px;
   max-height: var(--chat-cap-height);
   min-height: 320px;
-  padding: 2px 4px 2px 2px;
+  padding: 2px 8px 2px 2px;
 }
 
 .chat-turn {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
+  padding-left: 12px;
+}
+
+.chat-turn::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 8px;
+  bottom: 8px;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.07);
 }
 
 .chat-bubble {
-  padding: 16px;
+  padding: 14px;
   background: rgba(255, 255, 255, 0.03);
-  max-width: min(92%, 900px);
+  max-width: min(95%, 980px);
 }
 
 .chat-turn .message-role {
@@ -516,7 +546,7 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  margin-top: 14px;
+  margin-top: 8px;
 }
 
 .composer-panel {
@@ -598,6 +628,7 @@ textarea {
   overflow-x: hidden;
   overflow-y: auto;
   padding-right: 4px;
+  padding-bottom: 14px;
 }
 
 .inspector-card {

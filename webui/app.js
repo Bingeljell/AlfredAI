@@ -137,6 +137,14 @@ function toShortText(value, max = 160) {
   return text.length > max ? `${text.slice(0, max)}...` : text;
 }
 
+function truncatePreserveLayout(value, max = 3200) {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return "";
+  }
+  return text.length > max ? `${text.slice(0, max)}\n…` : text;
+}
+
 function formatDateTime(iso) {
   if (!iso) {
     return "-";
@@ -433,10 +441,12 @@ function renderSessions() {
     const active = session.id === state.activeSessionId ? "active" : "";
     const working = session.workingMemory || {};
     const latest = working.lastOutcomeSummary || working.activeObjective || "No recent summary yet.";
+    const liveLabel = active ? `<span class="live-pill">Live</span>` : "";
     return `
       <button class="session-item ${active}" data-session-id="${escapeHtml(session.id)}">
-        <div>
+        <div class="session-title-row">
           <strong>${escapeHtml(session.name)}</strong>
+          ${liveLabel}
         </div>
         <div class="session-meta">
           <span>${escapeHtml(shortId(session.id))}</span>
@@ -456,9 +466,9 @@ function renderWorkspaceSummary() {
   const headerText = state.notice || summary.sessionSummary || "Alfred keeps bounded session memory here. Follow-up turns can refer to prior outputs without raw transcript stuffing.";
   const cards = [
     metricCard("Active Session", session ? session.name : "None"),
-    metricCard("Last Run", run ? shortId(run.runId) : summary.lastRunId ? shortId(summary.lastRunId) : "-"),
+    metricCard("Live Run", run ? `${statusLabel(run.status)} (${shortId(run.runId)})` : summary.lastRunId ? shortId(summary.lastRunId) : "-"),
     metricCard("Artifacts", String((run?.artifactPaths || summary.lastArtifacts || []).length || 0)),
-    metricCard("Chat Cap", `${CHAT_RUN_CAP} runs`)
+    metricCard("Runs Loaded", `${Math.min(state.sessionRuns.length, CHAT_RUN_CAP)} / ${state.sessionRuns.length || 0}`)
   ].join("");
 
   setHtmlIfChanged(els.workspaceSummary, `
@@ -494,18 +504,26 @@ function renderChatHistory() {
   const html = runs.map((run) => {
     const active = run.runId === state.activeRunId;
     const assistantPreview = buildRunAssistantPreview(run);
-    const userMax = active ? 4000 : 1200;
-    const assistantMax = active ? 9000 : 3200;
+    const userMax = active ? 12_000 : 3_000;
+    const assistantMax = active ? 24_000 : 8_000;
     const artifacts = run.artifactPaths?.length ? `<span>${run.artifactPaths.length} artifacts</span>` : "";
+    const actions = active
+      ? `
+          <div class="message-actions">
+            <button class="ghost-button" data-open-run="${escapeHtml(run.runId)}">Inspect</button>
+            <button class="ghost-button" data-export-run="${escapeHtml(run.runId)}">Export JSON</button>
+          </div>
+        `
+      : "";
     return `
       <section class="chat-turn ${active ? "active" : ""}" data-run-id="${escapeHtml(run.runId)}">
         <article class="chat-bubble user-bubble">
           <div class="message-role">User</div>
-          <div class="message-body user">${escapeHtml(toShortText(run.message, userMax))}</div>
+          <div class="message-body user">${escapeHtml(truncatePreserveLayout(run.message, userMax))}</div>
         </article>
         <article class="chat-bubble assistant-bubble">
           <div class="message-role">Alfred</div>
-          <div class="message-body assistant">${escapeHtml(toShortText(assistantPreview, assistantMax))}</div>
+          <div class="message-body assistant">${escapeHtml(truncatePreserveLayout(assistantPreview, assistantMax))}</div>
           <div class="message-meta">
             <span>${escapeHtml(statusLabel(run.status))}</span>
             <span>${escapeHtml(shortId(run.runId))}</span>
@@ -513,10 +531,7 @@ function renderChatHistory() {
             <span>${escapeHtml(formatTokenUsage(run.llmUsage || {}))}</span>
             ${artifacts}
           </div>
-          <div class="message-actions">
-            <button class="ghost-button" data-open-run="${escapeHtml(run.runId)}">Inspect</button>
-            <button class="ghost-button" data-export-run="${escapeHtml(run.runId)}">Export JSON</button>
-          </div>
+          ${actions}
         </article>
       </section>
     `;
@@ -1032,7 +1047,7 @@ els.message.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") {
     return;
   }
-  if (event.metaKey || event.ctrlKey) {
+  if (event.shiftKey || event.metaKey || event.ctrlKey) {
     return;
   }
   event.preventDefault();

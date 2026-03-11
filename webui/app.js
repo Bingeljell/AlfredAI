@@ -879,6 +879,24 @@ async function sendTurn(message) {
   }
 }
 
+async function submitComposerTurn() {
+  if (state.isSending) {
+    return;
+  }
+  const rawMessage = els.message.value;
+  const message = rawMessage.trim();
+  if (!message) {
+    return;
+  }
+  els.message.value = "";
+  try {
+    await sendTurn(message);
+  } catch (error) {
+    els.message.value = rawMessage;
+    throw error;
+  }
+}
+
 async function createSession() {
   const name = els.sessionName.value.trim();
   const payload = await api("/v1/sessions", {
@@ -1004,21 +1022,24 @@ els.clearMessage.addEventListener("click", () => {
 });
 
 els.send.addEventListener("click", () => {
-  const message = els.message.value.trim();
-  if (!message) {
-    return;
-  }
-  void sendTurn(message).catch((error) => {
+  void submitComposerTurn().catch((error) => {
     state.notice = `Send failed: ${error.message}`;
     renderWorkspaceSummary();
   });
 });
 
 els.message.addEventListener("keydown", (event) => {
-  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-    event.preventDefault();
-    els.send.click();
+  if (event.key !== "Enter") {
+    return;
   }
+  if (event.metaKey || event.ctrlKey) {
+    return;
+  }
+  event.preventDefault();
+  void submitComposerTurn().catch((error) => {
+    state.notice = `Send failed: ${error.message}`;
+    renderWorkspaceSummary();
+  });
 });
 
 els.telemetryFilter.addEventListener("input", () => {

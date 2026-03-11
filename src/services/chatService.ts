@@ -1,5 +1,6 @@
 import type { RunOutcome, RunStatus, SessionPromptContext, SessionRecord, SessionTurnSnippet, SessionWorkingMemory } from "../types.js";
 import { runReActLoop } from "../core/runReActLoop.js";
+import { TurnRuntime } from "../core/turnRuntime.js";
 import type { SessionStore } from "../memory/sessionStore.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
@@ -197,6 +198,39 @@ export class ChatService {
   }
 
   private async executeRun(
+    runId: string,
+    sessionId: string,
+    message: string,
+    sessionContext?: SessionPromptContext
+  ): Promise<RunOutcome> {
+    const turnRuntime = new TurnRuntime({
+      runStore: this.options.runStore,
+      executeUserInput: async (payload) =>
+        this.executeRunCore(payload.runId, payload.sessionId, payload.message, payload.sessionContext),
+      requestCancellation: async (targetRunId) => {
+        await this.options.runStore.requestCancellation(targetRunId);
+      }
+    });
+
+    const dispatch = await turnRuntime.dispatch({
+      type: "UserInput",
+      payload: {
+        runId,
+        sessionId,
+        message,
+        sessionContext
+      }
+    });
+    if (dispatch.outcome) {
+      return dispatch.outcome;
+    }
+    return {
+      status: "failed",
+      assistantText: `Turn dispatch failed: ${dispatch.reason ?? "unknown"}`
+    };
+  }
+
+  private async executeRunCore(
     runId: string,
     sessionId: string,
     message: string,

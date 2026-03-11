@@ -77,9 +77,18 @@ interface AlfredActionSnapshot {
   summary: string;
 }
 
+interface AlfredObjectiveContract {
+  taskType: AlfredTaskType;
+  requiredDeliverable: string;
+  hardConstraints: string[];
+  softPreferences: string[];
+  doneCriteria: string[];
+}
+
 interface AlfredTurnState {
   turnObjective: string;
   taskType: AlfredTaskType;
+  objectiveContract: AlfredObjectiveContract;
   canonicalLeadBrief: LeadExecutionBrief | null;
   completionCriteria: string[];
   completedCriteria: string[];
@@ -327,7 +336,7 @@ function buildAlfredPlannerSystemPrompt(sessionContext?: SessionPromptContext): 
     {
       label: "Directives",
       content:
-        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. Delegate by objective: use lead_agent for lead generation/enrichment, research_agent for web research + drafting/synthesis tasks, and ops_agent for local file/process/shell tasks. Use call_tool for lightweight diagnostics or when a single direct tool action is clearly highest-value. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. After receiving specialist output, evaluate against the turn objective and either respond or re-delegate with a refined brief. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
+        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. Delegate by objective: use lead_agent for lead generation/enrichment, research_agent for web research + drafting/synthesis tasks, and ops_agent for local file/process/shell tasks. Use call_tool for lightweight diagnostics or when a single direct tool action is clearly highest-value. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. After receiving specialist output, evaluate against the turn objective and either respond or re-delegate with a refined brief. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
     },
     {
       label: "Session Context",
@@ -354,7 +363,7 @@ function buildAlfredCompletionEvaluatorSystemPrompt(sessionContext?: SessionProm
     {
       label: "Directives",
       content:
-        "Respond `shouldRespond=true` only when the latest successful tool or delegated agent result is sufficient to answer the current turn with reasonable honesty. Use `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical checklist. If the result is partial, missing key evidence, or needs another action, set `shouldRespond=false` and explain exactly what is still missing. Keep this prompt-driven; do not invent facts beyond the observed result."
+        "Respond `shouldRespond=true` only when the latest successful tool or delegated agent result is sufficient to answer the current turn with reasonable honesty and the immutable `turnState.objectiveContract` done criteria are satisfied. Use `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical checklist. If the result is partial, missing key evidence, or needs another action, set `shouldRespond=false` and explain exactly what is still missing. Keep this prompt-driven; do not invent facts beyond the observed result."
     },
     {
       label: "Session Context",
@@ -573,6 +582,91 @@ function buildCompletionCriteria(message: string, leadExecutionBrief?: LeadExecu
   return [`Answer the current turn directly and honestly: ${message.replace(/\s+/g, " ").trim().slice(0, 240)}`];
 }
 
+function detectObjectiveTaskType(message: string, leadExecutionBrief?: LeadExecutionBrief | null): AlfredTaskType {
+  if (leadExecutionBrief) {
+    return "lead_generation";
+  }
+  const normalized = message.toLowerCase();
+  if (/\b(research|news|blog|article|draft|writeup|sources?|citations?)\b/.test(normalized)) {
+    return "general";
+  }
+  return "general";
+}
+
+function deriveHardConstraints(message: string): string[] {
+  const constraints: string[] = [];
+  const normalized = message.toLowerCase();
+  const leadCountMatch = normalized.match(/\b(\d{1,3})\s+leads?\b/);
+  if (leadCountMatch?.[1]) {
+    constraints.push(`Target lead count is ${leadCountMatch[1]}.`);
+  }
+  if (/\btexas\b/.test(normalized)) {
+    constraints.push("Geography includes Texas.");
+  }
+  if (/\busa\b|\bunited states\b|\bus\b/.test(normalized)) {
+    constraints.push("Geography includes USA.");
+  }
+  if (/\bemail(s)?\b/.test(normalized)) {
+    constraints.push("Emails are required in the output.");
+  }
+  if (/\bcsv\b/.test(normalized)) {
+    constraints.push("Deliverable must include CSV output.");
+  }
+  const wordRange = normalized.match(/\b(\d{2,4})\s*-\s*(\d{2,4})\s*words?\b/);
+  if (wordRange?.[1] && wordRange?.[2]) {
+    constraints.push(`Word range should be ${wordRange[1]}-${wordRange[2]}.`);
+  }
+  if (/\bcite\b|\bcitation\b|\bsources?\b/.test(normalized)) {
+    constraints.push("Citations/sources are required.");
+  }
+  if (/\bx\b|\btwitter\b/.test(normalized)) {
+    constraints.push("Include X/Twitter coverage when available.");
+  }
+  return constraints;
+}
+
+function buildObjectiveContract(message: string, leadExecutionBrief?: LeadExecutionBrief | null): AlfredObjectiveContract {
+  const taskType = detectObjectiveTaskType(message, leadExecutionBrief);
+  const hardConstraints = deriveHardConstraints(message);
+
+  if (leadExecutionBrief) {
+    const requiredDeliverable =
+      leadExecutionBrief.outputFormat === "csv"
+        ? `Produce ${leadExecutionBrief.requestedLeadCount} lead records and write them to CSV.`
+        : `Produce ${leadExecutionBrief.requestedLeadCount} lead records.`;
+    const doneCriteria = buildCompletionCriteria(message, leadExecutionBrief);
+    return {
+      taskType,
+      requiredDeliverable,
+      hardConstraints,
+      softPreferences: [],
+      doneCriteria
+    };
+  }
+
+  const normalized = message.toLowerCase();
+  const requiredDeliverable =
+    /\bblog\b|\bpost\b/.test(normalized)
+      ? "Deliver the requested blog draft with citations."
+      : `Provide a complete response for: ${message.replace(/\s+/g, " ").trim().slice(0, 180)}`;
+  const doneCriteria = [
+    `Answer the current turn directly and honestly: ${message.replace(/\s+/g, " ").trim().slice(0, 240)}`
+  ];
+  if (/\bcite\b|\bcitation\b|\bsources?\b/.test(normalized)) {
+    doneCriteria.push("Include explicit source citations for factual claims.");
+  }
+  if (/\bblog\b|\bpost\b/.test(normalized)) {
+    doneCriteria.push("Return the complete draft text in the requested format.");
+  }
+  return {
+    taskType,
+    requiredDeliverable,
+    hardConstraints,
+    softPreferences: [],
+    doneCriteria
+  };
+}
+
 function findNumericField(source: unknown, keys: string[]): number | null {
   if (!source || typeof source !== "object") {
     return null;
@@ -615,6 +709,7 @@ function inferLeadFactsFromRunRecord(runRecord: RunRecord | undefined): { collec
 
 function buildAlfredTurnState(args: {
   message: string;
+  objectiveContract: AlfredObjectiveContract;
   leadExecutionBrief?: LeadExecutionBrief | null;
   leadState: LeadAgentState;
   lastAction: AlfredActionSnapshot | null;
@@ -669,9 +764,10 @@ function buildAlfredTurnState(args: {
 
   return {
     turnObjective: args.message,
-    taskType: canonicalLeadBrief ? "lead_generation" : "general",
+    taskType: args.objectiveContract.taskType,
+    objectiveContract: args.objectiveContract,
     canonicalLeadBrief,
-    completionCriteria: buildCompletionCriteria(args.message, canonicalLeadBrief),
+    completionCriteria: args.objectiveContract.doneCriteria,
     completedCriteria,
     missingRequirements,
     blockingIssues,
@@ -815,12 +911,30 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   let lastAction: AlfredActionSnapshot | null = null;
   let latestRunRecord: RunRecord | undefined;
   let consecutivePlannerFailures = 0;
+  const structuredChatRunner = options.structuredChatRunner ?? openAiClient.runOpenAiStructuredChatWithDiagnostics;
+  const agentLoopRunner = options.agentLoopRunner ?? runAgentLoop;
   const scratchpad: Record<string, unknown> = {
     currentTurnObjective: options.message
   };
+  const initialLeadBrief = looksLikeExecutableLeadRequest(options.message)
+    ? await buildLeadExecutionBrief({
+        apiKey: options.openAiApiKey,
+        structuredChatRunner,
+        message: options.message,
+        sessionContext: options.sessionContext
+      })
+    : undefined;
+  const objectiveContract = buildObjectiveContract(options.message, initialLeadBrief);
+  scratchpad.currentObjectiveContract = objectiveContract;
+  if (initialLeadBrief) {
+    scratchpad.currentLeadExecutionBrief = initialLeadBrief;
+    alfredState.executionBrief = initialLeadBrief;
+    toolContext.leadExecutionBrief = initialLeadBrief;
+  }
   const refreshTurnState = (): AlfredTurnState => {
     const turnState = buildAlfredTurnState({
       message: options.message,
+      objectiveContract,
       leadExecutionBrief: (scratchpad.currentLeadExecutionBrief as LeadExecutionBrief | undefined) ?? undefined,
       leadState: alfredState,
       lastAction,
@@ -830,8 +944,6 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     return turnState;
   };
   refreshTurnState();
-  const structuredChatRunner = options.structuredChatRunner ?? openAiClient.runOpenAiStructuredChatWithDiagnostics;
-  const agentLoopRunner = options.agentLoopRunner ?? runAgentLoop;
   const buildLeadAgentRuntimeOptions = (message: string, leadExecutionBrief?: LeadExecutionBrief): LeadAgentRuntimeOptions => ({
     scratchpad,
     leadExecutionBrief,
@@ -869,6 +981,16 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         master: ALFRED_MASTER_PROMPT_VERSION
       },
       sessionContextLoaded: Boolean(options.sessionContext)
+    },
+    timestamp: nowIso()
+  });
+  await options.runStore.appendEvent({
+    runId: options.runId,
+    sessionId: options.sessionId,
+    phase: "thought",
+    eventType: "alfred_objective_contract_created",
+    payload: {
+      objectiveContract
     },
     timestamp: nowIso()
   });
@@ -941,12 +1063,13 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         skillName: "lead_agent",
         ...buildLeadAgentRuntimeOptions(
           options.message,
-          await buildLeadExecutionBrief({
-            apiKey: options.openAiApiKey,
-            structuredChatRunner,
-            message: options.message,
-            sessionContext: options.sessionContext
-          })
+          initialLeadBrief ??
+            (await buildLeadExecutionBrief({
+              apiKey: options.openAiApiKey,
+              structuredChatRunner,
+              message: options.message,
+              sessionContext: options.sessionContext
+            }))
         )
       });
       return leadOutcome;
@@ -966,6 +1089,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
             role: "user",
             content: JSON.stringify({
               turnObjective: options.message,
+              objectiveContract,
               currentLeadExecutionBrief: (scratchpad.currentLeadExecutionBrief as LeadExecutionBrief | undefined) ?? null,
               turnState: refreshTurnState(),
               iteration,

@@ -173,8 +173,12 @@ test("runAlfredOrchestratorLoop records delegation telemetry and passes scratchp
 
     if (options.schemaName === "alfred_orchestrator_plan") {
       const plannerInput = JSON.parse(options.messages?.[1]?.content ?? "{}") as {
+        objectiveContract?: { requiredDeliverable?: string; doneCriteria?: string[] };
         turnState?: { turnObjective?: string; completionCriteria?: string[]; missingRequirements?: string[] };
       };
+      assert.ok(plannerInput.objectiveContract);
+      assert.ok(typeof plannerInput.objectiveContract?.requiredDeliverable === "string");
+      assert.ok(Array.isArray(plannerInput.objectiveContract?.doneCriteria));
       assert.equal(plannerInput.turnState?.turnObjective, "Find 3 leads with emails");
       assert.ok(Array.isArray(plannerInput.turnState?.completionCriteria));
       assert.ok(Array.isArray(plannerInput.turnState?.missingRequirements));
@@ -278,9 +282,11 @@ test("runAlfredOrchestratorLoop records delegation telemetry and passes scratchp
   const delegatedEvent = events.find((event) => event.eventType === "agent_delegated");
   const resultEvent = events.find((event) => event.eventType === "agent_delegation_result");
   const turnStateEvent = events.find((event) => event.eventType === "alfred_turn_state_updated");
+  const contractEvent = events.find((event) => event.eventType === "alfred_objective_contract_created");
   assert.ok(delegatedEvent);
   assert.ok(resultEvent);
   assert.ok(turnStateEvent);
+  assert.ok(contractEvent);
   assert.equal(delegatedEvent?.payload.delegationId, "delegation_1");
   assert.equal(resultEvent?.payload.delegationId, "delegation_1");
   assert.equal((delegatedEvent?.payload as { leadExecutionBrief?: { requestedLeadCount?: number } } | undefined)?.leadExecutionBrief?.requestedLeadCount, 3);

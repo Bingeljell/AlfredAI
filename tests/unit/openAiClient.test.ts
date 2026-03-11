@@ -142,6 +142,63 @@ test("captures usage metadata from structured OpenAI responses", async () => {
   }
 });
 
+test("retries structured calls on transient 429 responses and then succeeds", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls < 3) {
+      return new Response("rate limited", {
+        status: 429,
+        headers: {
+          "retry-after": "0"
+        }
+      });
+    }
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({ ok: true })
+            }
+          }
+        ]
+      }),
+      {
+        status: 200,
+        headers: {
+          "content-type": "application/json"
+        }
+      }
+    );
+  };
+
+  try {
+    const diagnostic = await runOpenAiStructuredChatWithDiagnostics(
+      {
+        apiKey: "test-key",
+        schemaName: "simple_schema",
+        jsonSchema: {
+          type: "object",
+          properties: { ok: { type: "boolean" } },
+          required: ["ok"],
+          additionalProperties: false
+        },
+        messages: [{ role: "user", content: "hello" }]
+      },
+      SimpleSchema
+    );
+
+    assert.deepEqual(diagnostic.result, { ok: true });
+    assert.equal(diagnostic.failureCode, undefined);
+    assert.equal(diagnostic.attempts, 3);
+    assert.equal(calls, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("omits temperature for gpt-5-mini structured calls", async () => {
   const originalFetch = globalThis.fetch;
   let capturedBody: Record<string, unknown> | undefined;
@@ -225,6 +282,44 @@ test("keeps temperature for non-gpt-5 chat calls", async () => {
 
     assert.equal(content, "ok");
     assert.equal(capturedBody?.temperature, 0.2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("retries chat calls after transient network failure", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_input, init) => {
+    calls += 1;
+    if (calls === 1) {
+      throw new TypeError("fetch failed");
+    }
+    const raw = typeof init?.body === "string" ? init.body : "{}";
+    const payload = JSON.parse(raw) as Record<string, unknown>;
+    assert.equal(payload.model, "gpt-5-mini");
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: "ok-after-retry"
+            }
+          }
+        ]
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  };
+
+  try {
+    const content = await runOpenAiChat({
+      apiKey: "test-key",
+      model: "gpt-5-mini",
+      messages: [{ role: "user", content: "hello" }]
+    });
+    assert.equal(content, "ok-after-retry");
+    assert.equal(calls, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -510,3 +510,52 @@ test("runAlfredOrchestratorLoop answers diagnostic turns from run evidence witho
   assert.ok(events.some((event) => event.eventType === "alfred_turn_mode_selected"));
   assert.ok(events.some((event) => event.eventType === "alfred_diagnostic_response"));
 });
+
+test("runAlfredOrchestratorLoop stops with policy_block when planner is unauthorized", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-policy-block");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "Find 5 leads", "running");
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message: "Find 5 leads",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not execute on policy block");
+    },
+    maxIterations: 3,
+    maxDurationMs: 60_000,
+    maxToolCalls: 4,
+    maxParallelTools: 1,
+    plannerMaxCalls: 3,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner: async () => ({
+      failureCode: "http_error",
+      failureClass: "policy_block",
+      failureMessage: "OpenAI returned status 401",
+      statusCode: 401
+    })
+  });
+
+  assert.equal(outcome.status, "failed");
+  assert.match(outcome.assistantText ?? "", /blocked by policy\/auth/i);
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(events.some((event) => event.eventType === "alfred_planner_failed"));
+});

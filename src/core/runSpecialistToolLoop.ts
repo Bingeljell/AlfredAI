@@ -11,6 +11,7 @@ import {
   executeToolWithEnvelope,
   type ToolExecutionEnvelope
 } from "../agent/tools/registry.js";
+import { classifyStructuredFailure, computeRetryDelayMs, sleep } from "./reliability.js";
 
 interface SpecialistToolLoopOptions extends AgentSkillRunOptions {
   skillName: string;
@@ -236,9 +237,10 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
   const startMs = Date.now();
   const deadlineAtMs = startMs + options.maxDurationMs;
   const toolContext = createToolContext(options, deadlineAtMs);
-  const observations: Array<{ iteration: number; summary: string }> = [];
+  const observations: Array<{ iteration: number; summary: string; outcome?: string }> = [];
   let plannerCallsUsed = 0;
   let toolCallsUsed = 0;
+  let consecutivePlannerFailures = 0;
 
   await options.runStore.appendEvent({
     runId: options.runId,
@@ -307,12 +309,55 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       await options.runStore.addLlmUsage(options.runId, plannerDiagnostic.usage, 1);
     }
     if (!plannerDiagnostic.result) {
+      consecutivePlannerFailures += 1;
+      const failureClass = plannerDiagnostic.failureClass ?? classifyStructuredFailure(plannerDiagnostic);
+      const failureMessage = plannerDiagnostic.failureMessage?.slice(0, 220) ?? "planner_failed";
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "observe",
+        eventType: "specialist_planner_failed",
+        payload: {
+          skillName: options.skillName,
+          iteration,
+          failureClass,
+          failureCode: plannerDiagnostic.failureCode ?? "unknown",
+          attempts: plannerDiagnostic.attempts ?? 1,
+          message: failureMessage
+        },
+        timestamp: nowIso()
+      });
       observations.push({
         iteration,
-        summary: `planner_failed:${plannerDiagnostic.failureMessage?.slice(0, 120) ?? "unknown"}`
+        summary: `planner_failed:${failureClass}`,
+        outcome: failureMessage
       });
+      if (failureClass === "policy_block") {
+        return {
+          status: "failed",
+          assistantText: `${options.skillName} blocked by policy/auth: ${failureMessage}`,
+          artifactPaths: toolContext.state.artifacts.length > 0 ? [...toolContext.state.artifacts] : undefined
+        };
+      }
+      if (failureClass === "network" || failureClass === "timeout") {
+        const delayMs = computeRetryDelayMs(
+          consecutivePlannerFailures,
+          {
+            maxAttempts: 4,
+            baseDelayMs: 200,
+            maxDelayMs: 1500,
+            jitterRatio: 0.15
+          },
+          undefined
+        );
+        await sleep(delayMs);
+      }
+      if (consecutivePlannerFailures >= 3) {
+        break;
+      }
       continue;
     }
+    consecutivePlannerFailures = 0;
 
     const plan = plannerDiagnostic.result;
     await options.runStore.appendEvent({

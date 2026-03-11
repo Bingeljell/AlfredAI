@@ -4,9 +4,14 @@ import path from "node:path";
 import type { LlmUsage, RunEvent, RunRecord, RunStatus, ToolCallRecord } from "../types.js";
 import { ensureDir, readJsonFile, writeJsonFile } from "../utils/fs.js";
 import { redactValue } from "../utils/redact.js";
+import { RunEventChannel } from "./eventChannel.js";
 
 export class RunStore {
-  constructor(private readonly workspaceDir: string) {}
+  private readonly eventChannel: RunEventChannel;
+
+  constructor(private readonly workspaceDir: string) {
+    this.eventChannel = new RunEventChannel((event) => this.appendEventDirect(event));
+  }
 
   private mergeLlmUsage(
     current: RunRecord["llmUsage"],
@@ -119,10 +124,18 @@ export class RunStore {
     await writeJsonFile(this.runStatePath(runId), updated);
   }
 
-  async appendEvent(event: RunEvent): Promise<void> {
+  private async appendEventDirect(event: RunEvent): Promise<void> {
     const day = event.timestamp.slice(0, 10);
     const filePath = path.join(this.workspaceDir, "runs", event.sessionId, `${day}.jsonl`);
     await this.appendJsonLine(filePath, event);
+  }
+
+  async appendEvent(event: RunEvent): Promise<void> {
+    await this.eventChannel.push(event);
+  }
+
+  async flushEvents(): Promise<void> {
+    await this.eventChannel.flush();
   }
 
   async listRuns(sessionId: string, limit = 20): Promise<RunRecord[]> {
@@ -143,6 +156,7 @@ export class RunStore {
   }
 
   async listRunEvents(run: RunRecord): Promise<RunEvent[]> {
+    await this.flushEvents();
     const day = run.createdAt.slice(0, 10);
     const filePath = path.join(this.workspaceDir, "runs", run.sessionId, `${day}.jsonl`);
     try {

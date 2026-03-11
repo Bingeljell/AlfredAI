@@ -1,5 +1,15 @@
 import { z } from "zod";
 import type { LlmUsage } from "../types.js";
+import {
+  classifyStructuredFailure,
+  computeRetryDelayMs,
+  isLikelyTransientNetworkError,
+  isRetryableHttpStatus,
+  parseRetryAfterMs,
+  sleep,
+  type FailureClass,
+  type RetryPolicy
+} from "../core/reliability.js";
 
 interface OpenAiMessage {
   role: "system" | "user" | "assistant";
@@ -41,10 +51,12 @@ export type StructuredChatFailureCode =
 export interface StructuredChatDiagnostic<T> {
   result?: T;
   failureCode?: StructuredChatFailureCode;
+  failureClass?: FailureClass;
   failureMessage?: string;
   statusCode?: number;
   httpErrorDetails?: StructuredChatHttpErrorDetails;
   usage?: LlmUsage;
+  attempts?: number;
 }
 
 export interface StructuredChatHttpErrorDetails {
@@ -143,6 +155,13 @@ interface ParsedOpenAiResponse {
   usage?: LlmUsage;
 }
 
+const OPENAI_RETRY_POLICY: RetryPolicy = {
+  maxAttempts: 3,
+  baseDelayMs: 300,
+  maxDelayMs: 2500,
+  jitterRatio: 0.2
+};
+
 function shouldOmitTemperature(model: string): boolean {
   const normalized = model.trim().toLowerCase();
   return normalized.startsWith("gpt-5");
@@ -196,18 +215,43 @@ export async function runOpenAiChat(options: OpenAiChatOptions): Promise<string 
     body.temperature = 0.2;
   }
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${options.apiKey}`
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(25000)
-  });
+  for (let attempt = 1; attempt <= OPENAI_RETRY_POLICY.maxAttempts; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${options.apiKey}`
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(25000)
+      });
+    } catch (error) {
+      if (attempt < OPENAI_RETRY_POLICY.maxAttempts && isLikelyTransientNetworkError(error)) {
+        const delayMs = computeRetryDelayMs(attempt, OPENAI_RETRY_POLICY);
+        await sleep(delayMs);
+        continue;
+      }
+      return undefined;
+    }
 
-  const parsed = await parseResponse(response);
-  return parsed?.content;
+    if (!response.ok) {
+      if (attempt < OPENAI_RETRY_POLICY.maxAttempts && isRetryableHttpStatus(response.status)) {
+        const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after") ?? undefined);
+        const delayMs = computeRetryDelayMs(attempt, OPENAI_RETRY_POLICY, retryAfterMs);
+        await response.arrayBuffer().catch(() => undefined);
+        await sleep(delayMs);
+        continue;
+      }
+      return undefined;
+    }
+
+    const parsed = await parseResponse(response);
+    return parsed?.content;
+  }
+
+  return undefined;
 }
 
 export async function runOpenAiStructuredChat<T>(
@@ -225,41 +269,80 @@ export async function runOpenAiStructuredChatWithDiagnostics<T>(
   if (!options.apiKey) {
     return {
       failureCode: "missing_api_key",
-      failureMessage: "OpenAI API key is not configured"
+      failureClass: "policy_block",
+      failureMessage: "OpenAI API key is not configured",
+      attempts: 0
     };
   }
 
-  let response: Response;
-  try {
-    const model = options.model ?? "gpt-5-mini";
-    const body: Record<string, unknown> = {
-      model,
-      messages: options.messages,
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: options.schemaName,
-          schema: options.jsonSchema,
-          strict: true
-        }
+  const model = options.model ?? "gpt-5-mini";
+  const body: Record<string, unknown> = {
+    model,
+    messages: options.messages,
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: options.schemaName,
+        schema: options.jsonSchema,
+        strict: true
       }
-    };
-    if (!shouldOmitTemperature(model)) {
-      body.temperature = 0;
     }
-    response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${options.apiKey}`
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(35000)
-    });
-  } catch (error) {
+  };
+  if (!shouldOmitTemperature(model)) {
+    body.temperature = 0;
+  }
+
+  let response: Response | undefined;
+  let attempts = 0;
+  for (let attempt = 1; attempt <= OPENAI_RETRY_POLICY.maxAttempts; attempt += 1) {
+    attempts = attempt;
+    try {
+      response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${options.apiKey}`
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(35000)
+      });
+    } catch (error) {
+      const failureMessage = error instanceof Error ? error.message : "Network request failed";
+      if (attempt < OPENAI_RETRY_POLICY.maxAttempts && isLikelyTransientNetworkError(error)) {
+        const delayMs = computeRetryDelayMs(attempt, OPENAI_RETRY_POLICY);
+        await sleep(delayMs);
+        continue;
+      }
+      return {
+        failureCode: "network_error",
+        failureClass: classifyStructuredFailure({
+          failureCode: "network_error",
+          failureMessage
+        }),
+        failureMessage,
+        attempts: attempt
+      };
+    }
+
+    if (!response.ok) {
+      if (attempt < OPENAI_RETRY_POLICY.maxAttempts && isRetryableHttpStatus(response.status)) {
+        const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after") ?? undefined);
+        const delayMs = computeRetryDelayMs(attempt, OPENAI_RETRY_POLICY, retryAfterMs);
+        await response.arrayBuffer().catch(() => undefined);
+        await sleep(delayMs);
+        continue;
+      }
+      break;
+    }
+    break;
+  }
+
+  if (!response) {
     return {
       failureCode: "network_error",
-      failureMessage: error instanceof Error ? error.message : "Network request failed"
+      failureClass: "network",
+      failureMessage: "OpenAI request failed before receiving a response",
+      attempts
     };
   }
 
@@ -267,9 +350,15 @@ export async function runOpenAiStructuredChatWithDiagnostics<T>(
     const httpErrorDetails = await buildHttpErrorDetails(response);
     return {
       failureCode: "http_error",
+      failureClass: classifyStructuredFailure({
+        failureCode: "http_error",
+        statusCode: response.status,
+        failureMessage: formatHttpFailureMessage(httpErrorDetails)
+      }),
       failureMessage: formatHttpFailureMessage(httpErrorDetails),
       statusCode: response.status,
-      httpErrorDetails
+      httpErrorDetails,
+      attempts
     };
   }
 
@@ -279,7 +368,9 @@ export async function runOpenAiStructuredChatWithDiagnostics<T>(
     return {
       failureCode: "empty_content",
       failureMessage: "Structured response content was empty",
-      usage: parsed?.usage
+      failureClass: "unknown",
+      usage: parsed?.usage,
+      attempts
     };
   }
 
@@ -290,20 +381,25 @@ export async function runOpenAiStructuredChatWithDiagnostics<T>(
     return {
       failureCode: "json_parse_error",
       failureMessage: "Model response was not valid JSON",
-      usage: parsed?.usage
+      failureClass: "schema",
+      usage: parsed?.usage,
+      attempts
     };
   }
 
   try {
     return {
       result: validator.parse(parsedJson),
-      usage: parsed?.usage
+      usage: parsed?.usage,
+      attempts
     };
   } catch (error) {
     return {
       failureCode: "zod_validation_error",
       failureMessage: error instanceof Error ? error.message : "Schema validation failed",
-      usage: parsed?.usage
+      failureClass: "schema",
+      usage: parsed?.usage,
+      attempts
     };
   }
 }

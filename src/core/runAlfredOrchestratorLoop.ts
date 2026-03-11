@@ -15,6 +15,7 @@ import { redactValue } from "../utils/redact.js";
 import { listAgentSkills } from "../agent/skills/registry.js";
 import { LeadExecutionBriefSchema, type LeadExecutionBrief } from "../tools/lead/schemas.js";
 import { parseRequestedLeadCount } from "../tools/lead/requestIntent.js";
+import { classifyStructuredFailure, computeRetryDelayMs, sleep } from "./reliability.js";
 
 interface AlfredOrchestratorOptions {
   runStore: RunStore;
@@ -813,6 +814,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   let lastCompletionNote = "No completion evaluation yet.";
   let lastAction: AlfredActionSnapshot | null = null;
   let latestRunRecord: RunRecord | undefined;
+  let consecutivePlannerFailures = 0;
   const scratchpad: Record<string, unknown> = {
     currentTurnObjective: options.message
   };
@@ -986,16 +988,53 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     }
 
     if (!plannerDiagnostic.result) {
+      consecutivePlannerFailures += 1;
+      const failureClass = plannerDiagnostic.failureClass ?? classifyStructuredFailure(plannerDiagnostic);
+      const failureMessage = plannerDiagnostic.failureMessage?.slice(0, 220) ?? "planner_failed";
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "observe",
+        eventType: "alfred_planner_failed",
+        payload: {
+          iteration,
+          failureClass,
+          failureCode: plannerDiagnostic.failureCode ?? "unknown",
+          attempts: plannerDiagnostic.attempts ?? 1,
+          message: failureMessage
+        },
+        timestamp: nowIso()
+      });
       observations.push({
         iteration,
-        summary: "planner_failed",
-        outcome: plannerDiagnostic.failureMessage?.slice(0, 220) ?? "planner_failed"
+        summary: `planner_failed:${failureClass}`,
+        outcome: failureMessage
       });
-      if (observations.length >= 2) {
+      if (failureClass === "policy_block") {
+        return {
+          status: "failed",
+          assistantText: `Alfred is blocked by policy/auth settings: ${failureMessage}`
+        };
+      }
+      if (failureClass === "network" || failureClass === "timeout") {
+        const delayMs = computeRetryDelayMs(
+          consecutivePlannerFailures,
+          {
+            maxAttempts: 4,
+            baseDelayMs: 200,
+            maxDelayMs: 1600,
+            jitterRatio: 0.2
+          },
+          undefined
+        );
+        await sleep(delayMs);
+      }
+      if (consecutivePlannerFailures >= 3) {
         break;
       }
       continue;
     }
+    consecutivePlannerFailures = 0;
 
     let plan = plannerDiagnostic.result;
     const earlyClarificationGuardrailTriggered =

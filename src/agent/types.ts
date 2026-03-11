@@ -53,6 +53,7 @@ export interface LeadAgentToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTyp
   description: string;
   inputSchema: TSchema;
   inputHint: string;
+  requiresApproval?: boolean;
   execute: (
     input: z.infer<TSchema>,
     context: LeadAgentToolContext

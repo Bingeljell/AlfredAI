@@ -5,8 +5,12 @@ import { composeSystemPrompt } from "../prompts/composePrompt.js";
 import { ALFRED_MASTER_PROMPT_VERSION, ALFRED_MASTER_SYSTEM_PROMPT } from "../prompts/master/alfred.system.js";
 import type { AgentSkillRunOptions } from "../agent/skills/types.js";
 import type { LeadAgentState, LeadAgentToolContext } from "../agent/types.js";
-import { applyToolAllowlist, discoverLeadAgentTools } from "../agent/tools/registry.js";
-import { redactValue } from "../utils/redact.js";
+import {
+  applyToolAllowlist,
+  discoverLeadAgentTools,
+  executeToolWithEnvelope,
+  type ToolExecutionEnvelope
+} from "../agent/tools/registry.js";
 
 interface SpecialistToolLoopOptions extends AgentSkillRunOptions {
   skillName: string;
@@ -25,14 +29,7 @@ interface SpecialistPlannerOutput {
   responseText: string | null;
 }
 
-interface ToolExecutionResult {
-  tool: string;
-  status: "ok" | "error";
-  durationMs: number;
-  summary: string;
-  output?: Record<string, unknown>;
-  error?: string;
-}
+type ToolExecutionResult = ToolExecutionEnvelope & { summary: string };
 
 const SPECIALIST_PLANNER_JSON_SCHEMA = {
   type: "object",
@@ -84,18 +81,6 @@ const SpecialistPlannerOutputSchema: z.ZodType<SpecialistPlannerOutput> = z.obje
 
 function nowIso(): string {
   return new Date().toISOString();
-}
-
-function parseToolInputJson(inputJson: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(inputJson) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return null;
-    }
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
 }
 
 function buildSpecialistPlannerSystemPrompt(options: Pick<SpecialistToolLoopOptions, "skillSystemPrompt">): string {
@@ -377,76 +362,26 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
 
     const executions = await Promise.all(
       actions.map(async (action): Promise<ToolExecutionResult> => {
-        const started = Date.now();
-        const tool = availableTools.get(action.tool);
-        if (!tool) {
-          return {
-            tool: action.tool,
-            status: "error",
-            durationMs: Date.now() - started,
-            summary: "tool_not_available",
-            error: "tool_not_available"
-          };
-        }
-        const rawInput = parseToolInputJson(action.inputJson);
-        if (!rawInput) {
-          return {
-            tool: action.tool,
-            status: "error",
-            durationMs: Date.now() - started,
-            summary: "invalid_input_json",
-            error: "invalid_input_json"
-          };
-        }
-        const parsedInput = tool.inputSchema.safeParse(rawInput);
-        if (!parsedInput.success) {
-          return {
-            tool: action.tool,
-            status: "error",
-            durationMs: Date.now() - started,
-            summary: "tool_schema_validation_failed",
-            error: parsedInput.error.message.slice(0, 200)
-          };
-        }
-        try {
-          const output = await tool.execute(parsedInput.data, toolContext);
-          const outputRecord = output as Record<string, unknown>;
-          for (const artifactPath of extractArtifactPaths(action.tool, outputRecord)) {
+        const envelope = await executeToolWithEnvelope({
+          toolName: action.tool,
+          inputJson: action.inputJson,
+          tools: availableTools,
+          context: toolContext,
+          runStore: options.runStore,
+          runId: options.runId
+        });
+        if (envelope.status === "ok" && envelope.result) {
+          for (const artifactPath of extractArtifactPaths(action.tool, envelope.result)) {
             toolContext.addArtifact(artifactPath);
           }
-          await options.runStore.addToolCall(options.runId, {
-            toolName: action.tool,
-            inputRedacted: redactValue(parsedInput.data),
-            outputRedacted: redactValue(output),
-            durationMs: Date.now() - started,
-            status: "ok",
-            timestamp: nowIso()
-          });
-          return {
-            tool: action.tool,
-            status: "ok",
-            durationMs: Date.now() - started,
-            summary: truncateForPrompt(outputRecord, 220),
-            output: outputRecord
-          };
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message.slice(0, 220) : "tool_execution_failed";
-          await options.runStore.addToolCall(options.runId, {
-            toolName: action.tool,
-            inputRedacted: redactValue(parsedInput.data),
-            outputRedacted: { error: errorMessage },
-            durationMs: Date.now() - started,
-            status: "error",
-            timestamp: nowIso()
-          });
-          return {
-            tool: action.tool,
-            status: "error",
-            durationMs: Date.now() - started,
-            summary: errorMessage,
-            error: errorMessage
-          };
         }
+        return {
+          ...envelope,
+          summary:
+            envelope.status === "ok"
+              ? truncateForPrompt(envelope.result, 220)
+              : envelope.error ?? "execution_failed"
+        };
       })
     );
 
@@ -470,7 +405,11 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
           tool: item.tool,
           status: item.status,
           durationMs: item.durationMs,
-          summary: item.summary
+          summary: item.summary,
+          requiresApproval: item.requiresApproval,
+          input: item.input,
+          result: item.result,
+          error: item.error
         }))
       },
       timestamp: nowIso()

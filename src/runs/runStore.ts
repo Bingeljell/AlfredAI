@@ -1,15 +1,28 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, readFile } from "node:fs/promises";
-import path from "node:path";
 import type { LlmUsage, RunEvent, RunRecord, RunStatus, ToolCallRecord } from "../types.js";
-import { ensureDir, readJsonFile, writeJsonFile } from "../utils/fs.js";
 import { redactValue } from "../utils/redact.js";
 import { RunEventChannel } from "./eventChannel.js";
+import { JsonFileRunStorage } from "./storage/jsonFileRunStorage.js";
+import type { RunStorage } from "./storage/types.js";
+
+const LIFECYCLE_EVENT_TYPES = new Set(["TurnStarted", "TurnProgress", "TurnComplete", "TurnAborted"]);
+
+export interface RunLifecycleReplay {
+  runId: string;
+  sessionId: string;
+  startedAt?: string;
+  terminalAt?: string;
+  terminalEventType?: "TurnComplete" | "TurnAborted";
+  progressCount: number;
+  lifecycleEvents: RunEvent[];
+}
 
 export class RunStore {
   private readonly eventChannel: RunEventChannel;
+  private readonly storage: RunStorage;
 
-  constructor(private readonly workspaceDir: string) {
+  constructor(private readonly workspaceDir: string, storage?: RunStorage) {
+    this.storage = storage ?? new JsonFileRunStorage(workspaceDir);
     this.eventChannel = new RunEventChannel((event) => this.appendEventDirect(event));
   }
 
@@ -24,19 +37,6 @@ export class RunStore {
       totalTokens: Math.max(0, (current?.totalTokens ?? 0) + Math.max(0, Math.round(usage.totalTokens))),
       callCount: Math.max(0, (current?.callCount ?? 0) + Math.max(0, Math.round(callCountDelta)))
     };
-  }
-
-  private get stateDir(): string {
-    return path.join(this.workspaceDir, "runs/state");
-  }
-
-  private runStatePath(runId: string): string {
-    return path.join(this.stateDir, `${runId}.json`);
-  }
-
-  private async appendJsonLine(filePath: string, value: unknown): Promise<void> {
-    await ensureDir(path.dirname(filePath));
-    await appendFile(filePath, `${JSON.stringify(value)}\n`, "utf8");
   }
 
   async createRun(sessionId: string, message: string, status: RunStatus): Promise<RunRecord> {
@@ -56,12 +56,12 @@ export class RunStore {
       },
       toolCalls: []
     };
-    await writeJsonFile(this.runStatePath(run.runId), run);
+    await this.storage.writeRun(run.runId, run);
     return run;
   }
 
   async getRun(runId: string): Promise<RunRecord | undefined> {
-    return readJsonFile<RunRecord | undefined>(this.runStatePath(runId), undefined);
+    return this.storage.readRun(runId);
   }
 
   async updateRun(runId: string, patch: Partial<RunRecord>): Promise<RunRecord> {
@@ -74,7 +74,7 @@ export class RunStore {
       ...patch,
       updatedAt: new Date().toISOString()
     };
-    await writeJsonFile(this.runStatePath(runId), updated);
+    await this.storage.writeRun(runId, updated);
     return updated;
   }
 
@@ -108,7 +108,7 @@ export class RunStore {
       toolCalls: [...current.toolCalls, call],
       updatedAt: new Date().toISOString()
     };
-    await writeJsonFile(this.runStatePath(runId), updated);
+    await this.storage.writeRun(runId, updated);
   }
 
   async addLlmUsage(runId: string, usage: LlmUsage, callCountDelta = 1): Promise<void> {
@@ -121,13 +121,11 @@ export class RunStore {
       llmUsage: this.mergeLlmUsage(current.llmUsage, usage, callCountDelta),
       updatedAt: new Date().toISOString()
     };
-    await writeJsonFile(this.runStatePath(runId), updated);
+    await this.storage.writeRun(runId, updated);
   }
 
   private async appendEventDirect(event: RunEvent): Promise<void> {
-    const day = event.timestamp.slice(0, 10);
-    const filePath = path.join(this.workspaceDir, "runs", event.sessionId, `${day}.jsonl`);
-    await this.appendJsonLine(filePath, event);
+    await this.storage.appendEvent(event);
   }
 
   async appendEvent(event: RunEvent): Promise<void> {
@@ -139,14 +137,10 @@ export class RunStore {
   }
 
   async listRuns(sessionId: string, limit = 20): Promise<RunRecord[]> {
-    await ensureDir(this.stateDir);
-    const files = await (await import("node:fs/promises")).readdir(this.stateDir);
     const runs: RunRecord[] = [];
-    for (const file of files) {
-      if (!file.endsWith(".json")) {
-        continue;
-      }
-      const run = await readJsonFile<RunRecord | undefined>(path.join(this.stateDir, file), undefined);
+    const runIds = await this.storage.listRunIds();
+    for (const runId of runIds) {
+      const run = await this.storage.readRun(runId);
       if (run && run.sessionId === sessionId) {
         runs.push(run);
       }
@@ -158,17 +152,35 @@ export class RunStore {
   async listRunEvents(run: RunRecord): Promise<RunEvent[]> {
     await this.flushEvents();
     const day = run.createdAt.slice(0, 10);
-    const filePath = path.join(this.workspaceDir, "runs", run.sessionId, `${day}.jsonl`);
-    try {
-      const raw = await readFile(filePath, "utf8");
-      return raw
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => JSON.parse(line) as RunEvent)
-        .filter((event) => event.runId === run.runId);
-    } catch {
-      return [];
+    const events = await this.storage.readSessionDayEvents(run.sessionId, day);
+    return events.filter((event) => event.runId === run.runId);
+  }
+
+  async replayLifecycle(runId: string): Promise<RunLifecycleReplay> {
+    const run = await this.getRun(runId);
+    if (!run) {
+      throw new Error(`Run not found: ${runId}`);
     }
+    const events = await this.listRunEvents(run);
+    const lifecycleEvents = events.filter((event) => LIFECYCLE_EVENT_TYPES.has(event.eventType));
+    const startedEvent = lifecycleEvents.find((event) => event.eventType === "TurnStarted");
+    const terminalEvent = [...lifecycleEvents]
+      .reverse()
+      .find((event) => event.eventType === "TurnComplete" || event.eventType === "TurnAborted");
+    const progressCount = lifecycleEvents.filter((event) => event.eventType === "TurnProgress").length;
+
+    return {
+      runId,
+      sessionId: run.sessionId,
+      startedAt: startedEvent?.timestamp,
+      terminalAt: terminalEvent?.timestamp,
+      terminalEventType:
+        terminalEvent?.eventType === "TurnComplete" || terminalEvent?.eventType === "TurnAborted"
+          ? terminalEvent.eventType
+          : undefined,
+      progressCount,
+      lifecycleEvents
+    };
   }
 
   async buildDebugExport(runId: string): Promise<Record<string, unknown>> {

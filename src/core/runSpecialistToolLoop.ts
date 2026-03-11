@@ -32,6 +32,23 @@ interface SpecialistPlannerOutput {
 
 type ToolExecutionResult = ToolExecutionEnvelope & { summary: string };
 
+interface SpecialistTaskContract {
+  requiredDeliverable: string;
+  requiresDraft: boolean;
+  requiresCitations: boolean;
+  minimumCitationCount: number;
+  doneCriteria: string[];
+}
+
+interface SpecialistProgressState {
+  successfulToolCalls: number;
+  sourceUrls: Set<string>;
+  fetchedPageCount: number;
+  draftWordCount: number;
+  citationCount: number;
+  errorSamples: string[];
+}
+
 const SPECIALIST_PLANNER_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -97,7 +114,7 @@ function buildSpecialistPlannerSystemPrompt(options: Pick<SpecialistToolLoopOpti
     {
       label: "ReAct Directives",
       content:
-        "Use iterative reasoning: choose tools, observe output, and replan. Prefer the smallest set of high-yield actions. If objective appears satisfied, return actionType=respond with a concise final answer. For tool actions, always provide valid JSON object input."
+        "Use iterative reasoning: choose tools, observe output, and replan. Prefer the smallest set of high-yield actions. Respect the specialist objective contract you receive in planner input: do not return actionType=respond until required deliverable criteria are satisfied, unless you explicitly report a failure summary with concrete evidence. For tool actions, always provide valid JSON object input."
     }
   ]);
 }
@@ -155,6 +172,137 @@ function buildFallbackAssistantText(skillName: string, observations: Array<{ ite
   }
   const recent = observations.slice(-4).map((item) => `iter ${item.iteration}: ${item.summary}`).join(" | ");
   return `${skillName} stopped by runtime guardrails. Recent observations: ${recent}`;
+}
+
+function buildSpecialistTaskContract(options: Pick<SpecialistToolLoopOptions, "skillName" | "message">): SpecialistTaskContract {
+  const normalized = options.message.toLowerCase();
+  const isResearchSkill = options.skillName === "research_agent";
+  const requiresDraft = isResearchSkill && /\b(blog|post|article|draft|write)\b/.test(normalized);
+  const requiresCitations = isResearchSkill && /\b(cite|citation|sources?)\b/.test(normalized);
+  const minimumCitationCount = requiresCitations ? 2 : 0;
+
+  if (isResearchSkill) {
+    return {
+      requiredDeliverable: requiresDraft
+        ? "Produce a complete research-backed draft response."
+        : "Produce a concise research synthesis response.",
+      requiresDraft,
+      requiresCitations,
+      minimumCitationCount,
+      doneCriteria: [
+        "Gather source evidence from search/fetch outputs.",
+        requiresDraft ? "Return full draft text (not only status)." : "Return synthesized findings.",
+        requiresCitations ? `Include at least ${minimumCitationCount} citation links.` : "Citations preferred when available."
+      ]
+    };
+  }
+
+  return {
+    requiredDeliverable: "Return a complete specialist response for the current objective.",
+    requiresDraft: false,
+    requiresCitations: false,
+    minimumCitationCount: 0,
+    doneCriteria: ["Return a complete response for the delegated objective."]
+  };
+}
+
+function extractUrls(text: string): string[] {
+  const matches = text.match(/https?:\/\/[^\s)]+/gi) ?? [];
+  return Array.from(new Set(matches.map((item) => item.trim())));
+}
+
+function countWords(text: string): number {
+  return text
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+}
+
+function createSpecialistProgressState(): SpecialistProgressState {
+  return {
+    successfulToolCalls: 0,
+    sourceUrls: new Set<string>(),
+    fetchedPageCount: 0,
+    draftWordCount: 0,
+    citationCount: 0,
+    errorSamples: []
+  };
+}
+
+function updateSpecialistProgress(progress: SpecialistProgressState, result: ToolExecutionResult): void {
+  if (result.status === "error") {
+    if (progress.errorSamples.length < 6) {
+      progress.errorSamples.push(`${result.tool}: ${result.error ?? "execution_failed"}`);
+    }
+    return;
+  }
+
+  progress.successfulToolCalls += 1;
+  const payload = result.result ?? {};
+  const payloadText = JSON.stringify(payload);
+  for (const url of extractUrls(payloadText)) {
+    progress.sourceUrls.add(url);
+  }
+
+  if (result.tool === "web_fetch") {
+    const pagesFetched = typeof payload.pagesFetched === "number" ? payload.pagesFetched : 0;
+    progress.fetchedPageCount += Math.max(0, pagesFetched);
+  }
+
+  if (result.tool === "writer_agent") {
+    const content = typeof payload.content === "string" ? payload.content : "";
+    progress.draftWordCount = Math.max(progress.draftWordCount, countWords(content));
+    progress.citationCount = Math.max(progress.citationCount, extractUrls(content).length);
+  }
+
+  if (result.tool === "search" && Array.isArray(payload.topResults)) {
+    for (const item of payload.topResults) {
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+      const url = (item as Record<string, unknown>).url;
+      if (typeof url === "string" && url.trim()) {
+        progress.sourceUrls.add(url.trim());
+      }
+    }
+  }
+}
+
+function evaluateSpecialistContractGate(args: {
+  contract: SpecialistTaskContract;
+  progress: SpecialistProgressState;
+  responseText: string | null;
+}): { satisfied: boolean; unmet: string[] } {
+  const unmet: string[] = [];
+  if (args.contract.requiresDraft) {
+    const responseWords = countWords(args.responseText ?? "");
+    const hasDraft = args.progress.draftWordCount >= 120 || responseWords >= 180;
+    if (!hasDraft) {
+      unmet.push("draft_text_missing");
+    }
+  }
+  if (args.contract.requiresCitations) {
+    const responseCitationCount = extractUrls(args.responseText ?? "").length;
+    const citationCount = Math.max(args.progress.citationCount, responseCitationCount);
+    if (citationCount < args.contract.minimumCitationCount) {
+      unmet.push("citation_evidence_missing");
+    }
+  }
+  return {
+    satisfied: unmet.length === 0,
+    unmet
+  };
+}
+
+function buildResearchFailureSummary(progress: SpecialistProgressState, observations: Array<{ iteration: number; summary: string }>): string {
+  const recent = observations.slice(-4).map((item) => `iter ${item.iteration}: ${item.summary}`).join(" | ");
+  const errors = progress.errorSamples.length > 0 ? progress.errorSamples.join(" | ") : "none";
+  return [
+    "research_agent could not complete the requested draft under current run constraints.",
+    `Evidence gathered: sourceUrls=${progress.sourceUrls.size}, fetchedPages=${progress.fetchedPageCount}, draftWordCount=${progress.draftWordCount}, citations=${progress.citationCount}.`,
+    `Recent errors: ${errors}.`,
+    `Recent observations: ${recent || "none"}.`
+  ].join(" ");
 }
 
 function createToolContext(options: SpecialistToolLoopOptions, deadlineAtMs: number): LeadAgentToolContext {
@@ -237,6 +385,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
   const startMs = Date.now();
   const deadlineAtMs = startMs + options.maxDurationMs;
   const toolContext = createToolContext(options, deadlineAtMs);
+  const taskContract = buildSpecialistTaskContract(options);
+  const progress = createSpecialistProgressState();
   const observations: Array<{ iteration: number; summary: string; outcome?: string }> = [];
   let plannerCallsUsed = 0;
   let toolCallsUsed = 0;
@@ -253,6 +403,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       maxIterations: options.maxIterations,
       maxDurationMs: options.maxDurationMs,
       maxToolCalls: options.maxToolCalls,
+      taskContract,
       availableTools: Array.from(availableTools.values()).map((tool) => ({
         name: tool.name,
         description: tool.description,
@@ -291,6 +442,14 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
               iteration,
               remainingMs: Math.max(0, deadlineAtMs - Date.now()),
               remainingToolCalls: Math.max(0, options.maxToolCalls - toolCallsUsed),
+              taskContract,
+              progress: {
+                successfulToolCalls: progress.successfulToolCalls,
+                sourceUrlCount: progress.sourceUrls.size,
+                fetchedPageCount: progress.fetchedPageCount,
+                draftWordCount: progress.draftWordCount,
+                citationCount: progress.citationCount
+              },
               availableTools: Array.from(availableTools.values()).map((tool) => ({
                 name: tool.name,
                 description: tool.description,
@@ -375,6 +534,36 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     });
 
     if (plan.actionType === "respond") {
+      const contractGate = evaluateSpecialistContractGate({
+        contract: taskContract,
+        progress,
+        responseText: plan.responseText
+      });
+      if (!contractGate.satisfied) {
+        await options.runStore.appendEvent({
+          runId: options.runId,
+          sessionId: options.sessionId,
+          phase: "thought",
+          eventType: "specialist_contract_blocked",
+          payload: {
+            skillName: options.skillName,
+            iteration,
+            unmet: contractGate.unmet,
+            progress: {
+              sourceUrlCount: progress.sourceUrls.size,
+              fetchedPageCount: progress.fetchedPageCount,
+              draftWordCount: progress.draftWordCount,
+              citationCount: progress.citationCount
+            }
+          },
+          timestamp: nowIso()
+        });
+        observations.push({
+          iteration,
+          summary: `contract_blocked:${contractGate.unmet.join(",")}`
+        });
+        continue;
+      }
       return {
         status: "completed",
         assistantText: plan.responseText ?? buildFallbackAssistantText(options.skillName, observations),
@@ -429,6 +618,9 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         };
       })
     );
+    for (const execution of executions) {
+      updateSpecialistProgress(progress, execution);
+    }
 
     toolCallsUsed += executions.length;
     const summary = formatObservationSummary(executions);
@@ -461,7 +653,15 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     });
   }
 
-  const assistantText = buildFallbackAssistantText(options.skillName, observations);
+  const unmetContract = evaluateSpecialistContractGate({
+    contract: taskContract,
+    progress,
+    responseText: null
+  });
+  const assistantText =
+    options.skillName === "research_agent" && !unmetContract.satisfied
+      ? buildResearchFailureSummary(progress, observations)
+      : buildFallbackAssistantText(options.skillName, observations);
   await options.runStore.appendEvent({
     runId: options.runId,
     sessionId: options.sessionId,
@@ -471,7 +671,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       skillName: options.skillName,
       reason: "budget_or_iteration_guardrail",
       plannerCallsUsed,
-      toolCallsUsed
+      toolCallsUsed,
+      unmetContract: unmetContract.unmet
     },
     timestamp: nowIso()
   });

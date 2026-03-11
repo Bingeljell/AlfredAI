@@ -66,3 +66,65 @@ test("runSpecialistToolLoop exits with policy block when planner auth fails", as
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
   assert.ok(events.some((event) => event.eventType === "specialist_planner_failed"));
 });
+
+test("runSpecialistToolLoop enforces research contract before allowing respond", async () => {
+  const workspace = await createTempWorkspace("specialist-contract-gate");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun(
+    "session-1",
+    "Research AI news and draft a cited blog post",
+    "running"
+  );
+
+  const outcome = await runSpecialistToolLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as never,
+    workspaceDir: workspace,
+    message: "Research AI news and draft a cited blog post",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in this test");
+    },
+    maxIterations: 1,
+    maxDurationMs: 60_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    skillName: "research_agent",
+    skillDescription: "Research skill",
+    skillSystemPrompt: "Do research",
+    toolAllowlist: ["search", "run_diagnostics"],
+    structuredChatRunner: async <T>() =>
+      ({
+        result: {
+          thought: "I can answer now.",
+          actionType: "respond",
+          singleTool: null,
+          singleInputJson: null,
+          parallelActions: null,
+          responseText: "Here is a short summary."
+        }
+      }) as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.match(outcome.assistantText ?? "", /could not complete the requested draft/i);
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(events.some((event) => event.eventType === "specialist_contract_blocked"));
+});

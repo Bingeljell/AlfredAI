@@ -303,8 +303,8 @@ test("runAlfredOrchestratorLoop records delegation telemetry and passes scratchp
   assert.equal((delegatedEvent?.payload as { leadExecutionBrief?: { requestedLeadCount?: number } } | undefined)?.leadExecutionBrief?.requestedLeadCount, 3);
 });
 
-test("runAlfredOrchestratorLoop avoids clarification-only first response for executable lead request", async () => {
-  const workspace = await createTempWorkspace("alfred-orchestrator-clarification-guardrail");
+test("runAlfredOrchestratorLoop respects planner choice without forcing delegation", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-planner-choice");
   const runStore = new RunStore(workspace);
   const run = await runStore.createRun("session-1", "Find 12 leads", "running");
 
@@ -340,7 +340,7 @@ test("runAlfredOrchestratorLoop avoids clarification-only first response for exe
     if (options.schemaName === "alfred_orchestrator_plan") {
       return {
         result: {
-          thought: "Need clarifications first.",
+          thought: "Need clarifications first before execution.",
           actionType: "respond" as const,
           delegateAgent: null,
           delegateBrief: null,
@@ -352,22 +352,6 @@ test("runAlfredOrchestratorLoop avoids clarification-only first response for exe
           promptTokens: 60,
           completionTokens: 20,
           totalTokens: 80
-        }
-      } as StructuredChatDiagnostic<T>;
-    }
-    if (options.schemaName === "alfred_completion_evaluation") {
-      return {
-        result: {
-          thought: "Delegated output is enough.",
-          shouldRespond: true,
-          responseText: "Executed.",
-          continueReason: null,
-          confidence: 0.8
-        },
-        usage: {
-          promptTokens: 30,
-          completionTokens: 10,
-          totalTokens: 40
         }
       } as StructuredChatDiagnostic<T>;
     }
@@ -415,10 +399,84 @@ test("runAlfredOrchestratorLoop avoids clarification-only first response for exe
   });
 
   assert.equal(outcome.status, "completed");
-  assert.equal(delegated, true);
+  assert.equal(delegated, false);
+  assert.equal(outcome.assistantText, "Please clarify exclusions.");
   const updatedRun = await runStore.getRun(run.runId);
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
-  assert.ok(events.some((event) => event.eventType === "alfred_plan_adjusted"));
+  assert.ok(!events.some((event) => event.eventType === "alfred_plan_adjusted"));
+});
+
+test("runAlfredOrchestratorLoop exposes full runtime catalogs to planner", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-catalogs");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "Plan available capabilities for this turn and respond.", "running");
+
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string; messages?: Array<{ role: string; content: string }> }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      const plannerInput = JSON.parse(options.messages?.[1]?.content ?? "{}") as {
+        availableTools?: Array<{ name?: string }>;
+        availableAgents?: Array<{ name?: string }>;
+      };
+      const toolNames = new Set((plannerInput.availableTools ?? []).map((tool) => tool.name));
+      const agentNames = new Set((plannerInput.availableAgents ?? []).map((agent) => agent.name));
+      assert.ok(toolNames.has("lead_pipeline"));
+      assert.ok(toolNames.has("shell_exec"));
+      assert.ok(toolNames.has("file_read"));
+      assert.ok(agentNames.has("lead_agent"));
+      assert.ok(agentNames.has("research_agent"));
+      assert.ok(agentNames.has("ops_agent"));
+      return {
+        result: {
+          thought: "Catalogs are available; respond directly.",
+          actionType: "respond" as const,
+          delegateAgent: null,
+          delegateBrief: null,
+          toolName: null,
+          toolInputJson: null,
+          responseText: "Catalogs verified."
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message: "Plan available capabilities for this turn and respond.",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in catalog test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 30_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.equal(outcome.assistantText, "Catalogs verified.");
 });
 
 test("runAlfredOrchestratorLoop respects plan-only execution permission and does not execute", async () => {

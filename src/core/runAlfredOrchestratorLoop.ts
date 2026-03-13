@@ -9,8 +9,7 @@ import type { LeadAgentRuntimeOptions } from "./runLeadAgenticLoop.js";
 import { runAgentLoop } from "./runAgentLoop.js";
 import { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
 import type { LeadAgentDefaults, LeadAgentState, LeadAgentToolContext } from "../agent/types.js";
-import { applyToolAllowlist, discoverLeadAgentTools } from "../agent/tools/registry.js";
-import { resolveLeadAgentToolAllowlist } from "../agent/toolPolicies.js";
+import { discoverLeadAgentTools } from "../agent/tools/registry.js";
 import { redactValue } from "../utils/redact.js";
 import { listAgentSkills } from "../agent/skills/registry.js";
 import { LeadExecutionBriefSchema, type LeadExecutionBrief } from "../tools/lead/schemas.js";
@@ -390,7 +389,7 @@ function buildAlfredPlannerSystemPrompt(sessionContext?: SessionPromptContext): 
     {
       label: "Directives",
       content:
-        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. Delegate by objective: use lead_agent for lead generation/enrichment, research_agent for web research + drafting/synthesis tasks, and ops_agent for local file/process/shell tasks. Use call_tool for lightweight diagnostics or when a single direct tool action is clearly highest-value. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. Respect execution permission: if `executionPermission` is `plan_only`, return `actionType=respond` with plan guidance and no execution. After receiving specialist output, evaluate against the turn objective and either respond or re-delegate with a refined brief. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
+        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. You have two capability catalogs at runtime: `availableTools` and `availableAgents`. Choose strategy dynamically from the user ask and current evidence. You may execute directly with tools, delegate to a specialist agent, or respond if complete. Prefer direct execution when a small number of tool actions can likely complete the task; delegate when specialist iterative loops are likely higher-yield. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. Respect execution permission: if `executionPermission` is `plan_only`, return `actionType=respond` with plan guidance and no execution. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
     },
     {
       label: "Session Context",
@@ -979,17 +978,18 @@ function evaluateCompletionContractGate(args: {
 export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptions): Promise<RunOutcome> {
   const startMs = Date.now();
   const deadlineAtMs = startMs + options.maxDurationMs;
-  const leadAgentAllowlist = resolveLeadAgentToolAllowlist();
   const discoveredTools = await discoverLeadAgentTools();
-  const availableTools = applyToolAllowlist(discoveredTools, leadAgentAllowlist);
+  const availableTools = discoveredTools;
   const availableToolSpecs = Array.from(availableTools.values()).map((tool) => ({
     name: tool.name,
     description: tool.description,
-    inputHint: tool.inputHint
+    inputHint: tool.inputHint,
+    requiresApproval: tool.requiresApproval === true
   }));
   const availableAgents = listAgentSkills().map((skill) => ({
     name: skill.name,
-    description: skill.description
+    description: skill.description,
+    toolAllowlist: skill.toolAllowlist ?? []
   }));
 
   const alfredState: LeadAgentState = {
@@ -1313,37 +1313,6 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     consecutivePlannerFailures = 0;
 
     let plan = plannerDiagnostic.result;
-    const earlyClarificationGuardrailTriggered =
-      iteration === 1 &&
-      observations.length === 0 &&
-      plan.actionType === "respond" &&
-      executionPermission === "execute" &&
-      looksLikeExecutableLeadRequest(options.message);
-    if (earlyClarificationGuardrailTriggered) {
-      plan = {
-        ...plan,
-        thought: `${plan.thought} (adjusted: executable lead request should run before asking optional clarifications)`,
-        actionType: "delegate_agent",
-        delegateAgent: "lead_agent",
-        delegateBrief: options.message,
-        toolName: null,
-        toolInputJson: null,
-        responseText: null
-      };
-      await options.runStore.appendEvent({
-        runId: options.runId,
-        sessionId: options.sessionId,
-        phase: "thought",
-        eventType: "alfred_plan_adjusted",
-        payload: {
-          iteration,
-          reason: "avoid_early_clarification_only_response",
-          originalActionType: plannerDiagnostic.result.actionType,
-          adjustedActionType: plan.actionType
-        },
-        timestamp: nowIso()
-      });
-    }
     const planOnlyGuardrailTriggered = executionPermission === "plan_only" && plan.actionType !== "respond";
     if (planOnlyGuardrailTriggered) {
       plan = {
@@ -1431,7 +1400,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         ? await buildLeadExecutionBrief({
             apiKey: options.openAiApiKey,
             structuredChatRunner,
-            message: options.message,
+            message: delegatedMessage,
             sessionContext: options.sessionContext
           })
         : undefined;
@@ -1451,6 +1420,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         payload: {
           iteration,
           delegationId,
+          skill: agentName,
           agentName,
           brief: delegatedMessage,
           leadExecutionBrief,
@@ -1469,24 +1439,10 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         assistantText: (leadOutcome.assistantText ?? "").slice(0, 400),
         artifactPaths: leadOutcome.artifactPaths ?? []
       };
-      await options.runStore.appendEvent({
-        runId: options.runId,
-        sessionId: options.sessionId,
-        phase: "observe",
-        eventType: "agent_delegation_result",
-        payload: {
-          iteration,
-          delegationId,
-          agentName,
-          status: leadOutcome.status,
-          artifactCount: leadOutcome.artifactPaths?.length ?? 0,
-          scratchpadKeys: Object.keys(scratchpad).sort()
-        },
-        timestamp: nowIso()
-      });
-
       const runRecord = await options.runStore.getRun(options.runId);
       latestRunRecord = runRecord ?? latestRunRecord;
+      const runEvents = runRecord ? await options.runStore.listRunEvents(runRecord) : [];
+      const stopReason = getAgentStopReason(runEvents);
       const recentToolCalls = runRecord?.toolCalls.slice(-6) ?? [];
       toolCallsUsed = runRecord?.toolCalls.length ?? toolCallsUsed;
       if (leadOutcome.artifactPaths?.length) {
@@ -1499,6 +1455,25 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           addArtifact(artifact);
         }
       }
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "observe",
+        eventType: "agent_delegation_result",
+        payload: {
+          iteration,
+          delegationId,
+          skill: agentName,
+          agentName,
+          status: leadOutcome.status,
+          assistantText: (leadOutcome.assistantText ?? "").slice(0, 500),
+          artifactCount: leadOutcome.artifactPaths?.length ?? 0,
+          artifactPaths: leadOutcome.artifactPaths ?? [],
+          stopReason,
+          scratchpadKeys: Object.keys(scratchpad).sort()
+        },
+        timestamp: nowIso()
+      });
 
       lastDelegationSummary = [
         `status=${leadOutcome.status}`,
@@ -1534,7 +1509,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
 
       observations.push({
         iteration,
-        summary: `delegate_lead_agent`,
+        summary: `delegate_${agentName}`,
         outcome: lastDelegationSummary.slice(0, 500)
       });
 
@@ -1651,7 +1626,34 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         });
         continue;
       }
-      const input = parseToolInputJson(plan.toolInputJson);
+      if (tool.requiresApproval === true) {
+        lastAction = {
+          iteration,
+          actionType: "call_tool",
+          name: toolName,
+          status: "failed",
+          summary: "tool_requires_approval"
+        };
+        observations.push({
+          iteration,
+          summary: `tool_requires_approval:${toolName}`,
+          outcome: "tool requires explicit approval"
+        });
+        await options.runStore.appendEvent({
+          runId: options.runId,
+          sessionId: options.sessionId,
+          phase: "observe",
+          eventType: "alfred_tool_requires_approval",
+          payload: {
+            iteration,
+            toolName
+          },
+          timestamp: nowIso()
+        });
+        continue;
+      }
+
+      const input = parseToolInputJson(plan.toolInputJson ?? "{}");
       if (!input) {
         lastAction = {
           iteration,

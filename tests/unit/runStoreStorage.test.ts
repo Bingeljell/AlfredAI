@@ -55,6 +55,7 @@ test("RunStore replayLifecycle reconstructs turn lifecycle events", async () => 
   const storage = new InMemoryRunStorage();
   const runStore = new RunStore("/tmp/unused", storage);
   const run = await runStore.createRun("session-1", "hello", "running");
+  const runDay = run.createdAt.slice(0, 10);
 
   await runStore.appendEvent({
     runId: run.runId,
@@ -62,7 +63,7 @@ test("RunStore replayLifecycle reconstructs turn lifecycle events", async () => 
     phase: "session",
     eventType: "TurnStarted",
     payload: { op: "UserInput" },
-    timestamp: "2026-03-11T10:00:00.000Z"
+    timestamp: `${runDay}T10:00:00.000Z`
   });
   await runStore.appendEvent({
     runId: run.runId,
@@ -70,7 +71,7 @@ test("RunStore replayLifecycle reconstructs turn lifecycle events", async () => 
     phase: "session",
     eventType: "TurnProgress",
     payload: { state: "running" },
-    timestamp: "2026-03-11T10:00:01.000Z"
+    timestamp: `${runDay}T10:00:01.000Z`
   });
   await runStore.appendEvent({
     runId: run.runId,
@@ -78,11 +79,11 @@ test("RunStore replayLifecycle reconstructs turn lifecycle events", async () => 
     phase: "session",
     eventType: "TurnComplete",
     payload: { status: "completed" },
-    timestamp: "2026-03-11T10:00:02.000Z"
+    timestamp: `${runDay}T10:00:02.000Z`
   });
 
   const replay = await runStore.replayLifecycle(run.runId);
-  assert.equal(replay.startedAt, "2026-03-11T10:00:00.000Z");
+  assert.equal(replay.startedAt, `${runDay}T10:00:00.000Z`);
   assert.equal(replay.terminalEventType, "TurnComplete");
   assert.equal(replay.progressCount, 1);
   assert.equal(replay.lifecycleEvents.length, 3);

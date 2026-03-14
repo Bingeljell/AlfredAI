@@ -177,7 +177,7 @@ test("runSpecialistToolLoop enforces research contract before allowing respond",
   });
 
   assert.equal(outcome.status, "completed");
-  assert.match(outcome.assistantText ?? "", /could not complete the requested draft/i);
+  assert.match(outcome.assistantText ?? "", /couldn't finish a publish-ready draft/i);
 
   const updatedRun = await runStore.getRun(run.runId);
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];

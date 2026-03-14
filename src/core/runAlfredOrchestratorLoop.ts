@@ -861,6 +861,37 @@ function inferLeadFactsFromRunRecord(runRecord: RunRecord | undefined): { collec
   return { collectedLeadCount, collectedEmailCount };
 }
 
+function summarizeRecentToolCalls(toolCalls: RunRecord["toolCalls"]): string {
+  if (!toolCalls.length) {
+    return "no recent tool calls";
+  }
+  return toolCalls
+    .slice(-4)
+    .map((call) => `${call.toolName}:${call.status}`)
+    .join(", ");
+}
+
+function summarizeToolOutput(toolName: string, output: unknown): string {
+  if (toolName === "writer_agent" && output && typeof output === "object") {
+    const payload = output as Record<string, unknown>;
+    const wordCount = typeof payload.wordCount === "number" ? payload.wordCount : 0;
+    const quality = typeof payload.draftQuality === "string" ? payload.draftQuality : "unknown";
+    const path = typeof payload.outputPath === "string" ? payload.outputPath : null;
+    if (path) {
+      return `writer_agent produced a ${quality} draft (${wordCount} words) at ${path}`;
+    }
+    return `writer_agent returned a ${quality} draft (${wordCount} words)`;
+  }
+  if (toolName === "file_write" && output && typeof output === "object") {
+    const payload = output as Record<string, unknown>;
+    const outputPath = typeof payload.outputPath === "string" ? payload.outputPath : null;
+    if (outputPath) {
+      return `file_write saved output to ${outputPath}`;
+    }
+  }
+  return `${toolName} completed`;
+}
+
 function buildAlfredTurnState(args: {
   message: string;
   objectiveContract: AlfredObjectiveContract;
@@ -1673,11 +1704,19 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         timestamp: nowIso()
       });
 
+      const delegatedFacts = inferLeadFactsFromRunRecord(runRecord ?? undefined);
+      const artifactsSeen = leadOutcome.artifactPaths?.length ?? runRecord?.artifactPaths?.length ?? 0;
       lastDelegationSummary = [
-        `status=${leadOutcome.status}`,
-        `assistantText=${(leadOutcome.assistantText ?? "").slice(0, 400)}`,
-        `recentTools=${recentToolCalls.map((call) => `${call.toolName}:${call.status}`).join(", ")}`
-      ].join(" | ");
+        `${agentName} status: ${leadOutcome.status}.`,
+        delegatedFacts.collectedLeadCount > 0
+          ? `Leads found: ${delegatedFacts.collectedLeadCount}.`
+          : "No completed lead records yet.",
+        delegatedFacts.collectedEmailCount > 0
+          ? `Emails found: ${delegatedFacts.collectedEmailCount}.`
+          : "Email coverage is still low.",
+        artifactsSeen > 0 ? `Artifacts available: ${artifactsSeen}.` : "No artifacts were produced.",
+        `Recent tools: ${summarizeRecentToolCalls(recentToolCalls)}.`
+      ].join(" ");
       lastSuccessfulActionSummary = lastDelegationSummary;
       const delegationEvidence = recentToolCalls.map((call) => ({
         toolName: call.toolName,
@@ -1905,7 +1944,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           summary: `tool:${toolName}:ok`,
           outcome: JSON.stringify(output).slice(0, 260)
         });
-        lastSuccessfulActionSummary = `tool:${toolName}: ${JSON.stringify(output).slice(0, 480)}`;
+        lastSuccessfulActionSummary = summarizeToolOutput(toolName, output);
         lastAction = {
           iteration,
           actionType: "call_tool",
@@ -2036,10 +2075,10 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   }
 
   const fallbackText = lastSuccessfulActionSummary
-    ? `Alfred orchestration stopped by budget guardrails. Latest successful action: ${lastSuccessfulActionSummary}`
+    ? `I hit budget/iteration guardrails before fully completing this request. Last meaningful progress: ${lastSuccessfulActionSummary}`
     : lastDelegationSummary !== "No delegation attempted yet."
-      ? `Alfred orchestration stopped by budget guardrails. Latest specialist result: ${lastDelegationSummary}`
-      : "Alfred orchestration stopped by budget guardrails before producing a conclusive result.";
+      ? `I stopped due to budget/iteration guardrails. Latest specialist result: ${lastDelegationSummary}`
+      : "I stopped due to budget/iteration guardrails before producing a conclusive result.";
   return {
     status: "completed",
     assistantText: fallbackText,

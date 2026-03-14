@@ -32,6 +32,9 @@
   - `ALFRED_ENV=dev|prod` policy behavior wired through approval decision logic.
 - **Phase 7**: In progress
   - Core tests added (unit/integration/smoke/security).
+  - Writer/research reliability pass: `writer_agent` now retries once with a compact prompt after structured-call failures, emits `draftQuality` metadata, and avoids writing placeholder instruction-dump drafts to target artifact paths when transient model/network failures occur.
+  - Specialist synthesis progress now ignores placeholder writer fallbacks, reducing false "draft complete" signals that previously sent research loops back into wasteful rediscovery passes.
+  - Search manager now performs a lightweight primary probe when SearXNG healthcheck flaps, allowing Alfred to continue using primary search when it is still serving real results instead of prematurely defaulting to fallback providers.
   - Orchestrator contract pass completed: Alfred now enforces per-turn execution permission (`execute` vs `plan_only`), routes run-id failure-analysis prompts to diagnostic mode more reliably, carries delegated tool evidence into completion evaluation, and specialist loops now return structured last-result summaries with a repeated-no-change success guard to avoid long status-only thrash.
   - Added standalone `web_fetch` and `email_enrich` tools so retrieval and contact enrichment can be executed independently of the monolithic `lead_pipeline` path.
   - Runtime separation is now active: `runReActLoop` enters an Alfred master-orchestrator loop that can delegate to `LeadGenAgent`, evaluate specialist outcomes against the current turn objective, and re-delegate under the same run budget/safety guardrails.

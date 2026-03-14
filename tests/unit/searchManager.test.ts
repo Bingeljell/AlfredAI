@@ -202,8 +202,25 @@ test("search manager uses grace window after recent healthy state", async () => 
   assert.equal(second.provider, "searxng");
 });
 
+test("search manager probes primary search even when healthcheck fails", async () => {
+  const manager = new SearchManager({
+    primary: new FakeProvider("searxng", false, 3),
+    fallback: new FakeProvider("brave", true, 2),
+    maxResults: 15,
+    startupTimeoutMs: 1,
+    retryIntervalMs: 1,
+    primaryHealthRetries: 0,
+    primaryHealthGraceMs: 0
+  });
+
+  const output = await manager.search("probe primary");
+  assert.equal(output.provider, "searxng");
+  assert.equal(output.fallbackUsed, false);
+  assert.equal(output.results.length, 3);
+});
+
 test("search manager emits stage diagnostics when primary is unavailable without fallback", async () => {
-  const primary = new StatefulHealthProvider(1);
+  const primary = new StatefulHealthProvider(0);
   primary.setHealthy(false);
   const manager = new SearchManager({
     primary,

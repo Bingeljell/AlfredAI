@@ -96,6 +96,7 @@ export class SearchManager {
   private readonly primaryHealthRetryDelayMs: number;
   private readonly primaryHealthGraceMs: number;
   private lastPrimaryHealthyAtMs?: number;
+  private lastPrimaryProbeAtMs?: number;
   private lastPrimaryFailure?: SearchFailureDiagnostic;
   private lastPrimaryRecovery?: PrimaryRecoveryResult;
   private consecutivePrimaryFailures = 0;
@@ -135,6 +136,44 @@ export class SearchManager {
       return false;
     }
     return Date.now() - this.lastPrimaryHealthyAtMs <= this.primaryHealthGraceMs;
+  }
+
+  private shouldProbePrimaryAfterHealthFailure(): boolean {
+    const probeIntervalMs = Math.max(this.primaryHealthRetryDelayMs * 4, 4_000);
+    if (!this.lastPrimaryProbeAtMs) {
+      return true;
+    }
+    return Date.now() - this.lastPrimaryProbeAtMs >= probeIntervalMs;
+  }
+
+  private async tryPrimarySearchProbe(query: string, maxResults: number): Promise<SearchResponse | null> {
+    this.lastPrimaryProbeAtMs = Date.now();
+    try {
+      const probedResults = await this.primary.search(query, maxResults);
+      if (probedResults.length > 0) {
+        this.recordPrimaryHealthy();
+        return {
+          provider: this.primary.name,
+          fallbackUsed: false,
+          results: probedResults
+        };
+      }
+      this.recordPrimaryFailure({
+        stage: "primary_search",
+        reason: "primary_probe_returned_no_results",
+        query,
+        transient: true
+      });
+      return null;
+    } catch (error) {
+      this.recordPrimaryFailure({
+        stage: "primary_search",
+        reason: `primary_probe_failed:${error instanceof Error ? error.message : "unknown_error"}`,
+        query,
+        transient: true
+      });
+      return null;
+    }
   }
 
   private async checkPrimaryHealthWithRetry(): Promise<boolean> {
@@ -373,6 +412,11 @@ export class SearchManager {
             }
           );
         }
+      }
+    } else if (this.shouldProbePrimaryAfterHealthFailure()) {
+      const probed = await this.tryPrimarySearchProbe(query, cappedMax);
+      if (probed) {
+        return probed;
       }
     }
 

@@ -734,8 +734,21 @@ function updateSpecialistProgress(progress: SpecialistProgressState, result: Too
 
   if (result.tool === "writer_agent") {
     const content = typeof payload.content === "string" ? payload.content : "";
-    progress.draftWordCount = Math.max(progress.draftWordCount, countWords(content));
-    progress.citationCount = Math.max(progress.citationCount, extractUrls(content).length);
+    const draftQuality = typeof payload.draftQuality === "string" ? payload.draftQuality : undefined;
+    const fallbackUsed = payload.fallbackUsed === true;
+    const shouldCountDraftProgress = draftQuality === "complete" || (!draftQuality && !fallbackUsed);
+    if (shouldCountDraftProgress) {
+      progress.draftWordCount = Math.max(progress.draftWordCount, countWords(content));
+      progress.citationCount = Math.max(progress.citationCount, extractUrls(content).length);
+    } else {
+      const failureMessage = typeof payload.failureMessage === "string" ? payload.failureMessage : "";
+      const fallbackReason = typeof payload.fallbackReason === "string" ? payload.fallbackReason : "writer_fallback";
+      if (progress.errorSamples.length < 6) {
+        progress.errorSamples.push(
+          `writer_agent: ${truncateForPrompt(failureMessage || fallbackReason, 140)}`
+        );
+      }
+    }
   }
 
   if (result.tool === "search" && Array.isArray(payload.topResults)) {
@@ -850,10 +863,10 @@ function buildResearchFailureSummary(progress: SpecialistProgressState, observat
   const recent = observations.slice(-4).map((item) => `iter ${item.iteration}: ${item.summary}`).join(" | ");
   const errors = progress.errorSamples.length > 0 ? progress.errorSamples.join(" | ") : "none";
   return [
-    "research_agent could not complete the requested draft under current run constraints.",
-    `Evidence gathered: sourceUrls=${progress.sourceUrls.size}, fetchedPages=${progress.fetchedPageCount}, draftWordCount=${progress.draftWordCount}, citations=${progress.citationCount}.`,
-    `Recent errors: ${errors}.`,
-    `Recent observations: ${recent || "none"}.`
+    "I couldn't finish a publish-ready draft within this run budget.",
+    `Progress so far: ${progress.sourceUrls.size} sources discovered, ${progress.fetchedPageCount} pages fetched, ${progress.draftWordCount} draft words, ${progress.citationCount} citations.`,
+    `Most recent blockers: ${errors}.`,
+    `Recent loop notes: ${recent || "none"}.`
   ].join(" ");
 }
 

@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { LlmUsage } from "../../../types.js";
-import { runOpenAiStructuredChatWithDiagnostics } from "../../../services/openAiClient.js";
+import { runOpenAiChat, runOpenAiStructuredChatWithDiagnostics } from "../../../services/openAiClient.js";
 import type { LeadAgentToolDefinition } from "../../types.js";
 import { resolvePathInProject, toProjectRelative } from "../helpers/pathSafety.js";
 import type { ResearchSourceCard } from "../../types.js";
@@ -57,7 +57,32 @@ function clipWords(text: string, maxWords: number): string {
   return `${parts.slice(0, maxWords).join(" ").trim()}`;
 }
 
+function clipText(text: string, maxChars: number): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxChars - 1).trim()}…`;
+}
+
+function deriveTitle(instruction: string): string {
+  const trimmed = instruction.replace(/\s+/g, " ").trim();
+  if (!trimmed) {
+    return "Draft";
+  }
+  return clipText(trimmed, 80);
+}
+
+function sourceCardBullets(cards: ResearchSourceCard[], max = 8): string[] {
+  return cards.slice(0, max).map((card, index) => {
+    const title = card.title ? clipText(card.title, 70) : "Untitled source";
+    const claim = card.claim ? ` | key point: ${clipText(card.claim, 120)}` : "";
+    return `[${index + 1}] ${title} | ${card.url}${claim}`;
+  });
+}
+
 function buildFallbackDraft(args: {
+  reason: string;
   instruction: string;
   format: string;
   audience: string;
@@ -66,37 +91,86 @@ function buildFallbackDraft(args: {
   contextSnippets: string[];
   sourceCards: ResearchSourceCard[];
 }): { title: string; content: string; summary: string; nextSteps: string[] } {
-  const heading = `Draft: ${args.instruction.slice(0, 70)}`;
+  const heading = `Draft unavailable: ${deriveTitle(args.instruction)}`;
+  const sourceLines = sourceCardBullets(args.sourceCards);
   const contextBlock =
     args.contextSnippets.length > 0
-      ? `\n\nContext highlights:\n${args.contextSnippets.map((item) => `- ${item}`).join("\n")}`
+      ? `\n\nContext highlights:\n${args.contextSnippets.slice(0, 4).map((item) => `- ${clipText(item, 180)}`).join("\n")}`
       : "";
   const sourceBlock =
-    args.sourceCards.length > 0
-      ? `\n\nSource cards:\n${args.sourceCards
-          .slice(0, 10)
-          .map((card) => `- ${card.date ?? "date unknown"} | ${card.title ?? "Untitled"} | ${card.url}\n  Claim: ${card.claim}`)
-          .join("\n")}`
+    sourceLines.length > 0
+      ? `\n\nAvailable sources:\n${sourceLines.map((line) => `- ${line}`).join("\n")}`
       : "";
   const content = clipWords(
     [
-      `Format: ${args.format}`,
-      `Audience: ${args.audience}`,
-      `Tone: ${args.tone}`,
+      "Full draft generation did not complete in this run.",
+      `Reason: ${args.reason}.`,
+      `Requested format: ${args.format}; tone: ${args.tone}; audience: ${args.audience}.`,
       "",
-      `Objective: ${args.instruction}`,
-      "",
-      "Draft:",
-      `This is a structured first draft prepared without model generation because no API key was available.${contextBlock}${sourceBlock}`,
-      "Expand this draft by refining claims, adding evidence, and tightening the call-to-action."
+      "What to do next:",
+      "1. Retry writer_agent to generate the full draft.",
+      "2. Add more accessible sources if paywalls/blocks are limiting content.",
+      contextBlock,
+      sourceBlock
     ].join("\n"),
-    args.maxWords
+    Math.min(args.maxWords, 220)
   );
   return {
     title: heading,
     content,
-    summary: "Fallback draft generated without model output.",
+    summary: "Draft generation deferred due to model/network failure.",
     nextSteps: ["Review factual accuracy", "Refine messaging and tone", "Publish or share after edits"]
+  };
+}
+
+async function runCompactRetryDraft(args: {
+  apiKey: string;
+  instruction: string;
+  format: string;
+  audience: string;
+  tone: string;
+  maxWords: number;
+  sourceCards: ResearchSourceCard[];
+  contextSnippets: string[];
+}): Promise<{ title: string; content: string; summary: string; nextSteps: string[] } | null> {
+  const sourceLines = sourceCardBullets(args.sourceCards, 8);
+  const contextLines = args.contextSnippets.slice(0, 4).map((item) => `- ${clipText(item, 180)}`);
+  const userPrompt = [
+    `Write a complete ${args.format} draft now.`,
+    `Instruction: ${args.instruction}`,
+    `Tone: ${args.tone}`,
+    `Audience: ${args.audience}`,
+    `Word limit: ${args.maxWords}`,
+    "Use plain text only (no JSON).",
+    "If evidence is weak, state uncertainty instead of inventing facts.",
+    sourceLines.length > 0 ? `Sources:\n${sourceLines.map((line) => `- ${line}`).join("\n")}` : "Sources: none",
+    contextLines.length > 0 ? `Context:\n${contextLines.join("\n")}` : "Context: none"
+  ].join("\n\n");
+  const retryResponse = await runOpenAiChat({
+    apiKey: args.apiKey,
+    messages: [
+      {
+        role: "system",
+        content: "You are a concise writing assistant. Produce only the requested draft text with concrete structure."
+      },
+      {
+        role: "user",
+        content: userPrompt
+      }
+    ]
+  });
+  if (!retryResponse) {
+    return null;
+  }
+  const content = clipWords(retryResponse, args.maxWords);
+  if (countWords(content) < 120) {
+    return null;
+  }
+  return {
+    title: `Draft: ${deriveTitle(args.instruction)}`,
+    content,
+    summary: "Draft generated via compact retry path after primary structured call failed.",
+    nextSteps: ["Verify factual claims against cited sources", "Adjust style for final publication", "Publish or share"]
   };
 }
 
@@ -142,6 +216,7 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
     const sourceCards = (context.getResearchSourceCards?.() ?? context.state.researchSourceCards ?? []).slice(-20);
 
     let draft = buildFallbackDraft({
+      reason: "OpenAI API key is missing",
       instruction: input.instruction,
       format,
       audience,
@@ -153,6 +228,8 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
     let fallbackUsed = true;
     let fallbackReason = "missing_api_key";
     let failureMessage: string | null = null;
+    let draftQuality: "complete" | "placeholder" = "placeholder";
+    let compactRetryUsed = false;
 
     if (context.openAiApiKey) {
       const diagnostic = await runOpenAiStructuredChatWithDiagnostics(
@@ -191,15 +268,47 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
         };
         fallbackUsed = false;
         fallbackReason = "none";
+        draftQuality = "complete";
       } else {
         fallbackUsed = true;
         fallbackReason = diagnostic.failureCode ?? "llm_failure";
         failureMessage = diagnostic.failureMessage ?? null;
+        const compactRetryDraft = await runCompactRetryDraft({
+          apiKey: context.openAiApiKey,
+          instruction: input.instruction,
+          format,
+          audience,
+          tone,
+          maxWords,
+          sourceCards,
+          contextSnippets
+        });
+        compactRetryUsed = true;
+        if (compactRetryDraft) {
+          draft = compactRetryDraft;
+          failureMessage = null;
+          fallbackReason = `${fallbackReason}_compact_retry_recovered`;
+          draftQuality = "complete";
+        } else {
+          draft = buildFallbackDraft({
+            reason: diagnostic.failureMessage ?? diagnostic.failureCode ?? "structured model call failed",
+            instruction: input.instruction,
+            format,
+            audience,
+            tone,
+            maxWords,
+            contextSnippets,
+            sourceCards
+          });
+        }
       }
+    } else {
+      draftQuality = "placeholder";
     }
 
     let writtenPath: string | null = null;
-    if (input.outputPath) {
+    const allowPlaceholderWrite = !context.openAiApiKey;
+    if (input.outputPath && (draftQuality === "complete" || allowPlaceholderWrite)) {
       const absoluteOutput = resolvePathInProject(context.projectRoot, input.outputPath);
       await mkdir(path.dirname(absoluteOutput), { recursive: true });
       const shouldOverwrite = input.overwrite !== false;
@@ -231,6 +340,8 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
       fallbackUsed,
       fallbackReason,
       failureMessage,
+      draftQuality,
+      compactRetryUsed,
       outputPath: writtenPath
     };
   }

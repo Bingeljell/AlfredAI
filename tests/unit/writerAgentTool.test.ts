@@ -70,7 +70,7 @@ test("writer_agent creates fallback draft and writes output file", async () => {
   assert.ok((output.wordCount as number) > 0);
 
   const written = await readFile(path.join(workspace, "artifacts/draft.md"), "utf8");
-  assert.match(written, /Draft:/);
+  assert.match(written, /Draft unavailable:/);
 });
 
 test("writer_agent respects overwrite=false and errors on existing file", async () => {
@@ -120,6 +120,7 @@ test("writer_agent fallback includes source-card context and reports sourceCardC
   );
 
   assert.equal(output.fallbackUsed, true);
+  assert.equal(output.draftQuality, "placeholder");
   assert.equal(output.sourceCardCount, 1);
   assert.match(String(output.content), /https:\/\/example.com\/news\/ai-policy/);
 });

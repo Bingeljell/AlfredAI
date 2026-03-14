@@ -4,7 +4,7 @@ import * as openAiClient from "../services/openAiClient.js";
 import { composeSystemPrompt } from "../prompts/composePrompt.js";
 import { ALFRED_MASTER_PROMPT_VERSION, ALFRED_MASTER_SYSTEM_PROMPT } from "../prompts/master/alfred.system.js";
 import type { AgentSkillRunOptions } from "../agent/skills/types.js";
-import type { LeadAgentState, LeadAgentToolContext } from "../agent/types.js";
+import type { LeadAgentState, LeadAgentToolContext, ResearchSourceCard } from "../agent/types.js";
 import {
   applyToolAllowlist,
   discoverLeadAgentTools,
@@ -580,6 +580,134 @@ function createSpecialistProgressState(): SpecialistProgressState {
   };
 }
 
+function normalizeSourceDate(value: string): string | null {
+  const isoMatch = value.match(/\b(20\d{2})[-/](\d{2})[-/](\d{2})\b/);
+  if (!isoMatch) {
+    return null;
+  }
+  const year = isoMatch[1];
+  const month = isoMatch[2];
+  const day = isoMatch[3];
+  return `${year}-${month}-${day}`;
+}
+
+function toSourceClaim(value: string, maxLength = 240): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+  return normalized.slice(0, maxLength);
+}
+
+function extractQuoteSnippet(text: string): string | null {
+  const quoted = text.match(/"([^"]{20,260})"/)?.[1];
+  if (quoted) {
+    return toSourceClaim(quoted, 220);
+  }
+  return null;
+}
+
+function mergeResearchSourceCards(existing: ResearchSourceCard[], incoming: ResearchSourceCard[]): ResearchSourceCard[] {
+  const next = new Map<string, ResearchSourceCard>();
+  for (const card of [...existing, ...incoming]) {
+    if (!card.url) {
+      continue;
+    }
+    const prev = next.get(card.url);
+    if (!prev) {
+      next.set(card.url, card);
+      continue;
+    }
+    const merged: ResearchSourceCard = {
+      ...prev,
+      title: prev.title ?? card.title,
+      date: prev.date ?? card.date,
+      claim: prev.claim.length >= card.claim.length ? prev.claim : card.claim,
+      quote: prev.quote ?? card.quote
+    };
+    next.set(card.url, merged);
+  }
+  return Array.from(next.values()).slice(-120);
+}
+
+function deriveSourceCardsFromExecution(
+  execution: ToolExecutionResult,
+  context: LeadAgentToolContext
+): ResearchSourceCard[] {
+  if (execution.status !== "ok") {
+    return [];
+  }
+  const payload = execution.result ?? {};
+  const cards: ResearchSourceCard[] = [];
+  if (execution.tool === "search") {
+    const topResults = Array.isArray(payload.topResults) ? payload.topResults : [];
+    for (const result of topResults) {
+      if (!result || typeof result !== "object") {
+        continue;
+      }
+      const record = result as Record<string, unknown>;
+      const url = asString(record.url);
+      const title = asString(record.title);
+      const snippet = asString(record.snippet) ?? "";
+      if (!url || !snippet) {
+        continue;
+      }
+      cards.push({
+        url,
+        title,
+        date: normalizeSourceDate(`${url} ${title ?? ""} ${snippet}`),
+        claim: toSourceClaim(snippet),
+        quote: null,
+        sourceTool: execution.tool
+      });
+    }
+    return cards;
+  }
+
+  if (execution.tool === "lead_search_shortlist") {
+    const shortlistedUrls = Array.isArray(payload.shortlistedUrls) ? payload.shortlistedUrls : [];
+    for (const raw of shortlistedUrls) {
+      const url = asString(raw);
+      if (!url) {
+        continue;
+      }
+      cards.push({
+        url,
+        title: null,
+        date: normalizeSourceDate(url),
+        claim: "Shortlisted as a candidate source for follow-up fetch.",
+        quote: null,
+        sourceTool: execution.tool
+      });
+    }
+    return cards;
+  }
+
+  if (execution.tool === "web_fetch") {
+    const pages = context.getFetchedPages();
+    for (const page of pages.slice(0, 30)) {
+      const claim =
+        toSourceClaim(page.text, 240)
+        || toSourceClaim(page.listItems?.[0] ?? "", 240)
+        || toSourceClaim(page.tableRows?.[0] ?? "", 240);
+      if (!claim) {
+        continue;
+      }
+      cards.push({
+        url: page.url,
+        title: page.title || null,
+        date: normalizeSourceDate(`${page.url} ${page.title ?? ""} ${page.text.slice(0, 260)}`),
+        claim,
+        quote: extractQuoteSnippet(page.text),
+        sourceTool: execution.tool
+      });
+    }
+    return cards;
+  }
+
+  return [];
+}
+
 function updateSpecialistProgress(progress: SpecialistProgressState, result: ToolExecutionResult): void {
   if (result.status === "error") {
     const message = (result.error ?? "").toLowerCase();
@@ -736,7 +864,8 @@ function createToolContext(options: SpecialistToolLoopOptions, deadlineAtMs: num
     requestedLeadCount: options.leadExecutionBrief?.requestedLeadCount ?? 0,
     fetchedPages: [],
     shortlistedUrls: [],
-    executionBrief: options.leadExecutionBrief
+    executionBrief: options.leadExecutionBrief,
+    researchSourceCards: []
   };
 
   return {
@@ -784,7 +913,11 @@ function createToolContext(options: SpecialistToolLoopOptions, deadlineAtMs: num
     setShortlistedUrls: (urls) => {
       state.shortlistedUrls = Array.from(new Set(urls.map((item) => item.trim()).filter(Boolean)));
     },
-    getShortlistedUrls: () => state.shortlistedUrls ?? []
+    getShortlistedUrls: () => state.shortlistedUrls ?? [],
+    setResearchSourceCards: (cards) => {
+      state.researchSourceCards = cards;
+    },
+    getResearchSourceCards: () => state.researchSourceCards ?? []
   };
 }
 
@@ -907,6 +1040,17 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
                 draftWordCount: progress.draftWordCount,
                 citationCount: progress.citationCount,
                 searchTimeoutCount: progress.searchTimeoutCount
+              },
+              researchScratchpad: {
+                sourceCardCount: toolContext.getResearchSourceCards?.().length ?? 0,
+                sampleSourceCards: (toolContext.getResearchSourceCards?.() ?? [])
+                  .slice(-5)
+                  .map((card) => ({
+                    url: card.url,
+                    title: card.title,
+                    date: card.date,
+                    claim: card.claim
+                  }))
               },
               loopShape: {
                 consecutiveSearchOnlyIterations
@@ -1287,6 +1431,11 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     }
     for (const execution of executions) {
       updateSpecialistProgress(progress, execution);
+      const cardDelta = deriveSourceCardsFromExecution(execution, toolContext);
+      if (cardDelta.length > 0) {
+        const mergedCards = mergeResearchSourceCards(toolContext.getResearchSourceCards?.() ?? [], cardDelta);
+        toolContext.setResearchSourceCards?.(mergedCards);
+      }
       if (execution.status === "error") {
         if (isSchemaInputError(execution.error)) {
           const nextStreak = (schemaFailureStreakByTool.get(execution.tool) ?? 0) + 1;

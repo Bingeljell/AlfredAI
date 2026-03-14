@@ -6,6 +6,15 @@ import type { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline
 import type { PagePayload } from "../tools/lead/browserPool.js";
 import type { LeadExecutionBrief } from "../tools/lead/schemas.js";
 
+export interface ResearchSourceCard {
+  url: string;
+  title: string | null;
+  date: string | null;
+  claim: string;
+  quote: string | null;
+  sourceTool: string;
+}
+
 export interface LeadAgentDefaults {
   searchMaxResults: number;
   subReactMaxPages: number;
@@ -22,6 +31,7 @@ export interface LeadAgentState {
   fetchedPages: PagePayload[];
   shortlistedUrls?: string[];
   executionBrief?: LeadExecutionBrief;
+  researchSourceCards?: ResearchSourceCard[];
 }
 
 export interface LeadAgentToolContext {
@@ -46,6 +56,8 @@ export interface LeadAgentToolContext {
   getFetchedPages: () => PagePayload[];
   setShortlistedUrls?: (urls: string[]) => void;
   getShortlistedUrls?: () => string[];
+  setResearchSourceCards?: (cards: ResearchSourceCard[]) => void;
+  getResearchSourceCards?: () => ResearchSourceCard[];
 }
 
 export interface LeadAgentToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {

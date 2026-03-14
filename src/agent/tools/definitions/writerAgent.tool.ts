@@ -5,6 +5,7 @@ import type { LlmUsage } from "../../../types.js";
 import { runOpenAiStructuredChatWithDiagnostics } from "../../../services/openAiClient.js";
 import type { LeadAgentToolDefinition } from "../../types.js";
 import { resolvePathInProject, toProjectRelative } from "../helpers/pathSafety.js";
+import type { ResearchSourceCard } from "../../types.js";
 
 const WriterAgentToolInputSchema = z.object({
   instruction: z.string().min(8).max(3000),
@@ -63,11 +64,19 @@ function buildFallbackDraft(args: {
   tone: string;
   maxWords: number;
   contextSnippets: string[];
+  sourceCards: ResearchSourceCard[];
 }): { title: string; content: string; summary: string; nextSteps: string[] } {
   const heading = `Draft: ${args.instruction.slice(0, 70)}`;
   const contextBlock =
     args.contextSnippets.length > 0
       ? `\n\nContext highlights:\n${args.contextSnippets.map((item) => `- ${item}`).join("\n")}`
+      : "";
+  const sourceBlock =
+    args.sourceCards.length > 0
+      ? `\n\nSource cards:\n${args.sourceCards
+          .slice(0, 10)
+          .map((card) => `- ${card.date ?? "date unknown"} | ${card.title ?? "Untitled"} | ${card.url}\n  Claim: ${card.claim}`)
+          .join("\n")}`
       : "";
   const content = clipWords(
     [
@@ -78,7 +87,7 @@ function buildFallbackDraft(args: {
       `Objective: ${args.instruction}`,
       "",
       "Draft:",
-      `This is a structured first draft prepared without model generation because no API key was available.${contextBlock}`,
+      `This is a structured first draft prepared without model generation because no API key was available.${contextBlock}${sourceBlock}`,
       "Expand this draft by refining claims, adding evidence, and tightening the call-to-action."
     ].join("\n"),
     args.maxWords
@@ -130,6 +139,7 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
     const audience = input.audience ?? "general technical audience";
     const maxWords = input.maxWords ?? 700;
     const contextSnippets = await loadContextSnippets(context.projectRoot, input.contextPaths);
+    const sourceCards = (context.getResearchSourceCards?.() ?? context.state.researchSourceCards ?? []).slice(-20);
 
     let draft = buildFallbackDraft({
       instruction: input.instruction,
@@ -137,7 +147,8 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
       audience,
       tone,
       maxWords,
-      contextSnippets
+      contextSnippets,
+      sourceCards
     });
     let fallbackUsed = true;
     let fallbackReason = "missing_api_key";
@@ -163,7 +174,8 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
                 audience,
                 tone,
                 maxWords,
-                contextSnippets
+                contextSnippets,
+                sourceCards
               })
             }
           ]
@@ -215,6 +227,7 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
       audience,
       wordCount: countWords(draft.content),
       contextSnippetCount: contextSnippets.length,
+      sourceCardCount: sourceCards.length,
       fallbackUsed,
       fallbackReason,
       failureMessage,
@@ -222,4 +235,3 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
     };
   }
 };
-

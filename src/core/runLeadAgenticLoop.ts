@@ -1777,7 +1777,8 @@ export async function runLeadAgenticLoop(options: LeadAgentRuntimeOptions): Prom
     requestedLeadCount: targetLeadCount,
     fetchedPages: [],
     shortlistedUrls: [],
-    executionBrief: options.leadExecutionBrief
+    executionBrief: options.leadExecutionBrief,
+    researchSourceCards: []
   };
   const emailRequestedByUser = isEmailRequired({
     message: options.message,
@@ -1827,6 +1828,10 @@ export async function runLeadAgenticLoop(options: LeadAgentRuntimeOptions): Prom
     state.shortlistedUrls = Array.from(new Set(urls.map((item) => item.trim()).filter(Boolean)));
   };
   const getShortlistedUrls: LeadAgentToolContext["getShortlistedUrls"] = () => state.shortlistedUrls ?? [];
+  const setResearchSourceCards: LeadAgentToolContext["setResearchSourceCards"] = (cards) => {
+    state.researchSourceCards = cards;
+  };
+  const getResearchSourceCards: LeadAgentToolContext["getResearchSourceCards"] = () => state.researchSourceCards ?? [];
 
   const toolContext: LeadAgentToolContext = {
     runId: options.runId,
@@ -1849,7 +1854,9 @@ export async function runLeadAgenticLoop(options: LeadAgentRuntimeOptions): Prom
     setFetchedPages,
     getFetchedPages,
     setShortlistedUrls,
-    getShortlistedUrls
+    getShortlistedUrls,
+    setResearchSourceCards,
+    getResearchSourceCards
   };
   const plannerBudget = new LlmBudgetManager(options.plannerMaxCalls);
   const observations: LeadAgentObservation[] = [];

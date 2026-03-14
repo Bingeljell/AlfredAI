@@ -1133,7 +1133,8 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     artifacts: [],
     requestedLeadCount: 0,
     fetchedPages: [],
-    shortlistedUrls: []
+    shortlistedUrls: [],
+    researchSourceCards: []
   };
   const addLeads: LeadAgentToolContext["addLeads"] = (incoming) => {
     let addedCount = 0;
@@ -1163,6 +1164,10 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     alfredState.shortlistedUrls = Array.from(new Set(urls.map((item) => item.trim()).filter(Boolean)));
   };
   const getShortlistedUrls: LeadAgentToolContext["getShortlistedUrls"] = () => alfredState.shortlistedUrls ?? [];
+  const setResearchSourceCards: LeadAgentToolContext["setResearchSourceCards"] = (cards) => {
+    alfredState.researchSourceCards = cards;
+  };
+  const getResearchSourceCards: LeadAgentToolContext["getResearchSourceCards"] = () => alfredState.researchSourceCards ?? [];
 
   const toolContext: LeadAgentToolContext = {
     runId: options.runId,
@@ -1184,7 +1189,9 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     setFetchedPages,
     getFetchedPages,
     setShortlistedUrls,
-    getShortlistedUrls
+    getShortlistedUrls,
+    setResearchSourceCards,
+    getResearchSourceCards
   };
 
   const observations: Array<{ iteration: number; summary: string; outcome: string }> = [];

@@ -3,8 +3,8 @@ const TELEMETRY_EVENT_CAP = 400;
 const RAW_VIEW_CAP = 120_000;
 const POLL_INTERVAL_MS = 4_000;
 const PROVIDER_REFRESH_MS = 60_000;
-const CHAT_THINKING_LINE_COUNT = 4;
-const CHAT_THINKING_THROTTLE_MS = 3_000;
+const CHAT_THINKING_LINE_COUNT = 12;
+const CHAT_THINKING_THROTTLE_MS = 1_500;
 
 const VIEW_META = {
   workspace: {
@@ -376,7 +376,7 @@ function distillActivityForChat(event) {
   const payload = event.payload || {};
   if (event.phase === "tool") {
     const detail = payload.toolName || payload.provider || payload.primaryProvider || payload.status || event.eventType;
-    return `Action • tool_event ${event.eventType} ${toShortText(detail, 120)}`;
+    return `Action • ${event.eventType} detail=${toShortText(detail, 120)}`;
   }
 
   if (event.phase === "observe" && event.eventType === "specialist_action_result") {
@@ -384,7 +384,7 @@ function distillActivityForChat(event) {
     if (results.length === 0) {
       return "Observe • specialist_action_result (no results payload)";
     }
-    const lines = results.slice(0, 2).map((item) => {
+    const lines = results.slice(0, 4).map((item) => {
       const durationMs = Number(item.durationMs || 0);
       const input = compactJson(item.input, 90);
       if (item.status === "ok") {
@@ -392,7 +392,7 @@ function distillActivityForChat(event) {
       }
       return `${item.tool}:error ${durationMs}ms input=${input || "{}"} error=${toShortText(item.error, 110)}`;
     });
-    return `Observe • ${toShortText(lines.join(" || "), 280)}`;
+    return `Observe • ${toShortText(lines.join(" || "), 520)}`;
   }
 
   if (event.phase === "observe" && event.eventType === "agent_delegation_result") {
@@ -412,7 +412,11 @@ function distillActivityForChat(event) {
   if (event.phase === "final" && event.eventType === "agent_stop") {
     return `Stop • agent reason=${payload.reason || "unknown"}`;
   }
-  return "";
+  const genericPayload = compactJson(payload, 180);
+  if (genericPayload) {
+    return `${event.phase}:${event.eventType} • ${genericPayload}`;
+  }
+  return `${event.phase}:${event.eventType}`;
 }
 
 function getChatThinkingLines(run) {
@@ -424,10 +428,7 @@ function getChatThinkingLines(run) {
     return [];
   }
   const candidateEvents = payload.events.filter((event) =>
-    event.phase === "thought" ||
-    event.phase === "tool" ||
-    (event.phase === "observe" && ["heartbeat", "specialist_action_result", "agent_delegation_result", "agent_action_result"].includes(event.eventType)) ||
-    (event.phase === "final" && ["specialist_stop", "agent_stop"].includes(event.eventType))
+    ["thought", "tool", "observe", "final"].includes(event.phase)
   );
   const cache = state.thinkingCache.get(run.runId);
   const now = Date.now();
@@ -435,20 +436,29 @@ function getChatThinkingLines(run) {
     return cache.lines;
   }
 
-  const deduped = [];
-  const seen = new Set();
-  for (let index = candidateEvents.length - 1; index >= 0; index -= 1) {
-    const line = distillActivityForChat(candidateEvents[index]);
-    if (!line || seen.has(line)) {
-      continue;
+  const formatTimestamp = (iso) => {
+    const parsed = new Date(iso);
+    if (!Number.isFinite(parsed.getTime())) {
+      return "";
     }
-    seen.add(line);
-    deduped.push(line);
-    if (deduped.length >= CHAT_THINKING_LINE_COUNT) {
-      break;
-    }
-  }
-  const lines = deduped.reverse();
+    return parsed.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    });
+  };
+  const lines = candidateEvents
+    .map((event) => {
+      const distilled = distillActivityForChat(event);
+      if (!distilled) {
+        return "";
+      }
+      const time = formatTimestamp(event.timestamp);
+      return time ? `[${time}] ${distilled}` : distilled;
+    })
+    .filter(Boolean)
+    .slice(-CHAT_THINKING_LINE_COUNT);
   state.thinkingCache.set(run.runId, {
     eventCount: candidateEvents.length,
     updatedAt: now,
@@ -690,7 +700,7 @@ function renderChatHistory() {
     const thinkingBlock = thinkingLines.length > 0
       ? `
           <div class="thinking-stream">
-            <div class="thinking-title">Alfred live trace...</div>
+            <div class="thinking-title">Alfred live trace (thought/action/observe)...</div>
             ${thinkingLines.map((line) => `<div class="thinking-line">${escapeHtml(line)}</div>`).join("")}
           </div>
         `

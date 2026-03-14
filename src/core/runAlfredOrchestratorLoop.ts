@@ -871,6 +871,139 @@ function summarizeRecentToolCalls(toolCalls: RunRecord["toolCalls"]): string {
     .join(", ");
 }
 
+function countBracketCitations(value: string | null | undefined): number {
+  if (!value) {
+    return 0;
+  }
+  const matches = value.matchAll(/\[(\d+)\]/g);
+  const unique = new Set<string>();
+  for (const match of matches) {
+    if (match[1]) {
+      unique.add(match[1]);
+    }
+  }
+  return unique.size;
+}
+
+function inferResearchFactsFromRunRecord(
+  runRecord: RunRecord | undefined
+): {
+  draftWordCount: number;
+  citationCount: number;
+  fetchedPageCount: number;
+  outputPath: string | null;
+  writerFallback: boolean;
+  writerFailureReason: string | null;
+} {
+  let draftWordCount = 0;
+  let citationCount = 0;
+  let fetchedPageCount = 0;
+  let outputPath: string | null = null;
+  let writerFallback = false;
+  let writerFailureReason: string | null = null;
+
+  for (const toolCall of [...(runRecord?.toolCalls ?? [])].reverse()) {
+    if (toolCall.toolName === "writer_agent" && toolCall.status === "ok") {
+      const wordCount = findNumericField(toolCall.outputRedacted, ["wordCount"]) ?? 0;
+      const content =
+        toolCall.outputRedacted && typeof toolCall.outputRedacted === "object"
+          ? typeof (toolCall.outputRedacted as Record<string, unknown>).content === "string"
+            ? ((toolCall.outputRedacted as Record<string, unknown>).content as string)
+            : null
+          : null;
+      const citationsFromContent = countBracketCitations(content);
+      const outputPathValue =
+        toolCall.outputRedacted && typeof toolCall.outputRedacted === "object"
+          ? (toolCall.outputRedacted as Record<string, unknown>).outputPath
+          : null;
+      const fallbackUsedValue =
+        toolCall.outputRedacted && typeof toolCall.outputRedacted === "object"
+          ? (toolCall.outputRedacted as Record<string, unknown>).fallbackUsed
+          : null;
+      const failureReasonValue =
+        toolCall.outputRedacted && typeof toolCall.outputRedacted === "object"
+          ? (toolCall.outputRedacted as Record<string, unknown>).failureMessage
+          : null;
+      if (wordCount > draftWordCount) {
+        draftWordCount = wordCount;
+      }
+      if (citationsFromContent > citationCount) {
+        citationCount = citationsFromContent;
+      }
+      if (typeof outputPathValue === "string" && outputPathValue.trim()) {
+        outputPath = outputPathValue.trim();
+      }
+      if (fallbackUsedValue === true) {
+        writerFallback = true;
+      }
+      if (!writerFailureReason && typeof failureReasonValue === "string" && failureReasonValue.trim()) {
+        writerFailureReason = failureReasonValue.trim();
+      }
+    }
+    if (toolCall.toolName === "web_fetch" && toolCall.status === "ok" && fetchedPageCount === 0) {
+      fetchedPageCount = findNumericField(toolCall.outputRedacted, ["pagesFetched", "usablePageCount"]) ?? 0;
+    }
+  }
+
+  return {
+    draftWordCount,
+    citationCount,
+    fetchedPageCount,
+    outputPath,
+    writerFallback,
+    writerFailureReason
+  };
+}
+
+function summarizeDelegationOutcome(args: {
+  agentName: string;
+  leadOutcome: RunOutcome;
+  runRecord?: RunRecord;
+  recentToolCalls: RunRecord["toolCalls"];
+}): string {
+  const artifactsSeen = args.leadOutcome.artifactPaths?.length ?? args.runRecord?.artifactPaths?.length ?? 0;
+  if (args.agentName === "research_agent") {
+    const researchFacts = inferResearchFactsFromRunRecord(args.runRecord);
+    const draftLine =
+      researchFacts.draftWordCount > 0
+        ? `Draft words: ${researchFacts.draftWordCount}.`
+        : "No draft text produced yet.";
+    const citationLine =
+      researchFacts.citationCount > 0
+        ? `Citation markers: ${researchFacts.citationCount}.`
+        : "Citation markers: 0.";
+    const writerStateLine = researchFacts.writerFallback
+      ? `Writer fallback occurred${researchFacts.writerFailureReason ? ` (${researchFacts.writerFailureReason}).` : "."}`
+      : "Writer completed without fallback.";
+    const pathLine = researchFacts.outputPath
+      ? `Output path: ${researchFacts.outputPath}.`
+      : "No output file path was produced.";
+    return [
+      `${args.agentName} status: ${args.leadOutcome.status}.`,
+      `Fetched pages: ${researchFacts.fetchedPageCount}.`,
+      draftLine,
+      citationLine,
+      writerStateLine,
+      pathLine,
+      artifactsSeen > 0 ? `Artifacts available: ${artifactsSeen}.` : "No artifacts were produced.",
+      `Recent tools: ${summarizeRecentToolCalls(args.recentToolCalls)}.`
+    ].join(" ");
+  }
+
+  const delegatedFacts = inferLeadFactsFromRunRecord(args.runRecord);
+  return [
+    `${args.agentName} status: ${args.leadOutcome.status}.`,
+    delegatedFacts.collectedLeadCount > 0
+      ? `Leads found: ${delegatedFacts.collectedLeadCount}.`
+      : "No completed lead records yet.",
+    delegatedFacts.collectedEmailCount > 0
+      ? `Emails found: ${delegatedFacts.collectedEmailCount}.`
+      : "Email coverage is still low.",
+    artifactsSeen > 0 ? `Artifacts available: ${artifactsSeen}.` : "No artifacts were produced.",
+    `Recent tools: ${summarizeRecentToolCalls(args.recentToolCalls)}.`
+  ].join(" ");
+}
+
 function summarizeToolOutput(toolName: string, output: unknown): string {
   if (toolName === "writer_agent" && output && typeof output === "object") {
     const payload = output as Record<string, unknown>;
@@ -1704,19 +1837,12 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         timestamp: nowIso()
       });
 
-      const delegatedFacts = inferLeadFactsFromRunRecord(runRecord ?? undefined);
-      const artifactsSeen = leadOutcome.artifactPaths?.length ?? runRecord?.artifactPaths?.length ?? 0;
-      lastDelegationSummary = [
-        `${agentName} status: ${leadOutcome.status}.`,
-        delegatedFacts.collectedLeadCount > 0
-          ? `Leads found: ${delegatedFacts.collectedLeadCount}.`
-          : "No completed lead records yet.",
-        delegatedFacts.collectedEmailCount > 0
-          ? `Emails found: ${delegatedFacts.collectedEmailCount}.`
-          : "Email coverage is still low.",
-        artifactsSeen > 0 ? `Artifacts available: ${artifactsSeen}.` : "No artifacts were produced.",
-        `Recent tools: ${summarizeRecentToolCalls(recentToolCalls)}.`
-      ].join(" ");
+      lastDelegationSummary = summarizeDelegationOutcome({
+        agentName,
+        leadOutcome,
+        runRecord: runRecord ?? undefined,
+        recentToolCalls
+      });
       lastSuccessfulActionSummary = lastDelegationSummary;
       const delegationEvidence = recentToolCalls.map((call) => ({
         toolName: call.toolName,

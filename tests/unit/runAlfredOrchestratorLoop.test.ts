@@ -418,14 +418,16 @@ test("runAlfredOrchestratorLoop exposes full runtime catalogs to planner", async
   ): Promise<StructuredChatDiagnostic<T>> => {
     if (options.schemaName === "alfred_orchestrator_plan") {
       const plannerInput = JSON.parse(options.messages?.[1]?.content ?? "{}") as {
-        availableTools?: Array<{ name?: string }>;
+        availableTools?: Array<{ name?: string; inputContract?: { bounds?: string[] } }>;
         availableAgents?: Array<{ name?: string }>;
       };
       const toolNames = new Set((plannerInput.availableTools ?? []).map((tool) => tool.name));
       const agentNames = new Set((plannerInput.availableAgents ?? []).map((agent) => agent.name));
+      const searchTool = (plannerInput.availableTools ?? []).find((tool) => tool.name === "search");
       assert.ok(toolNames.has("lead_pipeline"));
       assert.ok(toolNames.has("shell_exec"));
       assert.ok(toolNames.has("file_read"));
+      assert.ok((searchTool?.inputContract?.bounds ?? []).some((bound) => bound.includes("maxResults <= 15")));
       assert.ok(agentNames.has("lead_agent"));
       assert.ok(agentNames.has("research_agent"));
       assert.ok(agentNames.has("ops_agent"));

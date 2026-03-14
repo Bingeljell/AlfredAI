@@ -12,6 +12,7 @@ import {
   type ToolExecutionEnvelope
 } from "../agent/tools/registry.js";
 import { classifyStructuredFailure, computeRetryDelayMs, sleep } from "./reliability.js";
+import { getToolInputContract } from "../agent/toolContracts.js";
 
 interface SpecialistToolLoopOptions extends AgentSkillRunOptions {
   skillName: string;
@@ -421,7 +422,7 @@ function buildSpecialistPlannerSystemPrompt(options: Pick<SpecialistToolLoopOpti
     {
       label: "ReAct Directives",
       content:
-        "Use iterative reasoning: choose tools, observe output, and replan. Prefer the smallest set of high-yield actions. Respect the specialist objective contract you receive in planner input: do not return actionType=respond until required deliverable criteria are satisfied, unless you explicitly report a failure summary with concrete evidence. Maintain phase progression when drafting tasks are requested: discovery -> fetch -> synthesis -> persist. If discovery has URLs but fetch is still zero, prioritize downstream transition over repeating search-only cycles. For tool actions, always provide valid JSON object input."
+        "Use iterative reasoning: choose tools, observe output, and replan. Prefer the smallest set of high-yield actions. Respect the specialist objective contract you receive in planner input: do not return actionType=respond until required deliverable criteria are satisfied, unless you explicitly report a failure summary with concrete evidence. Maintain phase progression when drafting tasks are requested: discovery -> fetch -> synthesis -> persist. If discovery has URLs but fetch is still zero, prioritize downstream transition over repeating search-only cycles. Each tool includes an `inputContract` in planner context: obey required fields and bounds strictly. For tool actions, always provide valid JSON object input."
     }
   ]);
 }
@@ -841,7 +842,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       availableTools: Array.from(availableTools.values()).map((tool) => ({
         name: tool.name,
         description: tool.description,
-        inputHint: tool.inputHint
+        inputHint: tool.inputHint,
+        inputContract: getToolInputContract(tool.name)
       }))
     },
     timestamp: nowIso()
@@ -926,7 +928,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
               availableTools: Array.from(availableTools.values()).map((tool) => ({
                 name: tool.name,
                 description: tool.description,
-                inputHint: tool.inputHint
+                inputHint: tool.inputHint,
+                inputContract: getToolInputContract(tool.name)
               })),
               recentObservations: observations.slice(-5)
             })

@@ -46,6 +46,8 @@ type SpecialistPhaseTransitionHint =
   | "synthesis_complete_persist_pending"
   | null;
 
+type SpecialistPhase = "discovery" | "fetch" | "synthesis" | "persist" | "complete";
+
 interface SearchRetryProfile {
   mode: "stable" | "flaky" | "degraded";
   timeoutCount: number;
@@ -308,6 +310,46 @@ export function shouldForcePhaseTransition(args: {
   }
 
   return { forced: null, reason: null };
+}
+
+function deriveSpecialistPhase(
+  contract: SpecialistTaskContract,
+  progress: SpecialistProgressState,
+  artifactCount: number
+): SpecialistPhase {
+  if (!(contract.requiresDraft || contract.requiresCitations)) {
+    return progress.successfulToolCalls > 0 ? "complete" : "discovery";
+  }
+  if (progress.sourceUrls.size === 0) {
+    return "discovery";
+  }
+  if (progress.fetchedPageCount === 0) {
+    return "fetch";
+  }
+  if (progress.draftWordCount === 0) {
+    return "synthesis";
+  }
+  if (artifactCount === 0) {
+    return "persist";
+  }
+  return "complete";
+}
+
+function expectedPhaseToolFamily(phase: SpecialistPhase): string {
+  switch (phase) {
+    case "discovery":
+      return "search/shortlist";
+    case "fetch":
+      return "web_fetch";
+    case "synthesis":
+      return "writer_agent/lead_extract";
+    case "persist":
+      return "file_write/write_csv/writer_agent(outputPath)";
+    case "complete":
+      return "respond";
+    default:
+      return "tool";
+  }
 }
 
 function buildSpecialistPlannerSystemPrompt(options: Pick<SpecialistToolLoopOptions, "skillSystemPrompt">): string {
@@ -721,6 +763,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
   let phaseTransitionHintRaised = false;
   let previousIterationSignature: string | null = null;
   let lastSuccessfulExecution: ToolExecutionResult | null = null;
+  let lastPhaseState: SpecialistPhase | null = null;
   const schemaFailureStreakByTool = new Map<string, number>();
   const schemaRecoveryTools = new Set<string>();
 
@@ -756,8 +799,27 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     if (Date.now() >= deadlineAtMs || plannerCallsUsed >= options.plannerMaxCalls || toolCallsUsed >= options.maxToolCalls) {
       break;
     }
+    const currentPhase = deriveSpecialistPhase(taskContract, progress, toolContext.state.artifacts.length);
     const phaseTransitionHint = derivePhaseTransitionHint(taskContract, progress, toolContext.state.artifacts.length);
     const retryProfile = buildSearchRetryProfile(progress, consecutiveSearchOnlyIterations);
+    const expectedToolFamily = expectedPhaseToolFamily(currentPhase);
+
+    if (lastPhaseState !== currentPhase) {
+      lastPhaseState = currentPhase;
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "thought",
+        eventType: "specialist_phase_state",
+        payload: {
+          skillName: options.skillName,
+          iteration,
+          phase: currentPhase,
+          expectedToolFamily
+        },
+        timestamp: nowIso()
+      });
+    }
 
     const plannerDiagnostic = await structuredChatRunner(
       {
@@ -787,6 +849,10 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
               },
               loopShape: {
                 consecutiveSearchOnlyIterations
+              },
+              phaseState: {
+                current: currentPhase,
+                expectedToolFamily
               },
               phaseTransitionHint,
               retryProfile,
@@ -875,6 +941,10 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         actionType: plan.actionType,
         singleTool: plan.singleTool,
         parallelActions: plan.parallelActions,
+        phaseState: {
+          current: currentPhase,
+          expectedToolFamily
+        },
         phaseTransitionHint,
         retryProfile
       },

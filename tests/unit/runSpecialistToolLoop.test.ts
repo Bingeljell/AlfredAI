@@ -265,6 +265,7 @@ test("runSpecialistToolLoop emits phase-transition hint before search-only guard
   const updatedRun = await runStore.getRun(run.runId);
   assert.equal(updatedRun?.toolCalls.length, 4);
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(events.some((event) => event.eventType === "specialist_phase_state"));
   assert.ok(events.some((event) => event.eventType === "specialist_phase_transition_required"));
   assert.ok(
     events.some(

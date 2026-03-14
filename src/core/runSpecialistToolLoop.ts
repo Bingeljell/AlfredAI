@@ -343,16 +343,18 @@ function deriveSpecialistPhase(
   return "complete";
 }
 
-function expectedPhaseToolFamily(phase: SpecialistPhase): string {
+function expectedPhaseToolFamily(phase: SpecialistPhase, skillName: string): string {
   switch (phase) {
     case "discovery":
       return "search/shortlist";
     case "fetch":
       return "web_fetch";
     case "synthesis":
-      return "writer_agent/lead_extract";
+      return skillName === "research_agent" ? "writer_agent" : "writer_agent/lead_extract";
     case "persist":
-      return "file_write/write_csv/writer_agent(outputPath)";
+      return skillName === "research_agent"
+        ? "writer_agent(outputPath)/file_write"
+        : "file_write/write_csv/writer_agent(outputPath)";
     case "complete":
       return "respond";
     default:
@@ -859,7 +861,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     const currentPhase = deriveSpecialistPhase(taskContract, progress, toolContext.state.artifacts.length);
     const phaseTransitionHint = derivePhaseTransitionHint(taskContract, progress, toolContext.state.artifacts.length);
     const retryProfile = buildSearchRetryProfile(progress, consecutiveSearchOnlyIterations);
-    const expectedToolFamily = expectedPhaseToolFamily(currentPhase);
+    const expectedToolFamily = expectedPhaseToolFamily(currentPhase, options.skillName);
 
     if (lastPhaseState !== currentPhase) {
       lastPhaseState = currentPhase;
@@ -1050,13 +1052,28 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       };
     }
 
+    const singleActionDefaultInput =
+      plan.actionType === "single" && plan.singleTool
+        ? defaultToolInputJson(plan.singleTool, options.message)
+        : null;
+    const shouldDefaultSingleInput =
+      plan.actionType === "single" &&
+      Boolean(plan.singleTool) &&
+      (
+        !plan.singleInputJson ||
+        !safeParseObject(plan.singleInputJson)
+      ) &&
+      Boolean(singleActionDefaultInput);
+
     const requestedActions =
       plan.actionType === "single"
         ? plan.singleTool
           ? [
               {
                 tool: plan.singleTool,
-                inputJson: plan.singleInputJson ?? (defaultToolInputJson(plan.singleTool, options.message) ?? "")
+                inputJson: shouldDefaultSingleInput
+                  ? (singleActionDefaultInput ?? "")
+                  : (plan.singleInputJson ?? "")
               }
             ]
           : []
@@ -1073,7 +1090,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     if (
       plan.actionType === "single" &&
       plan.singleTool &&
-      !plan.singleInputJson &&
+      shouldDefaultSingleInput &&
       actions.length > 0
     ) {
       await options.runStore.appendEvent({
@@ -1084,7 +1101,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         payload: {
           skillName: options.skillName,
           iteration,
-          reason: "single_action_input_defaulted",
+          reason: !plan.singleInputJson ? "single_action_input_defaulted" : "single_action_input_repaired",
           tool: plan.singleTool
         },
         timestamp: nowIso()

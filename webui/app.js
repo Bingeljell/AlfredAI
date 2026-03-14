@@ -300,6 +300,8 @@ function mapPlanAdjustmentReason(reason) {
       return "Repairing tool input before retrying.";
     case "single_action_input_defaulted":
       return "Applying safe default tool input to keep progress moving.";
+    case "single_action_input_repaired":
+      return "Repaired malformed tool input before execution.";
     case "flaky_search_retry_profile":
       return "Narrowing search fan-out due flaky responses.";
     default:
@@ -340,6 +342,12 @@ function distillThoughtForChat(event) {
     }
     return "";
   }
+  if (event.eventType === "specialist_plan_state") {
+    if (payload.phase && payload.expectedToolFamily) {
+      return `Now in ${payload.phase} phase, focusing on ${payload.expectedToolFamily}.`;
+    }
+    return "Updating specialist execution phase.";
+  }
   if (event.eventType === "specialist_phase_transition_required") {
     if (payload.hint === "discovery_complete_fetch_pending") {
       return "Discovery is complete; shifting to page fetch.";
@@ -370,10 +378,6 @@ function distillThoughtForChat(event) {
 
 function getChatThinkingLines(run) {
   if (!run) {
-    return [];
-  }
-  if (isTerminalStatus(run.status)) {
-    state.thinkingCache.delete(run.runId);
     return [];
   }
   const payload = state.activeRunPayload;
@@ -807,8 +811,8 @@ function renderInspector() {
   setHtmlIfChanged(els.thoughtFeed, recentThoughts.length > 0
     ? recentThoughts.reverse().map((event) => `
         <div class="event-item">
-          <span class="event-label">${escapeHtml(event.eventType)}</span>
-          <div class="event-text">${escapeHtml(summarizeEvent(event))}</div>
+          <span class="event-label">Thinking</span>
+          <div class="event-text">${escapeHtml(distillThoughtForChat(event) || summarizeEvent(event))}</div>
         </div>
       `).join("")
     : emptyState("No thought events on this run."));

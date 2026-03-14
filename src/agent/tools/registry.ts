@@ -188,6 +188,22 @@ function asPositiveInteger(value: unknown): number | null {
   return normalized > 0 ? normalized : null;
 }
 
+function asBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") {
+      return true;
+    }
+    if (normalized === "false") {
+      return false;
+    }
+  }
+  return null;
+}
+
 function firstStringInArray(value: unknown): string | null {
   if (!Array.isArray(value)) {
     return null;
@@ -199,6 +215,24 @@ function firstStringInArray(value: unknown): string | null {
     }
   }
   return null;
+}
+
+function extractHttpUrlCandidate(value: string): string | null {
+  const matched = value.match(/https?:\/\/[^\s"'`>,)]+/i)?.[0];
+  if (!matched) {
+    return null;
+  }
+  let candidate = matched.replace(/[>\]"'`),]+$/g, "");
+  candidate = candidate.replace(/(?:%22|%27|%2C)+$/gi, "");
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
 }
 
 function isSearchFamilyTool(toolName: string): boolean {
@@ -298,12 +332,91 @@ function repairWriterAgentInput(input: Record<string, unknown>): {
   };
 }
 
+function repairWebFetchInput(input: Record<string, unknown>): {
+  input: Record<string, unknown>;
+  repaired: boolean;
+  strategy: string | null;
+} {
+  const next = { ...input };
+  const strategies: string[] = [];
+  const query =
+    asNonEmptyString(next.query)
+    ?? firstStringInArray(next.queries)
+    ?? asNonEmptyString(next.instruction)
+    ?? asNonEmptyString(next.brief)
+    ?? asNonEmptyString(next.prompt)
+    ?? asNonEmptyString(next.objective)
+    ?? asNonEmptyString(next.message)
+    ?? asNonEmptyString(next.task);
+  if (query && next.query !== query) {
+    next.query = query;
+    strategies.push("tool_shape_repair_query");
+  }
+
+  if (Array.isArray(next.urls)) {
+    const normalizedUrls = Array.from(
+      new Set(
+        next.urls
+          .map((item) => (typeof item === "string" ? extractHttpUrlCandidate(item) : null))
+          .filter((item): item is string => Boolean(item))
+      )
+    );
+    if (
+      normalizedUrls.length > 0 &&
+      (next.urls.length !== normalizedUrls.length || next.urls.some((item, index) => item !== normalizedUrls[index]))
+    ) {
+      next.urls = normalizedUrls;
+      strategies.push("tool_shape_repair_urls");
+    }
+  }
+
+  const useStoredUrls =
+    asBoolean(next.useStoredUrls)
+    ?? asBoolean(next.useStored)
+    ?? asBoolean(next.useStoredShortlist)
+    ?? null;
+  if (useStoredUrls !== null && next.useStoredUrls !== useStoredUrls) {
+    next.useStoredUrls = useStoredUrls;
+    strategies.push("tool_shape_repair_use_stored_urls");
+  }
+
+  const maxPages = asPositiveInteger(next.maxPages) ?? asPositiveInteger(next.pageLimit);
+  if (maxPages && next.maxPages !== maxPages) {
+    next.maxPages = maxPages;
+    strategies.push("tool_shape_repair_max_pages");
+  }
+
+  const maxResults = asPositiveInteger(next.maxResults) ?? asPositiveInteger(next.numResults) ?? asPositiveInteger(next.top_k);
+  if (maxResults && next.maxResults !== maxResults) {
+    next.maxResults = maxResults;
+    strategies.push("tool_shape_repair_max_results");
+  }
+
+  const browseConcurrency =
+    asPositiveInteger(next.browseConcurrency)
+    ?? asPositiveInteger(next.concurrency)
+    ?? asPositiveInteger(next.parallelism);
+  if (browseConcurrency && next.browseConcurrency !== browseConcurrency) {
+    next.browseConcurrency = browseConcurrency;
+    strategies.push("tool_shape_repair_browse_concurrency");
+  }
+
+  return {
+    input: next,
+    repaired: strategies.length > 0,
+    strategy: strategies.length > 0 ? strategies.join("+") : null
+  };
+}
+
 function repairToolInputShape(
   toolName: string,
   input: Record<string, unknown>
 ): { input: Record<string, unknown>; repaired: boolean; strategy: string | null } {
   if (isSearchFamilyTool(toolName)) {
     return repairSearchFamilyInput(toolName, input);
+  }
+  if (toolName === "web_fetch") {
+    return repairWebFetchInput(input);
   }
   if (toolName === "writer_agent") {
     return repairWriterAgentInput(input);

@@ -271,3 +271,61 @@ test("executeToolWithEnvelope coerces plain string input for writer_agent", asyn
     instruction: "Write a concise test memo with two bullets."
   });
 });
+
+test("executeToolWithEnvelope repairs web_fetch query/url aliases and noisy URL payloads", async () => {
+  const workspace = await createTempWorkspace("tool-envelope-web-fetch-shape-repair");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "test", "running");
+  const context = makeToolContext(runStore);
+  context.runId = run.runId;
+
+  const schema = z
+    .object({
+      query: z.string().min(2).max(400).optional(),
+      urls: z.array(z.string().url()).max(30).optional(),
+      useStoredUrls: z.boolean().optional(),
+      maxPages: z.number().int().min(1).max(25).optional()
+    })
+    .refine((value) => Boolean(value.query || value.useStoredUrls || (value.urls && value.urls.length > 0)));
+
+  const tool: LeadAgentToolDefinition<typeof schema> = {
+    name: "web_fetch",
+    description: "fetch",
+    inputSchema: schema,
+    inputHint: "fetch",
+    async execute(input) {
+      return {
+        echoed: input
+      };
+    }
+  };
+
+  const result = await executeToolWithEnvelope({
+    toolName: "web_fetch",
+    inputJson: JSON.stringify({
+      queries: ["latest ai policy updates"],
+      urls: [
+        "https://example.com/article-1%22,%22snippet%22:%22hello",
+        "https://example.com/article-2"
+      ],
+      pageLimit: 8
+    }),
+    tools: new Map([[tool.name, tool]]),
+    context,
+    runStore,
+    runId: run.runId
+  });
+
+  assert.equal(result.status, "ok");
+  assert.equal(result.inputRepairApplied, true);
+  assert.match(result.inputRepairStrategy ?? "", /tool_shape_repair_query/);
+  assert.match(result.inputRepairStrategy ?? "", /tool_shape_repair_urls/);
+  assert.match(result.inputRepairStrategy ?? "", /tool_shape_repair_max_pages/);
+  assert.deepEqual(result.input, {
+    queries: ["latest ai policy updates"],
+    urls: ["https://example.com/article-1", "https://example.com/article-2"],
+    pageLimit: 8,
+    query: "latest ai policy updates",
+    maxPages: 8
+  });
+});

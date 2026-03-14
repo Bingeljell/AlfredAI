@@ -120,6 +120,7 @@ function nowIso(): string {
 const SEARCH_FAMILY_TOOLS = new Set(["search", "lead_search_shortlist", "search_status"]);
 const DOWNSTREAM_PROGRESS_TOOLS = new Set(["web_fetch", "lead_extract", "writer_agent", "file_write", "write_csv"]);
 const DISCOVERY_PHASE_LOCK_MIN_SOURCE_URLS = 20;
+const DIAGNOSTIC_TOOLS = new Set(["search_status", "run_diagnostics"]);
 
 function isSchemaInputError(error: string | null): boolean {
   if (!error) {
@@ -350,6 +351,16 @@ function expectedPhaseToolFamily(phase: SpecialistPhase): string {
     default:
       return "tool";
   }
+}
+
+function shouldApplyDiagnosticThrashGuard(
+  actions: Array<{ tool: string; inputJson: string }>,
+  consecutiveHealthySearchStatusChecks: number
+): boolean {
+  if (consecutiveHealthySearchStatusChecks < 1) {
+    return false;
+  }
+  return actions.length > 0 && actions.every((item) => DIAGNOSTIC_TOOLS.has(item.tool));
 }
 
 function buildSpecialistPlannerSystemPrompt(options: Pick<SpecialistToolLoopOptions, "skillSystemPrompt">): string {
@@ -764,6 +775,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
   let previousIterationSignature: string | null = null;
   let lastSuccessfulExecution: ToolExecutionResult | null = null;
   let lastPhaseState: SpecialistPhase | null = null;
+  let consecutiveHealthySearchStatusChecks = 0;
   const schemaFailureStreakByTool = new Map<string, number>();
   const schemaRecoveryTools = new Set<string>();
 
@@ -1066,6 +1078,36 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       }
     }
 
+    if (shouldApplyDiagnosticThrashGuard(actions, consecutiveHealthySearchStatusChecks)) {
+      const objectiveQuery = deriveObjectiveQuery(options.message);
+      let guardAdjusted: Array<{ tool: string; inputJson: string }> | null = null;
+      if (availableTools.has("search")) {
+        guardAdjusted = [{ tool: "search", inputJson: JSON.stringify({ query: objectiveQuery, maxResults: 10 }) }];
+      } else if (availableTools.has("lead_search_shortlist")) {
+        guardAdjusted = [{ tool: "lead_search_shortlist", inputJson: JSON.stringify({ query: objectiveQuery, maxResults: 10, maxUrls: 12 }) }];
+      } else if (availableTools.has("web_fetch")) {
+        guardAdjusted = [{ tool: "web_fetch", inputJson: JSON.stringify({ query: objectiveQuery, maxPages: 10, browseConcurrency: 3 }) }];
+      }
+      if (guardAdjusted) {
+        await options.runStore.appendEvent({
+          runId: options.runId,
+          sessionId: options.sessionId,
+          phase: "thought",
+          eventType: "specialist_plan_adjusted",
+          payload: {
+            skillName: options.skillName,
+            iteration,
+            reason: "diagnostic_thrash_guard",
+            consecutiveHealthySearchStatusChecks,
+            originalActionCount: actions.length,
+            adjustedActionCount: guardAdjusted.length
+          },
+          timestamp: nowIso()
+        });
+        actions = guardAdjusted;
+      }
+    }
+
     if (actions.length > 1 && retryProfile.maxParallelSearchActions < 3) {
       let allowedSearchActions = 0;
       const adjustedActions: Array<{ tool: string; inputJson: string }> = [];
@@ -1133,6 +1175,20 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         };
       })
     );
+    const hasOnlyHealthySearchStatus =
+      executions.length > 0 &&
+      executions.every((execution) => {
+        if (execution.tool !== "search_status" || execution.status !== "ok") {
+          return false;
+        }
+        const payload = execution.result ?? {};
+        return payload.primaryHealthy === true && payload.fallbackHealthy === true;
+      });
+    if (hasOnlyHealthySearchStatus) {
+      consecutiveHealthySearchStatusChecks += 1;
+    } else {
+      consecutiveHealthySearchStatusChecks = 0;
+    }
     for (const execution of executions) {
       updateSpecialistProgress(progress, execution);
       if (execution.status === "error") {

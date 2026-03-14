@@ -32,6 +32,37 @@ class FakeSearchManagerWithResults {
   }
 }
 
+class HealthyStatusSearchManager {
+  async search(query: string) {
+    return {
+      provider: "searxng" as const,
+      fallbackUsed: false,
+      results: [
+        {
+          title: `Result for ${query}`,
+          url: `https://example.com/${encodeURIComponent(query)}`,
+          snippet: "Example snippet",
+          provider: "searxng" as const,
+          rank: 1
+        }
+      ]
+    };
+  }
+
+  async getProviderStatus() {
+    return {
+      primaryProvider: "searxng",
+      fallbackProvider: "brightdata",
+      primaryHealthy: true,
+      fallbackHealthy: true,
+      primaryRecoverySupported: true,
+      activeDefault: "searxng",
+      lastPrimaryHealthyAt: new Date().toISOString(),
+      consecutivePrimaryFailures: 0
+    };
+  }
+}
+
 class TimeoutSearchManager {
   async search() {
     throw new Error("The operation was aborted due to timeout");
@@ -482,6 +513,74 @@ test("runSpecialistToolLoop returns latest structured tool output for ops tasks"
       (event) =>
         event.eventType === "specialist_loop_guard_triggered" &&
         (event.payload as { guard?: string }).guard === "repeated_no_change_success"
+    )
+  );
+});
+
+test("runSpecialistToolLoop applies diagnostic-thrash guard after repeated healthy search_status checks", async () => {
+  const workspace = await createTempWorkspace("specialist-diagnostic-thrash-guard");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "Research latest AI news", "running");
+
+  const outcome = await runSpecialistToolLoop({
+    runStore,
+    searchManager: new HealthyStatusSearchManager() as never,
+    workspaceDir: workspace,
+    message: "Research latest AI news",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in this test");
+    },
+    maxIterations: 3,
+    maxDurationMs: 60_000,
+    maxToolCalls: 6,
+    maxParallelTools: 1,
+    plannerMaxCalls: 3,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    skillName: "research_agent",
+    skillDescription: "Research skill",
+    skillSystemPrompt: "Do research",
+    toolAllowlist: ["search_status", "search"],
+    structuredChatRunner: async <T>() =>
+      ({
+        result: {
+          thought: "First check search status.",
+          actionType: "single",
+          singleTool: "search_status",
+          singleInputJson: JSON.stringify({}),
+          parallelActions: null,
+          responseText: null
+        }
+      }) as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>
+  });
+
+  assert.equal(outcome.status, "completed");
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(
+    events.some(
+      (event) =>
+        event.eventType === "specialist_plan_adjusted" &&
+        (event.payload as { reason?: string }).reason === "diagnostic_thrash_guard"
+    )
+  );
+  const actionResults = events.filter((event) => event.eventType === "specialist_action_result");
+  assert.ok(
+    actionResults.some((event) =>
+      ((event.payload as { summary?: string }).summary ?? "").includes("search:ok")
     )
   );
 });

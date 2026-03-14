@@ -3,6 +3,8 @@ const TELEMETRY_EVENT_CAP = 400;
 const RAW_VIEW_CAP = 120_000;
 const POLL_INTERVAL_MS = 4_000;
 const PROVIDER_REFRESH_MS = 60_000;
+const CHAT_THINKING_LINE_COUNT = 3;
+const CHAT_THINKING_THROTTLE_MS = 3_000;
 
 const VIEW_META = {
   workspace: {
@@ -40,7 +42,8 @@ const state = {
   providerTimer: null,
   isSending: false,
   notice: "",
-  telemetryFilter: ""
+  telemetryFilter: "",
+  thinkingCache: new Map()
 };
 
 const els = {
@@ -262,17 +265,150 @@ function latestProgressMessage(payload) {
   const events = Array.isArray(payload?.events) ? payload.events : [];
   const reversed = [...events].reverse();
   for (const event of reversed) {
-    if (event.phase === "observe" && event.eventType === "heartbeat") {
-      return `Still running (${formatElapsedMs(event.payload?.elapsedMs)} elapsed)`;
+    if ((event.phase === "thought") || (event.phase === "observe" && event.eventType === "heartbeat")) {
+      const line = distillThoughtForChat(event);
+      if (line) {
+        return line;
+      }
     }
-    if (event.phase === "sub_react_step") {
-      return summarizeEvent(event);
-    }
-    if (event.phase === "thought") {
-      return summarizeEvent(event);
+    if (event.phase === "sub_react_step" && event.payload) {
+      const step = event.payload.step || "";
+      const status = event.payload.status || "";
+      if (step === "browse_batch" && status === "started") {
+        return "Browsing shortlisted pages for evidence.";
+      }
+      if (step === "extraction" && status === "completed") {
+        return "Extracted candidate leads from fetched content.";
+      }
+      if (step === "quality_gate" && status === "completed") {
+        return "Scoring and filtering candidates against your request.";
+      }
     }
   }
-  return "Run is in progress...";
+  return "Alfred is working on your request...";
+}
+
+function mapPlanAdjustmentReason(reason) {
+  switch (reason) {
+    case "phase_lock_forced_transition_discovery_to_fetch":
+      return "Switching from search discovery to page fetch.";
+    case "phase_lock_forced_transition_fetch_to_synthesis":
+      return "Switching from fetch to drafting.";
+    case "diagnostic_thrash_guard":
+      return "Moving past repeated health checks to real retrieval.";
+    case "schema_recovery_forced":
+      return "Repairing tool input before retrying.";
+    case "single_action_input_defaulted":
+      return "Applying safe default tool input to keep progress moving.";
+    case "flaky_search_retry_profile":
+      return "Narrowing search fan-out due flaky responses.";
+    default:
+      return "";
+  }
+}
+
+function distillThoughtForChat(event) {
+  const payload = event.payload || {};
+  if (event.phase === "observe" && event.eventType === "heartbeat") {
+    return `Still running (${formatElapsedMs(payload.elapsedMs)} elapsed).`;
+  }
+
+  if (event.phase !== "thought") {
+    return "";
+  }
+
+  if (event.eventType === "alfred_loop_started") {
+    return "Starting orchestration for this request.";
+  }
+  if (event.eventType === "alfred_objective_contract_created") {
+    return "Locked objective and constraints for this turn.";
+  }
+  if (event.eventType === "intent_identified") {
+    return payload.intent ? `Detected intent: ${payload.intent}.` : "Detected request intent.";
+  }
+  if (event.eventType === "alfred_plan_created") {
+    const thought = toShortText(payload.thought, 150);
+    return thought ? `Planning next step: ${thought}` : "Planning next step.";
+  }
+  if (event.eventType === "agent_delegated") {
+    const skill = payload.agentName || payload.skill || "specialist agent";
+    return `Delegating work to ${skill}.`;
+  }
+  if (event.eventType === "specialist_phase_state") {
+    if (payload.phase && payload.expectedToolFamily) {
+      return `Now in ${payload.phase} phase, focusing on ${payload.expectedToolFamily}.`;
+    }
+    return "";
+  }
+  if (event.eventType === "specialist_phase_transition_required") {
+    if (payload.hint === "discovery_complete_fetch_pending") {
+      return "Discovery is complete; shifting to page fetch.";
+    }
+    if (payload.hint === "fetch_complete_synthesis_pending") {
+      return "Fetched enough evidence; shifting to synthesis.";
+    }
+    if (payload.hint === "synthesis_complete_persist_pending") {
+      return "Draft is ready; shifting to output persistence.";
+    }
+    return "Shifting to the next execution phase.";
+  }
+  if (event.eventType === "specialist_plan_adjusted") {
+    return mapPlanAdjustmentReason(payload.reason);
+  }
+  if (event.eventType === "specialist_plan_created") {
+    const thought = toShortText(payload.thought, 150);
+    return thought ? `Specialist plan: ${thought}` : "Specialist is planning the next action.";
+  }
+  if (event.eventType === "alfred_completion_evaluated") {
+    return payload.shouldRespond
+      ? "Checking if current evidence is enough to return a final answer."
+      : "Result is not complete yet; continuing execution.";
+  }
+
+  return "";
+}
+
+function getChatThinkingLines(run) {
+  if (!run) {
+    return [];
+  }
+  if (isTerminalStatus(run.status)) {
+    state.thinkingCache.delete(run.runId);
+    return [];
+  }
+  const payload = state.activeRunPayload;
+  if (!payload?.run || payload.run.runId !== run.runId || !Array.isArray(payload.events)) {
+    return [];
+  }
+  const candidateEvents = payload.events.filter((event) =>
+    event.phase === "thought" || (event.phase === "observe" && event.eventType === "heartbeat")
+  );
+  const cache = state.thinkingCache.get(run.runId);
+  const now = Date.now();
+  if (cache && cache.eventCount === candidateEvents.length && now - cache.updatedAt < CHAT_THINKING_THROTTLE_MS) {
+    return cache.lines;
+  }
+
+  const deduped = [];
+  const seen = new Set();
+  for (let index = candidateEvents.length - 1; index >= 0; index -= 1) {
+    const line = distillThoughtForChat(candidateEvents[index]);
+    if (!line || seen.has(line)) {
+      continue;
+    }
+    seen.add(line);
+    deduped.push(line);
+    if (deduped.length >= CHAT_THINKING_LINE_COUNT) {
+      break;
+    }
+  }
+  const lines = deduped.reverse();
+  state.thinkingCache.set(run.runId, {
+    eventCount: candidateEvents.length,
+    updatedAt: now,
+    lines
+  });
+  return lines;
 }
 
 function summarizeEvent(event) {
@@ -504,6 +640,15 @@ function renderChatHistory() {
   const html = runs.map((run) => {
     const active = run.runId === state.activeRunId;
     const assistantPreview = buildRunAssistantPreview(run);
+    const thinkingLines = active ? getChatThinkingLines(run) : [];
+    const thinkingBlock = thinkingLines.length > 0
+      ? `
+          <div class="thinking-stream">
+            <div class="thinking-title">Alfred thinking...</div>
+            ${thinkingLines.map((line) => `<div class="thinking-line">${escapeHtml(line)}</div>`).join("")}
+          </div>
+        `
+      : "";
     const userMax = active ? 12_000 : 3_000;
     const assistantMax = active ? 24_000 : 8_000;
     const artifacts = run.artifactPaths?.length ? `<span>${run.artifactPaths.length} artifacts</span>` : "";
@@ -523,6 +668,7 @@ function renderChatHistory() {
         </article>
         <article class="chat-bubble assistant-bubble">
           <div class="message-role">Alfred</div>
+          ${thinkingBlock}
           <div class="message-body assistant">${escapeHtml(truncatePreserveLayout(assistantPreview, assistantMax))}</div>
           <div class="message-meta">
             <span>${escapeHtml(statusLabel(run.status))}</span>

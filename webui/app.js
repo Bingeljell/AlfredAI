@@ -309,68 +309,59 @@ function mapPlanAdjustmentReason(reason) {
   }
 }
 
+function compactJson(value, max = 140) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  try {
+    return toShortText(JSON.stringify(value), max);
+  } catch {
+    return toShortText(String(value), max);
+  }
+}
+
 function distillThoughtForChat(event) {
   const payload = event.payload || {};
   if (event.phase === "observe" && event.eventType === "heartbeat") {
-    return `Still running (${formatElapsedMs(payload.elapsedMs)} elapsed).`;
+    return `Observe • heartbeat elapsed=${formatElapsedMs(payload.elapsedMs)}`;
   }
 
   if (event.phase !== "thought") {
     return "";
   }
 
-  if (event.eventType === "alfred_loop_started") {
-    return "Starting orchestration for this request.";
+  const thought = typeof payload.thought === "string" ? toShortText(payload.thought, 240) : "";
+  const actionType = payload.actionType || "";
+  const actionTool =
+    payload.singleTool ||
+    payload.toolName ||
+    payload.delegateAgent ||
+    payload.agentName ||
+    payload.skill ||
+    "";
+  if (thought) {
+    const actionBits = [actionType, actionTool].filter(Boolean).join(":");
+    return actionBits ? `Thought • ${thought} | plan=${actionBits}` : `Thought • ${thought}`;
   }
-  if (event.eventType === "alfred_objective_contract_created") {
-    return "Locked objective and constraints for this turn.";
+
+  if (event.eventType === "specialist_plan_adjusted") {
+    const reason = mapPlanAdjustmentReason(payload.reason) || String(payload.reason || "plan_adjusted");
+    return `Adjust • ${reason}`;
   }
   if (event.eventType === "intent_identified") {
-    return payload.intent ? `Detected intent: ${payload.intent}.` : "Detected request intent.";
+    return payload.intent ? `Thought • intent=${payload.intent}` : "";
   }
-  if (event.eventType === "alfred_plan_created") {
-    const thought = toShortText(payload.thought, 150);
-    return thought ? `Planning next step: ${thought}` : "Planning next step.";
+  if (event.eventType === "specialist_phase_state" || event.eventType === "specialist_plan_state") {
+    const phase = payload.phase || "unknown";
+    const family = payload.expectedToolFamily || "unspecified";
+    return `State • phase=${phase} expected=${family}`;
   }
   if (event.eventType === "agent_delegated") {
-    const skill = payload.agentName || payload.skill || "specialist agent";
-    return `Delegating work to ${skill}.`;
-  }
-  if (event.eventType === "specialist_phase_state") {
-    if (payload.phase && payload.expectedToolFamily) {
-      return `Now in ${payload.phase} phase, focusing on ${payload.expectedToolFamily}.`;
-    }
-    return "";
-  }
-  if (event.eventType === "specialist_plan_state") {
-    if (payload.phase && payload.expectedToolFamily) {
-      return `Now in ${payload.phase} phase, focusing on ${payload.expectedToolFamily}.`;
-    }
-    return "Updating specialist execution phase.";
-  }
-  if (event.eventType === "specialist_phase_transition_required") {
-    if (payload.hint === "discovery_complete_fetch_pending") {
-      return "Discovery is complete; shifting to page fetch.";
-    }
-    if (payload.hint === "fetch_complete_synthesis_pending") {
-      return "Fetched enough evidence; shifting to synthesis.";
-    }
-    if (payload.hint === "synthesis_complete_persist_pending") {
-      return "Draft is ready; shifting to output persistence.";
-    }
-    return "Shifting to the next execution phase.";
-  }
-  if (event.eventType === "specialist_plan_adjusted") {
-    return mapPlanAdjustmentReason(payload.reason);
-  }
-  if (event.eventType === "specialist_plan_created") {
-    const thought = toShortText(payload.thought, 150);
-    return thought ? `Specialist plan: ${thought}` : "Specialist is planning the next action.";
+    const skill = payload.agentName || payload.skill || "unknown";
+    return `Action • delegate_agent skill=${skill}`;
   }
   if (event.eventType === "alfred_completion_evaluated") {
-    return payload.shouldRespond
-      ? "Checking if current evidence is enough to return a final answer."
-      : "Result is not complete yet; continuing execution.";
+    return `Observe • completion shouldRespond=${String(payload.shouldRespond)} confidence=${Number(payload.confidence || 0).toFixed(2)}`;
   }
 
   return "";
@@ -383,33 +374,43 @@ function distillActivityForChat(event) {
   }
 
   const payload = event.payload || {};
+  if (event.phase === "tool") {
+    const detail = payload.toolName || payload.provider || payload.primaryProvider || payload.status || event.eventType;
+    return `Action • tool_event ${event.eventType} ${toShortText(detail, 120)}`;
+  }
+
   if (event.phase === "observe" && event.eventType === "specialist_action_result") {
     const results = Array.isArray(payload.results) ? payload.results : [];
     if (results.length === 0) {
-      return "Executed specialist tools.";
+      return "Observe • specialist_action_result (no results payload)";
     }
-    const labels = results
-      .slice(0, 3)
-      .map((item) => `${item.tool}:${item.status}`)
-      .join(", ");
-    const hasError = results.some((item) => item.status === "error");
-    return hasError ? `Tool pass completed with errors (${labels}).` : `Tool pass completed (${labels}).`;
+    const lines = results.slice(0, 2).map((item) => {
+      const durationMs = Number(item.durationMs || 0);
+      const input = compactJson(item.input, 90);
+      if (item.status === "ok") {
+        return `${item.tool}:ok ${durationMs}ms input=${input || "{}"} output=${compactJson(item.result, 90)}`;
+      }
+      return `${item.tool}:error ${durationMs}ms input=${input || "{}"} error=${toShortText(item.error, 110)}`;
+    });
+    return `Observe • ${toShortText(lines.join(" || "), 280)}`;
   }
 
   if (event.phase === "observe" && event.eventType === "agent_delegation_result") {
     const name = payload.agentName || payload.skill || "specialist agent";
     const status = payload.status || "unknown";
-    const artifacts = Number(payload.artifactCount || 0);
-    return artifacts > 0
-      ? `${name} returned ${status} with ${artifacts} artifact(s).`
-      : `${name} returned ${status}.`;
+    const assistantText = toShortText(payload.assistantText, 140);
+    return `Observe • delegation ${name} status=${status}${assistantText ? ` summary=${assistantText}` : ""}`;
+  }
+
+  if (event.phase === "observe" && event.eventType === "agent_action_result") {
+    return `Observe • new=${payload.newLeadCount ?? 0} total=${payload.totalLeadCount ?? 0} failedTools=${payload.failedToolCount ?? 0}`;
   }
 
   if (event.phase === "final" && event.eventType === "specialist_stop") {
-    return "Specialist run reached a guardrail stop.";
+    return `Stop • specialist reason=${payload.reason || "unknown"}`;
   }
   if (event.phase === "final" && event.eventType === "agent_stop") {
-    return "Agent run reached a guardrail stop.";
+    return `Stop • agent reason=${payload.reason || "unknown"}`;
   }
   return "";
 }
@@ -424,7 +425,8 @@ function getChatThinkingLines(run) {
   }
   const candidateEvents = payload.events.filter((event) =>
     event.phase === "thought" ||
-    (event.phase === "observe" && ["heartbeat", "specialist_action_result", "agent_delegation_result"].includes(event.eventType)) ||
+    event.phase === "tool" ||
+    (event.phase === "observe" && ["heartbeat", "specialist_action_result", "agent_delegation_result", "agent_action_result"].includes(event.eventType)) ||
     (event.phase === "final" && ["specialist_stop", "agent_stop"].includes(event.eventType))
   );
   const cache = state.thinkingCache.get(run.runId);
@@ -688,7 +690,7 @@ function renderChatHistory() {
     const thinkingBlock = thinkingLines.length > 0
       ? `
           <div class="thinking-stream">
-            <div class="thinking-title">Alfred thinking...</div>
+            <div class="thinking-title">Alfred live trace...</div>
             ${thinkingLines.map((line) => `<div class="thinking-line">${escapeHtml(line)}</div>`).join("")}
           </div>
         `

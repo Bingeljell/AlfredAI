@@ -40,12 +40,26 @@ interface SpecialistTaskContract {
   doneCriteria: string[];
 }
 
+type SpecialistPhaseTransitionHint =
+  | "discovery_complete_fetch_pending"
+  | "fetch_complete_synthesis_pending"
+  | "synthesis_complete_persist_pending"
+  | null;
+
+interface SearchRetryProfile {
+  mode: "stable" | "flaky" | "degraded";
+  timeoutCount: number;
+  recommendation: string;
+  maxParallelSearchActions: number;
+}
+
 interface SpecialistProgressState {
   successfulToolCalls: number;
   sourceUrls: Set<string>;
   fetchedPageCount: number;
   draftWordCount: number;
   citationCount: number;
+  searchTimeoutCount: number;
   errorSamples: string[];
 }
 
@@ -117,7 +131,7 @@ function buildSpecialistPlannerSystemPrompt(options: Pick<SpecialistToolLoopOpti
     {
       label: "ReAct Directives",
       content:
-        "Use iterative reasoning: choose tools, observe output, and replan. Prefer the smallest set of high-yield actions. Respect the specialist objective contract you receive in planner input: do not return actionType=respond until required deliverable criteria are satisfied, unless you explicitly report a failure summary with concrete evidence. For tool actions, always provide valid JSON object input."
+        "Use iterative reasoning: choose tools, observe output, and replan. Prefer the smallest set of high-yield actions. Respect the specialist objective contract you receive in planner input: do not return actionType=respond until required deliverable criteria are satisfied, unless you explicitly report a failure summary with concrete evidence. Maintain phase progression when drafting tasks are requested: discovery -> fetch -> synthesis -> persist. If discovery has URLs but fetch is still zero, prioritize downstream transition over repeating search-only cycles. For tool actions, always provide valid JSON object input."
     }
   ]);
 }
@@ -270,12 +284,17 @@ function createSpecialistProgressState(): SpecialistProgressState {
     fetchedPageCount: 0,
     draftWordCount: 0,
     citationCount: 0,
+    searchTimeoutCount: 0,
     errorSamples: []
   };
 }
 
 function updateSpecialistProgress(progress: SpecialistProgressState, result: ToolExecutionResult): void {
   if (result.status === "error") {
+    const message = (result.error ?? "").toLowerCase();
+    if (result.tool === "search" && /\btimeout\b|timed out|aborted due to timeout/.test(message)) {
+      progress.searchTimeoutCount += 1;
+    }
     if (progress.errorSamples.length < 6) {
       progress.errorSamples.push(`${result.tool}: ${result.error ?? "execution_failed"}`);
     }
@@ -311,6 +330,52 @@ function updateSpecialistProgress(progress: SpecialistProgressState, result: Too
       }
     }
   }
+}
+
+function derivePhaseTransitionHint(
+  contract: SpecialistTaskContract,
+  progress: SpecialistProgressState,
+  artifactCount: number
+): SpecialistPhaseTransitionHint {
+  if (!(contract.requiresDraft || contract.requiresCitations)) {
+    return null;
+  }
+  if (progress.sourceUrls.size > 0 && progress.fetchedPageCount === 0) {
+    return "discovery_complete_fetch_pending";
+  }
+  if (progress.fetchedPageCount > 0 && progress.draftWordCount === 0) {
+    return "fetch_complete_synthesis_pending";
+  }
+  if (progress.draftWordCount > 0 && artifactCount === 0) {
+    return "synthesis_complete_persist_pending";
+  }
+  return null;
+}
+
+function buildSearchRetryProfile(progress: SpecialistProgressState, consecutiveSearchOnlyIterations: number): SearchRetryProfile {
+  if (progress.searchTimeoutCount >= 2 || consecutiveSearchOnlyIterations >= 3) {
+    return {
+      mode: "degraded",
+      timeoutCount: progress.searchTimeoutCount,
+      recommendation:
+        "Search is degraded. Use one concise query per iteration, then transition to fetch/synthesis from existing URLs.",
+      maxParallelSearchActions: 1
+    };
+  }
+  if (progress.searchTimeoutCount >= 1) {
+    return {
+      mode: "flaky",
+      timeoutCount: progress.searchTimeoutCount,
+      recommendation: "Search is flaky. Narrow query breadth and prioritize downstream fetch once URLs are available.",
+      maxParallelSearchActions: 1
+    };
+  }
+  return {
+    mode: "stable",
+    timeoutCount: 0,
+    recommendation: "Search appears stable.",
+    maxParallelSearchActions: 3
+  };
 }
 
 function evaluateSpecialistContractGate(args: {
@@ -438,6 +503,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
   let consecutivePlannerFailures = 0;
   let consecutiveSearchOnlyIterations = 0;
   let repeatedStableSuccessIterations = 0;
+  let phaseTransitionHintRaised = false;
   let previousIterationSignature: string | null = null;
   let lastSuccessfulExecution: ToolExecutionResult | null = null;
 
@@ -473,6 +539,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     if (Date.now() >= deadlineAtMs || plannerCallsUsed >= options.plannerMaxCalls || toolCallsUsed >= options.maxToolCalls) {
       break;
     }
+    const phaseTransitionHint = derivePhaseTransitionHint(taskContract, progress, toolContext.state.artifacts.length);
+    const retryProfile = buildSearchRetryProfile(progress, consecutiveSearchOnlyIterations);
 
     const plannerDiagnostic = await structuredChatRunner(
       {
@@ -497,11 +565,14 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
                 sourceUrlCount: progress.sourceUrls.size,
                 fetchedPageCount: progress.fetchedPageCount,
                 draftWordCount: progress.draftWordCount,
-                citationCount: progress.citationCount
+                citationCount: progress.citationCount,
+                searchTimeoutCount: progress.searchTimeoutCount
               },
               loopShape: {
                 consecutiveSearchOnlyIterations
               },
+              phaseTransitionHint,
+              retryProfile,
               availableTools: Array.from(availableTools.values()).map((tool) => ({
                 name: tool.name,
                 description: tool.description,
@@ -580,7 +651,11 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         skillName: options.skillName,
         iteration,
         thought: plan.thought,
-        actionType: plan.actionType
+        actionType: plan.actionType,
+        singleTool: plan.singleTool,
+        parallelActions: plan.parallelActions,
+        phaseTransitionHint,
+        retryProfile
       },
       timestamp: nowIso()
     });
@@ -630,13 +705,48 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
           : []
         : (plan.parallelActions ?? []);
 
-    const actions = requestedActions
+    let actions = requestedActions
       .map((action) => ({
         tool: action.tool.trim(),
         inputJson: action.inputJson
       }))
       .filter((action) => action.tool.length > 0)
       .slice(0, Math.max(1, options.maxParallelTools));
+
+    if (actions.length > 1 && retryProfile.maxParallelSearchActions < 3) {
+      let allowedSearchActions = 0;
+      const adjustedActions: Array<{ tool: string; inputJson: string }> = [];
+      for (const action of actions) {
+        if (SEARCH_FAMILY_TOOLS.has(action.tool)) {
+          if (allowedSearchActions >= retryProfile.maxParallelSearchActions) {
+            continue;
+          }
+          allowedSearchActions += 1;
+        }
+        adjustedActions.push(action);
+        if (adjustedActions.length >= Math.max(1, options.maxParallelTools)) {
+          break;
+        }
+      }
+      if (adjustedActions.length > 0 && adjustedActions.length < actions.length) {
+        await options.runStore.appendEvent({
+          runId: options.runId,
+          sessionId: options.sessionId,
+          phase: "thought",
+          eventType: "specialist_plan_adjusted",
+          payload: {
+            skillName: options.skillName,
+            iteration,
+            reason: "flaky_search_retry_profile",
+            retryProfile,
+            originalActionCount: actions.length,
+            adjustedActionCount: adjustedActions.length
+          },
+          timestamp: nowIso()
+        });
+        actions = adjustedActions;
+      }
+    }
 
     if (actions.length === 0) {
       observations.push({
@@ -685,6 +795,9 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       consecutiveSearchOnlyIterations += 1;
     } else {
       consecutiveSearchOnlyIterations = 0;
+      if (hadDownstreamProgress) {
+        phaseTransitionHintRaised = false;
+      }
     }
 
     toolCallsUsed += executions.length;
@@ -734,7 +847,37 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       timestamp: nowIso()
     });
 
-    if (consecutiveSearchOnlyIterations >= 3) {
+    const postIterationTransitionHint = derivePhaseTransitionHint(taskContract, progress, toolContext.state.artifacts.length);
+    if (
+      !phaseTransitionHintRaised &&
+      consecutiveSearchOnlyIterations >= 2 &&
+      postIterationTransitionHint !== null
+    ) {
+      phaseTransitionHintRaised = true;
+      observations.push({
+        iteration,
+        summary: `phase_transition_required:${postIterationTransitionHint}`
+      });
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "observe",
+        eventType: "specialist_phase_transition_required",
+        payload: {
+          skillName: options.skillName,
+          iteration,
+          hint: postIterationTransitionHint,
+          sourceUrlCount: progress.sourceUrls.size,
+          fetchedPageCount: progress.fetchedPageCount,
+          draftWordCount: progress.draftWordCount
+        },
+        timestamp: nowIso()
+      });
+    }
+
+    const searchOnlyGuardThreshold =
+      postIterationTransitionHint === "discovery_complete_fetch_pending" ? 4 : 3;
+    if (consecutiveSearchOnlyIterations >= searchOnlyGuardThreshold) {
       await options.runStore.appendEvent({
         runId: options.runId,
         sessionId: options.sessionId,
@@ -743,7 +886,9 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         payload: {
           skillName: options.skillName,
           guard: "search_only_no_downstream_progress",
-          consecutiveSearchOnlyIterations
+          consecutiveSearchOnlyIterations,
+          threshold: searchOnlyGuardThreshold,
+          phaseTransitionHint: postIterationTransitionHint
         },
         timestamp: nowIso()
       });
@@ -787,6 +932,9 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       reason: "budget_or_iteration_guardrail",
       plannerCallsUsed,
       toolCallsUsed,
+      searchTimeoutCount: progress.searchTimeoutCount,
+      sourceUrlCount: progress.sourceUrls.size,
+      fetchedPageCount: progress.fetchedPageCount,
       unmetContract: unmetContract.unmet
     },
     timestamp: nowIso()

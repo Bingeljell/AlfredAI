@@ -14,6 +14,30 @@ class FakeSearchManager {
   }
 }
 
+class FakeSearchManagerWithResults {
+  async search(query: string) {
+    return {
+      provider: "searxng" as const,
+      fallbackUsed: false,
+      results: [
+        {
+          title: `Result for ${query}`,
+          url: `https://example.com/${encodeURIComponent(query)}`,
+          snippet: "Example snippet",
+          provider: "searxng" as const,
+          rank: 1
+        }
+      ]
+    };
+  }
+}
+
+class TimeoutSearchManager {
+  async search() {
+    throw new Error("The operation was aborted due to timeout");
+  }
+}
+
 test("runSpecialistToolLoop exits with policy block when planner auth fails", async () => {
   const workspace = await createTempWorkspace("specialist-policy-block");
   const runStore = new RunStore(workspace);
@@ -184,6 +208,148 @@ test("runSpecialistToolLoop triggers loop-shape guard after repeated search-only
   const updatedRun = await runStore.getRun(run.runId);
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
   assert.ok(events.some((event) => event.eventType === "specialist_loop_guard_triggered"));
+});
+
+test("runSpecialistToolLoop emits phase-transition hint before search-only guard for research tasks", async () => {
+  const workspace = await createTempWorkspace("specialist-phase-transition-hint");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "research this", "running");
+
+  const outcome = await runSpecialistToolLoop({
+    runStore,
+    searchManager: new FakeSearchManagerWithResults() as never,
+    workspaceDir: workspace,
+    message: "Research today's AI news and draft a cited blog post",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in this test");
+    },
+    maxIterations: 5,
+    maxDurationMs: 60_000,
+    maxToolCalls: 10,
+    maxParallelTools: 1,
+    plannerMaxCalls: 6,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    skillName: "research_agent",
+    skillDescription: "Research skill",
+    skillSystemPrompt: "Do research",
+    toolAllowlist: ["search"],
+    structuredChatRunner: async <T>() =>
+      ({
+        result: {
+          thought: "Search first.",
+          actionType: "single",
+          singleTool: "search",
+          singleInputJson: JSON.stringify({ query: "ai news", maxResults: 5 }),
+          parallelActions: null,
+          responseText: null
+        }
+      }) as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>
+  });
+
+  assert.equal(outcome.status, "completed");
+
+  const updatedRun = await runStore.getRun(run.runId);
+  assert.equal(updatedRun?.toolCalls.length, 4);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(events.some((event) => event.eventType === "specialist_phase_transition_required"));
+  assert.ok(
+    events.some(
+      (event) =>
+        event.eventType === "specialist_loop_guard_triggered" &&
+        (event.payload as { threshold?: number }).threshold === 4
+    )
+  );
+});
+
+test("runSpecialistToolLoop applies flaky-search retry profile to parallel search plans", async () => {
+  const workspace = await createTempWorkspace("specialist-flaky-search-profile");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "research this", "running");
+
+  const outcome = await runSpecialistToolLoop({
+    runStore,
+    searchManager: new TimeoutSearchManager() as never,
+    workspaceDir: workspace,
+    message: "Research this topic",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in this test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 60_000,
+    maxToolCalls: 10,
+    maxParallelTools: 3,
+    plannerMaxCalls: 3,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    skillName: "research_agent",
+    skillDescription: "Research skill",
+    skillSystemPrompt: "Do research",
+    toolAllowlist: ["search"],
+    structuredChatRunner: async <T>() =>
+      ({
+        result: {
+          thought: "Search broadly in parallel.",
+          actionType: "parallel",
+          singleTool: null,
+          singleInputJson: null,
+          parallelActions: [
+            { tool: "search", inputJson: JSON.stringify({ query: "ai news 1" }) },
+            { tool: "search", inputJson: JSON.stringify({ query: "ai news 2" }) },
+            { tool: "search", inputJson: JSON.stringify({ query: "ai news 3" }) }
+          ],
+          responseText: null
+        }
+      }) as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>
+  });
+
+  assert.equal(outcome.status, "completed");
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  const actionResults = events.filter((event) => event.eventType === "specialist_action_result");
+  assert.equal(actionResults.length, 2);
+  const firstResultCount = Array.isArray((actionResults[0]?.payload as { results?: unknown[] } | undefined)?.results)
+    ? ((actionResults[0]?.payload as { results?: unknown[] }).results?.length ?? 0)
+    : 0;
+  const secondResultCount = Array.isArray((actionResults[1]?.payload as { results?: unknown[] } | undefined)?.results)
+    ? ((actionResults[1]?.payload as { results?: unknown[] }).results?.length ?? 0)
+    : 0;
+  assert.equal(firstResultCount, 3);
+  assert.equal(secondResultCount, 1);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.eventType === "specialist_plan_adjusted" &&
+        (event.payload as { reason?: string }).reason === "flaky_search_retry_profile"
+    )
+  );
 });
 
 test("runSpecialistToolLoop returns latest structured tool output for ops tasks", async () => {

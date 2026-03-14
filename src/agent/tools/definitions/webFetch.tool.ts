@@ -26,6 +26,82 @@ function dedupeUrls(urls: string[]): string[] {
   );
 }
 
+interface FetchedPageQuality {
+  url: string;
+  title: string;
+  textLength: number;
+  usable: boolean;
+  signals: string[];
+}
+
+const BLOCKING_PATTERNS = [
+  /\bare you a robot\b/i,
+  /\bcaptcha\b/i,
+  /\bx-forbidden\b/i,
+  /\baccess denied\b/i,
+  /\bforbidden\b/i,
+  /\bcloudflare\b/i,
+  /\bverify you are human\b/i,
+  /\bsubscribe to continue\b/i,
+  /\bsign in to continue\b/i,
+  /\b404\b/i,
+  /\bnot found\b/i
+];
+
+export function evaluateFetchedPageQuality(page: { url: string; title: string; text: string }): FetchedPageQuality {
+  const normalizedTitle = (page.title || "").trim();
+  const normalizedText = (page.text || "").replace(/\s+/g, " ").trim();
+  const textLength = normalizedText.length;
+  const signals: string[] = [];
+  const composite = `${normalizedTitle} ${normalizedText.slice(0, 800)}`.trim();
+
+  if (textLength < 220) {
+    signals.push("low_text");
+  }
+  if (!normalizedTitle && textLength < 600) {
+    signals.push("missing_title");
+  }
+  for (const pattern of BLOCKING_PATTERNS) {
+    if (pattern.test(composite)) {
+      signals.push("blocked_or_paywalled");
+      break;
+    }
+  }
+
+  const usable = !signals.includes("blocked_or_paywalled") && textLength >= 220;
+  return {
+    url: page.url,
+    title: normalizedTitle,
+    textLength,
+    usable,
+    signals
+  };
+}
+
+export function selectFetchedPagesForStorage<TPage extends { url: string; title: string; text: string }>(
+  pages: TPage[],
+  maxPages: number
+): {
+  selectedPages: TPage[];
+  quality: FetchedPageQuality[];
+  usableCount: number;
+  degradedCount: number;
+} {
+  const quality = pages.map((page) => evaluateFetchedPageQuality(page));
+  const usableUrls = new Set(quality.filter((item) => item.usable).map((item) => item.url));
+  const usablePages = pages.filter((page) => usableUrls.has(page.url));
+  const selectedPages =
+    usablePages.length > 0
+      ? usablePages.slice(0, maxPages)
+      : pages.slice(0, maxPages);
+  return {
+    selectedPages,
+    quality,
+    usableCount: usablePages.length,
+    degradedCount: Math.max(0, quality.length - usablePages.length)
+  };
+}
+
 export const toolDefinition: LeadAgentToolDefinition<typeof WebFetchToolInputSchema> = {
   name: "web_fetch",
   description: "Fetch and parse web pages using browser automation from query results or explicit URL list.",
@@ -69,8 +145,9 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WebFetchToolInputSch
 
     const storedUrls = input.useStoredUrls ? (context.getShortlistedUrls?.() ?? []) : [];
     const requestedUrls = [...(input.urls ?? []), ...storedUrls];
-    const mergedUrls = dedupeUrls([...requestedUrls, ...searchUrls]).slice(0, maxPages);
-    if (mergedUrls.length === 0) {
+    const candidateUrls = dedupeUrls([...requestedUrls, ...searchUrls]);
+    const primaryUrls = candidateUrls.slice(0, maxPages);
+    if (primaryUrls.length === 0) {
       context.setFetchedPages([]);
       return {
         query: input.query ?? null,
@@ -88,20 +165,52 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WebFetchToolInputSch
 
     const browserPool = await BrowserPool.create();
     try {
-      const collection = await browserPool.collectPages(mergedUrls, browseConcurrency, context.deadlineAtMs);
-      context.setFetchedPages(collection.pages);
+      const primaryCollection = await browserPool.collectPages(primaryUrls, browseConcurrency, context.deadlineAtMs);
+      let allPages = [...primaryCollection.pages];
+      let allFailures = [...primaryCollection.failures];
+      const primarySelection = selectFetchedPagesForStorage(primaryCollection.pages, maxPages);
+      const remainingCandidateUrls = candidateUrls.slice(primaryUrls.length);
+      const retryUrlCount = primarySelection.degradedCount > 0
+        ? Math.min(primarySelection.degradedCount, remainingCandidateUrls.length, maxPages)
+        : 0;
+
+      let retryPagesFetched = 0;
+      if (retryUrlCount > 0) {
+        const retryUrls = remainingCandidateUrls.slice(0, retryUrlCount);
+        const retryCollection = await browserPool.collectPages(retryUrls, browseConcurrency, context.deadlineAtMs);
+        retryPagesFetched = retryCollection.pages.length;
+        allPages = [...allPages, ...retryCollection.pages];
+        allFailures = [...allFailures, ...retryCollection.failures];
+      }
+
+      const selection = selectFetchedPagesForStorage(allPages, maxPages);
+      context.setFetchedPages(selection.selectedPages);
 
       return {
         query: input.query ?? null,
         searchProvider: searchProvider ?? null,
         searchFallbackUsed: searchFallbackUsed ?? null,
         requestedUrlCount: requestedUrls.length,
-        urlCount: mergedUrls.length,
-        pagesFetched: collection.pages.length,
-        browseFailureCount: collection.failures.length,
-        browseFailureSamples: collection.failures.slice(0, 8),
+        urlCount: primaryUrls.length,
+        pagesFetched: selection.selectedPages.length,
+        rawPagesFetched: allPages.length,
+        usablePageCount: selection.usableCount,
+        degradedPageCount: selection.degradedCount,
+        retryUrlCount,
+        retryPagesFetched,
+        browseFailureCount: allFailures.length,
+        browseFailureSamples: allFailures.slice(0, 8),
+        degradedPageSamples: selection.quality
+          .filter((item) => !item.usable)
+          .slice(0, 8)
+          .map((item) => ({
+            url: item.url,
+            title: item.title,
+            textLength: item.textLength,
+            signals: item.signals
+          })),
         storedPageCount: context.getFetchedPages().length,
-        samplePages: collection.pages.slice(0, 3).map((page) => ({
+        samplePages: selection.selectedPages.slice(0, 3).map((page) => ({
           url: page.url,
           title: page.title,
           textPreview: page.text.slice(0, 220)

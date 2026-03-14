@@ -682,5 +682,10 @@ test("runSpecialistToolLoop defaults missing single-action input for known tools
         (event.payload as { reason?: string }).reason === "single_action_input_defaulted"
     )
   );
-  assert.ok(events.some((event) => event.eventType === "specialist_action_result"));
+  const actionResultEvent = events.find((event) => event.eventType === "specialist_action_result");
+  assert.ok(actionResultEvent);
+  assert.ok(
+    typeof (actionResultEvent?.payload as { actionEconomy?: { efficiency?: number } } | undefined)?.actionEconomy
+      ?.efficiency === "number"
+  );
 });

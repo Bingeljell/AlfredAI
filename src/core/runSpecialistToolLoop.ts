@@ -65,6 +65,13 @@ interface SpecialistProgressState {
   errorSamples: string[];
 }
 
+interface ProgressSnapshot {
+  sourceUrlCount: number;
+  fetchedPageCount: number;
+  draftWordCount: number;
+  artifactCount: number;
+}
+
 const SPECIALIST_PLANNER_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -351,6 +358,23 @@ function expectedPhaseToolFamily(phase: SpecialistPhase): string {
     default:
       return "tool";
   }
+}
+
+function captureProgressSnapshot(progress: SpecialistProgressState, artifactCount: number): ProgressSnapshot {
+  return {
+    sourceUrlCount: progress.sourceUrls.size,
+    fetchedPageCount: progress.fetchedPageCount,
+    draftWordCount: progress.draftWordCount,
+    artifactCount
+  };
+}
+
+function computeIterationValueDelta(before: ProgressSnapshot, after: ProgressSnapshot): number {
+  const sourceDelta = Math.max(0, after.sourceUrlCount - before.sourceUrlCount);
+  const fetchDelta = Math.max(0, after.fetchedPageCount - before.fetchedPageCount);
+  const draftDelta = Math.max(0, after.draftWordCount - before.draftWordCount);
+  const artifactDelta = Math.max(0, after.artifactCount - before.artifactCount);
+  return sourceDelta * 0.15 + fetchDelta * 2.0 + draftDelta / 220 + artifactDelta * 4.0;
 }
 
 function shouldApplyDiagnosticThrashGuard(
@@ -795,6 +819,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
   let lastSuccessfulExecution: ToolExecutionResult | null = null;
   let lastPhaseState: SpecialistPhase | null = null;
   let consecutiveHealthySearchStatusChecks = 0;
+  let lowValueIterationStreak = 0;
+  const recentEfficiency: Array<{ iteration: number; valueDelta: number; costScore: number; efficiency: number }> = [];
   const schemaFailureStreakByTool = new Map<string, number>();
   const schemaRecoveryTools = new Set<string>();
 
@@ -890,6 +916,10 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
               schemaRecovery: {
                 repeatedSchemaFailureTools: Array.from(schemaRecoveryTools),
                 active: schemaRecoveryTools.size > 0
+              },
+              actionEconomy: {
+                lowValueIterationStreak,
+                recentEfficiency: recentEfficiency.slice(-3)
               },
               availableTools: Array.from(availableTools.values()).map((tool) => ({
                 name: tool.name,
@@ -1196,6 +1226,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       continue;
     }
 
+    const beforeSnapshot = captureProgressSnapshot(progress, toolContext.state.artifacts.length);
     const executions = await Promise.all(
       actions.map(async (action): Promise<ToolExecutionResult> => {
         const envelope = await executeToolWithEnvelope({
@@ -1255,6 +1286,24 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         lastSuccessfulExecution = execution;
       }
     }
+    const afterSnapshot = captureProgressSnapshot(progress, toolContext.state.artifacts.length);
+    const valueDelta = computeIterationValueDelta(beforeSnapshot, afterSnapshot);
+    const costScore = executions.reduce((sum, execution) => sum + execution.durationMs, 0) / 1000 + executions.length * 0.35;
+    const efficiency = valueDelta / Math.max(1, costScore);
+    recentEfficiency.push({
+      iteration,
+      valueDelta: Number(valueDelta.toFixed(4)),
+      costScore: Number(costScore.toFixed(4)),
+      efficiency: Number(efficiency.toFixed(4))
+    });
+    if (recentEfficiency.length > 6) {
+      recentEfficiency.shift();
+    }
+    if (valueDelta <= 0.05) {
+      lowValueIterationStreak += 1;
+    } else {
+      lowValueIterationStreak = 0;
+    }
 
     const hadSearchFamilyAction = executions.some((item) => SEARCH_FAMILY_TOOLS.has(item.tool));
     const hadDownstreamProgress = executions.some(
@@ -1300,6 +1349,12 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         skillName: options.skillName,
         iteration,
         summary,
+        actionEconomy: {
+          valueDelta: Number(valueDelta.toFixed(4)),
+          costScore: Number(costScore.toFixed(4)),
+          efficiency: Number(efficiency.toFixed(4)),
+          lowValueIterationStreak
+        },
         results: executions.map((item) => ({
           tool: item.tool,
           status: item.status,
@@ -1358,6 +1413,22 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
           consecutiveSearchOnlyIterations,
           threshold: searchOnlyGuardThreshold,
           phaseTransitionHint: postIterationTransitionHint
+        },
+        timestamp: nowIso()
+      });
+      break;
+    }
+    if (lowValueIterationStreak >= 4) {
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "observe",
+        eventType: "specialist_loop_guard_triggered",
+        payload: {
+          skillName: options.skillName,
+          guard: "low_value_action_thrash",
+          lowValueIterationStreak,
+          latestEfficiency: recentEfficiency.slice(-2)
         },
         timestamp: nowIso()
       });

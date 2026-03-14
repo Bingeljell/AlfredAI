@@ -191,3 +191,83 @@ test("executeToolWithEnvelope auto-repairs markdown-fenced JSON input", async ()
   assert.equal(result.inputRepairStrategy, "strip_markdown_fence");
   assert.deepEqual(result.input, { value: "hello" });
 });
+
+test("executeToolWithEnvelope repairs search-style query aliases into schema-compliant input", async () => {
+  const workspace = await createTempWorkspace("tool-envelope-search-shape-repair");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "test", "running");
+  const context = makeToolContext(runStore);
+  context.runId = run.runId;
+
+  const schema = z.object({
+    query: z.string().min(1),
+    maxResults: z.number().int().positive().optional()
+  });
+  const tool: LeadAgentToolDefinition<typeof schema> = {
+    name: "search",
+    description: "search",
+    inputSchema: schema,
+    inputHint: "search",
+    async execute(input) {
+      return {
+        echoed: input
+      };
+    }
+  };
+
+  const result = await executeToolWithEnvelope({
+    toolName: "search",
+    inputJson: JSON.stringify({ queries: ["managed service provider usa"], numResults: 5 }),
+    tools: new Map([[tool.name, tool]]),
+    context,
+    runStore,
+    runId: run.runId
+  });
+
+  assert.equal(result.status, "ok");
+  assert.equal(result.inputRepairApplied, true);
+  assert.match(result.inputRepairStrategy ?? "", /tool_shape_repair_query/);
+  assert.deepEqual(result.input, {
+    queries: ["managed service provider usa"],
+    numResults: 5,
+    query: "managed service provider usa",
+    maxResults: 5
+  });
+});
+
+test("executeToolWithEnvelope coerces plain string input for writer_agent", async () => {
+  const workspace = await createTempWorkspace("tool-envelope-writer-plain-string");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "test", "running");
+  const context = makeToolContext(runStore);
+  context.runId = run.runId;
+
+  const schema = z.object({ instruction: z.string().min(8) });
+  const tool: LeadAgentToolDefinition<typeof schema> = {
+    name: "writer_agent",
+    description: "writer",
+    inputSchema: schema,
+    inputHint: "writer",
+    async execute(input) {
+      return {
+        echoed: input.instruction
+      };
+    }
+  };
+
+  const result = await executeToolWithEnvelope({
+    toolName: "writer_agent",
+    inputJson: "Write a concise test memo with two bullets.",
+    tools: new Map([[tool.name, tool]]),
+    context,
+    runStore,
+    runId: run.runId
+  });
+
+  assert.equal(result.status, "ok");
+  assert.equal(result.inputRepairApplied, true);
+  assert.equal(result.inputRepairStrategy, "coerce_plain_instruction");
+  assert.deepEqual(result.input, {
+    instruction: "Write a concise test memo with two bullets."
+  });
+});

@@ -40,22 +40,35 @@ interface ParsedToolInput {
   strategy: string | null;
 }
 
-function parseToolInputJson(inputJson: string): ParsedToolInput {
+function parseToolInputJson(toolName: string, inputJson: string): ParsedToolInput {
   const parsedDirect = parseJsonObjectCandidate(inputJson);
   if (parsedDirect) {
+    const repaired = repairToolInputShape(toolName, parsedDirect);
     return {
-      input: parsedDirect,
-      repaired: false,
-      strategy: null
+      input: repaired.input,
+      repaired: repaired.repaired,
+      strategy: repaired.strategy
     };
   }
 
   const repaired = repairJsonLikeObject(inputJson);
   if (repaired) {
+    const shapeRepaired = repairToolInputShape(toolName, repaired.input);
     return {
-      input: repaired.input,
+      input: shapeRepaired.input,
       repaired: true,
-      strategy: repaired.strategy
+      strategy: shapeRepaired.repaired
+        ? `${repaired.strategy}+${shapeRepaired.strategy ?? "tool_shape_repair"}`
+        : repaired.strategy
+    };
+  }
+
+  const coerced = coercePlainTextInput(toolName, inputJson);
+  if (coerced) {
+    return {
+      input: coerced.input,
+      repaired: true,
+      strategy: coerced.strategy
     };
   }
 
@@ -159,6 +172,180 @@ function repairJsonLikeObject(inputJson: string): { input: Record<string, unknow
   return null;
 }
 
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function asPositiveInteger(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : null;
+}
+
+function firstStringInArray(value: unknown): string | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  for (const item of value) {
+    const parsed = asNonEmptyString(item);
+    if (parsed) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function isSearchFamilyTool(toolName: string): boolean {
+  return toolName === "search" || toolName === "lead_search_shortlist";
+}
+
+function pickSearchQuery(input: Record<string, unknown>): string | null {
+  const direct = asNonEmptyString(input.query);
+  if (direct) {
+    return direct;
+  }
+  const fromQueries = firstStringInArray(input.queries);
+  if (fromQueries) {
+    return fromQueries;
+  }
+  const aliasKeys = ["instruction", "brief", "prompt", "objective", "message", "task", "keyword"];
+  for (const key of aliasKeys) {
+    const parsed = asNonEmptyString(input[key]);
+    if (parsed) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function repairSearchFamilyInput(
+  toolName: string,
+  input: Record<string, unknown>
+): { input: Record<string, unknown>; repaired: boolean; strategy: string | null } {
+  const next = { ...input };
+  const strategies: string[] = [];
+  const query = pickSearchQuery(next);
+  if (query && next.query !== query) {
+    next.query = query;
+    strategies.push("tool_shape_repair_query");
+  }
+
+  const maxResults = asPositiveInteger(next.maxResults)
+    ?? asPositiveInteger(next.numResults)
+    ?? asPositiveInteger(next.top_k);
+  if (maxResults && next.maxResults !== maxResults) {
+    next.maxResults = maxResults;
+    strategies.push("tool_shape_repair_max_results");
+  }
+
+  if (toolName === "lead_search_shortlist") {
+    const maxUrls = asPositiveInteger(next.maxUrls) ?? asPositiveInteger(next.urlLimit);
+    if (maxUrls && next.maxUrls !== maxUrls) {
+      next.maxUrls = maxUrls;
+      strategies.push("tool_shape_repair_max_urls");
+    }
+  }
+
+  return {
+    input: next,
+    repaired: strategies.length > 0,
+    strategy: strategies.length > 0 ? strategies.join("+") : null
+  };
+}
+
+function repairWriterAgentInput(input: Record<string, unknown>): {
+  input: Record<string, unknown>;
+  repaired: boolean;
+  strategy: string | null;
+} {
+  const next = { ...input };
+  const strategies: string[] = [];
+  const instruction =
+    asNonEmptyString(next.instruction)
+    ?? asNonEmptyString(next.brief)
+    ?? asNonEmptyString(next.prompt)
+    ?? asNonEmptyString(next.objective)
+    ?? asNonEmptyString(next.message)
+    ?? asNonEmptyString(next.task)
+    ?? asNonEmptyString(next.query);
+  if (instruction && next.instruction !== instruction) {
+    next.instruction = instruction;
+    strategies.push("tool_shape_repair_instruction");
+  }
+
+  const maxWords = asPositiveInteger(next.maxWords) ?? asPositiveInteger(next.max_words) ?? asPositiveInteger(next.wordLimit);
+  if (maxWords && next.maxWords !== maxWords) {
+    next.maxWords = maxWords;
+    strategies.push("tool_shape_repair_max_words");
+  }
+
+  const outputPath = asNonEmptyString(next.outputPath) ?? asNonEmptyString(next.path) ?? asNonEmptyString(next.filePath);
+  if (outputPath && next.outputPath !== outputPath) {
+    next.outputPath = outputPath;
+    strategies.push("tool_shape_repair_output_path");
+  }
+
+  return {
+    input: next,
+    repaired: strategies.length > 0,
+    strategy: strategies.length > 0 ? strategies.join("+") : null
+  };
+}
+
+function repairToolInputShape(
+  toolName: string,
+  input: Record<string, unknown>
+): { input: Record<string, unknown>; repaired: boolean; strategy: string | null } {
+  if (isSearchFamilyTool(toolName)) {
+    return repairSearchFamilyInput(toolName, input);
+  }
+  if (toolName === "writer_agent") {
+    return repairWriterAgentInput(input);
+  }
+  return {
+    input,
+    repaired: false,
+    strategy: null
+  };
+}
+
+function coercePlainTextInput(
+  toolName: string,
+  inputJson: string
+): { input: Record<string, unknown>; strategy: string } | null {
+  const normalized = inputJson.trim();
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.startsWith("{") || normalized.startsWith("[") || normalized.startsWith("`")) {
+    return null;
+  }
+
+  if (isSearchFamilyTool(toolName)) {
+    return {
+      input: {
+        query: normalized
+      },
+      strategy: "coerce_plain_query"
+    };
+  }
+  if (toolName === "writer_agent") {
+    return {
+      input: {
+        instruction: normalized
+      },
+      strategy: "coerce_plain_instruction"
+    };
+  }
+  return null;
+}
+
 function definitionsDir(): string {
   const filePath = fileURLToPath(import.meta.url);
   return path.join(path.dirname(filePath), "definitions");
@@ -217,7 +404,7 @@ export async function executeToolWithEnvelope(args: ExecuteToolWithEnvelopeArgs)
   }
 
   const requiresApproval = tool.requiresApproval === true;
-  const parsedInputJson = parseToolInputJson(args.inputJson);
+  const parsedInputJson = parseToolInputJson(args.toolName, args.inputJson);
   const rawInput = parsedInputJson.input;
   if (!rawInput) {
     return {

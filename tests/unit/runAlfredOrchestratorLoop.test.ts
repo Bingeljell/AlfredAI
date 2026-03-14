@@ -652,6 +652,106 @@ test("runAlfredOrchestratorLoop treats run-id failure analysis prompts as diagno
   );
 });
 
+test("runAlfredOrchestratorLoop carries forward objective on follow-up execute turns", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-followup-objective");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "Try again", "running");
+
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string; messages?: Array<{ role: string; content: string }> }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      const plannerInput = JSON.parse(options.messages?.[1]?.content ?? "{}") as {
+        turnObjective?: string;
+      };
+      assert.match(plannerInput.turnObjective ?? "", /Research today's top AI news/i);
+      assert.match(plannerInput.turnObjective ?? "", /Follow-up instruction: Try again/i);
+      return {
+        result: {
+          thought: "Objective is clear from session follow-up context.",
+          actionType: "respond" as const,
+          delegateAgent: null,
+          delegateBrief: null,
+          toolName: null,
+          toolInputJson: null,
+          responseText: "Proceeding with carried objective."
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message: "Try again",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in follow-up objective test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 30_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner,
+    sessionContext: {
+      activeObjective: "Try again",
+      recentTurns: [
+        {
+          role: "user",
+          content:
+            "Research today's top AI news, draft an 800-1000 word blog post with citations, and save it to workspace/alfred/artifacts/blog_test/latest.md.",
+          timestamp: "2026-03-14T10:00:00.000Z"
+        },
+        {
+          role: "assistant",
+          content: "Last run stalled in search-only mode.",
+          timestamp: "2026-03-14T10:00:30.000Z"
+        },
+        {
+          role: "user",
+          content: "Try again",
+          timestamp: "2026-03-14T10:01:00.000Z"
+        }
+      ]
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.equal(outcome.assistantText, "Proceeding with carried objective.");
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  const resolvedEvent = events.find((event) => event.eventType === "alfred_turn_objective_resolved");
+  assert.ok(resolvedEvent);
+  assert.equal((resolvedEvent?.payload as { source?: string }).source, "recent_turn");
+  const objectiveContractEvent = events.find((event) => event.eventType === "alfred_objective_contract_created");
+  assert.ok(objectiveContractEvent);
+  assert.match(
+    ((objectiveContractEvent?.payload as { objectiveContract?: { requiredDeliverable?: string } })?.objectiveContract
+      ?.requiredDeliverable ?? ""),
+    /blog draft/i
+  );
+});
+
 test("runAlfredOrchestratorLoop answers diagnostic turns from run evidence without delegating", async () => {
   const workspace = await createTempWorkspace("alfred-orchestrator-diagnostic-turn");
   const runStore = new RunStore(workspace);

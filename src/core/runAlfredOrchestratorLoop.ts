@@ -113,6 +113,85 @@ interface CompletionGateDecision {
 type AlfredTurnMode = "diagnostic" | "execute";
 type AlfredExecutionPermission = "execute" | "plan_only";
 
+const FOLLOW_UP_CONTINUATION_PATTERNS = [
+  /^\s*(try again|retry|rerun|run again)\s*[.!]?\s*$/i,
+  /^\s*(proceed|continue|go ahead|do it|yes|yep|yeah|ok|okay)\s*[.!]?\s*$/i,
+  /^\s*(let'?s go|do that|that works|sounds good)\s*[.!]?\s*$/i
+];
+
+function isFollowUpContinuationMessage(message: string): boolean {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (FOLLOW_UP_CONTINUATION_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+    return true;
+  }
+  return trimmed.length <= 24 && /\b(again|retry|proceed|continue)\b/i.test(trimmed);
+}
+
+function isSubstantiveObjective(text: string | undefined): text is string {
+  if (typeof text !== "string") {
+    return false;
+  }
+  const trimmed = text.trim();
+  if (trimmed.length < 20) {
+    return false;
+  }
+  return !isFollowUpContinuationMessage(trimmed);
+}
+
+function resolveTurnObjective(
+  message: string,
+  sessionContext?: SessionPromptContext
+): { objective: string; source: "message" | "recent_turn" | "active_objective" | "last_completed_run" } {
+  if (!isFollowUpContinuationMessage(message)) {
+    return {
+      objective: message,
+      source: "message"
+    };
+  }
+
+  const normalizedMessage = message.replace(/\s+/g, " ").trim().toLowerCase();
+  const recentUserTurn = [...(sessionContext?.recentTurns ?? [])]
+    .reverse()
+    .find((turn) => {
+      if (turn.role !== "user") {
+        return false;
+      }
+      const content = turn.content.replace(/\s+/g, " ").trim();
+      if (!isSubstantiveObjective(content)) {
+        return false;
+      }
+      return content.toLowerCase() !== normalizedMessage;
+    });
+  if (recentUserTurn) {
+    return {
+      objective: `${recentUserTurn.content}\n\nFollow-up instruction: ${message.trim()}`,
+      source: "recent_turn"
+    };
+  }
+
+  if (isSubstantiveObjective(sessionContext?.activeObjective)) {
+    return {
+      objective: `${sessionContext.activeObjective}\n\nFollow-up instruction: ${message.trim()}`,
+      source: "active_objective"
+    };
+  }
+
+  if (isSubstantiveObjective(sessionContext?.lastCompletedRun?.message)) {
+    return {
+      objective: `${sessionContext.lastCompletedRun.message}\n\nFollow-up instruction: ${message.trim()}`,
+      source: "last_completed_run"
+    };
+  }
+
+  return {
+    objective: message,
+    source: "message"
+  };
+}
+
 function looksLikeExecutableLeadRequest(message: string): boolean {
   const normalized = message.toLowerCase();
   const hasLeadIntent = /\b(find|get|list|collect|source|prospect)\b/.test(normalized);
@@ -978,6 +1057,8 @@ function evaluateCompletionContractGate(args: {
 export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptions): Promise<RunOutcome> {
   const startMs = Date.now();
   const deadlineAtMs = startMs + options.maxDurationMs;
+  const resolvedTurnObjective = resolveTurnObjective(options.message, options.sessionContext);
+  const turnObjective = resolvedTurnObjective.objective;
   const discoveredTools = await discoverLeadAgentTools();
   const availableTools = discoveredTools;
   const availableToolSpecs = Array.from(availableTools.values()).map((tool) => ({
@@ -1031,7 +1112,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   const toolContext: LeadAgentToolContext = {
     runId: options.runId,
     sessionId: options.sessionId,
-    message: options.message,
+    message: turnObjective,
     deadlineAtMs,
     policyMode: options.policyMode,
     projectRoot: process.cwd(),
@@ -1063,17 +1144,17 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   const structuredChatRunner = options.structuredChatRunner ?? openAiClient.runOpenAiStructuredChatWithDiagnostics;
   const agentLoopRunner = options.agentLoopRunner ?? runAgentLoop;
   const scratchpad: Record<string, unknown> = {
-    currentTurnObjective: options.message
+    currentTurnObjective: turnObjective
   };
-  const initialLeadBrief = looksLikeExecutableLeadRequest(options.message)
+  const initialLeadBrief = looksLikeExecutableLeadRequest(turnObjective)
     ? await buildLeadExecutionBrief({
         apiKey: options.openAiApiKey,
         structuredChatRunner,
-        message: options.message,
+        message: turnObjective,
         sessionContext: options.sessionContext
       })
     : undefined;
-  const objectiveContract = buildObjectiveContract(options.message, initialLeadBrief);
+  const objectiveContract = buildObjectiveContract(turnObjective, initialLeadBrief);
   scratchpad.currentObjectiveContract = objectiveContract;
   if (initialLeadBrief) {
     scratchpad.currentLeadExecutionBrief = initialLeadBrief;
@@ -1082,7 +1163,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   }
   const refreshTurnState = (): AlfredTurnState => {
     const turnState = buildAlfredTurnState({
-      message: options.message,
+      message: turnObjective,
       objectiveContract,
       leadExecutionBrief: (scratchpad.currentLeadExecutionBrief as LeadExecutionBrief | undefined) ?? undefined,
       leadState: alfredState,
@@ -1133,6 +1214,20 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     },
     timestamp: nowIso()
   });
+  if (resolvedTurnObjective.source !== "message") {
+    await options.runStore.appendEvent({
+      runId: options.runId,
+      sessionId: options.sessionId,
+      phase: "thought",
+      eventType: "alfred_turn_objective_resolved",
+      payload: {
+        source: resolvedTurnObjective.source,
+        originalMessage: options.message.slice(0, 240),
+        resolvedTurnObjective: turnObjective.slice(0, 500)
+      },
+      timestamp: nowIso()
+    });
+  }
   await options.runStore.appendEvent({
     runId: options.runId,
     sessionId: options.sessionId,
@@ -1213,12 +1308,12 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       const leadOutcome = await agentLoopRunner({
         skillName: "lead_agent",
         ...buildLeadAgentRuntimeOptions(
-          options.message,
+          turnObjective,
           initialLeadBrief ??
             (await buildLeadExecutionBrief({
               apiKey: options.openAiApiKey,
               structuredChatRunner,
-              message: options.message,
+              message: turnObjective,
               sessionContext: options.sessionContext
             }))
         )
@@ -1239,7 +1334,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           {
             role: "user",
             content: JSON.stringify({
-              turnObjective: options.message,
+              turnObjective,
               executionPermission,
               objectiveContract,
               currentLeadExecutionBrief: (scratchpad.currentLeadExecutionBrief as LeadExecutionBrief | undefined) ?? null,
@@ -1323,7 +1418,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         delegateBrief: null,
         toolName: null,
         toolInputJson: null,
-        responseText: buildPlanOnlyResponse(plan, options.message)
+        responseText: buildPlanOnlyResponse(plan, turnObjective)
       };
       await options.runStore.appendEvent({
         runId: options.runId,
@@ -1395,7 +1490,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         continue;
       }
 
-      const delegatedMessage = (plan.delegateBrief ?? options.message).slice(0, 1200);
+      const delegatedMessage = (plan.delegateBrief ?? turnObjective).slice(0, 1200);
       const leadExecutionBrief = agentName === "lead_agent"
         ? await buildLeadExecutionBrief({
             apiKey: options.openAiApiKey,
@@ -1521,7 +1616,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         const completionDiagnostic = await runCompletionEvaluator({
           apiKey: options.openAiApiKey,
           structuredChatRunner,
-          message: options.message,
+          message: turnObjective,
           leadExecutionBrief,
           iteration,
           remainingMs: Math.max(0, deadlineAtMs - Date.now()),
@@ -1757,7 +1852,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         const completionDiagnostic = await runCompletionEvaluator({
           apiKey: options.openAiApiKey,
           structuredChatRunner,
-          message: options.message,
+          message: turnObjective,
           leadExecutionBrief: undefined,
           iteration,
           remainingMs: Math.max(0, deadlineAtMs - Date.now()),

@@ -101,6 +101,7 @@ interface AlfredTurnState {
     fetchedPageCount: number;
     shortlistedUrlCount: number;
     outputFormat: string | null;
+    requestedOutputPath: string | null;
   };
   lastAction: AlfredActionSnapshot | null;
 }
@@ -754,7 +755,27 @@ function deriveHardConstraints(message: string): string[] {
   if (/\bx\b|\btwitter\b/.test(normalized)) {
     constraints.push("Include X/Twitter coverage when available.");
   }
+  const outputPath = extractRequestedOutputPath(message);
+  if (outputPath) {
+    constraints.push(`Output must be saved to ${outputPath}.`);
+  }
   return constraints;
+}
+
+function extractRequestedOutputPath(message: string): string | null {
+  const direct = message.match(/\b(?:to|at)\s+(workspace\/[^\s"'`]+)/i);
+  if (direct?.[1]) {
+    return direct[1].trim();
+  }
+  const inline = message.match(/\bworkspace\/[^\s"'`]+/i);
+  if (inline?.[0]) {
+    return inline[0].trim();
+  }
+  return null;
+}
+
+function normalizePathForCompare(pathValue: string): string {
+  return pathValue.replace(/\\/g, "/").replace(/^\/+/, "").trim().toLowerCase();
 }
 
 function buildObjectiveContract(message: string, leadExecutionBrief?: LeadExecutionBrief | null): AlfredObjectiveContract {
@@ -847,6 +868,7 @@ function buildAlfredTurnState(args: {
   lastAction: AlfredActionSnapshot | null;
   runRecord?: RunRecord;
 }): AlfredTurnState {
+  const requestedOutputPath = extractRequestedOutputPath(args.message);
   const canonicalLeadBrief = args.leadExecutionBrief ?? args.leadState.executionBrief ?? null;
   const inferredFacts = inferLeadFactsFromRunRecord(args.runRecord);
   const collectedLeadCount = Math.max(args.leadState.leads.length, inferredFacts.collectedLeadCount);
@@ -857,6 +879,14 @@ function buildAlfredTurnState(args: {
   const completedCriteria: string[] = [];
   const missingRequirements: string[] = [];
   const blockingIssues: string[] = [];
+  const availableArtifacts = Array.from(
+    new Set([...(args.leadState.artifacts ?? []), ...(args.runRecord?.artifactPaths ?? [])])
+  );
+  const artifactMatchesRequestedPath = requestedOutputPath
+    ? availableArtifacts.some((artifact) =>
+        normalizePathForCompare(artifact).endsWith(normalizePathForCompare(requestedOutputPath))
+      )
+    : false;
 
   if (canonicalLeadBrief) {
     if (collectedLeadCount >= canonicalLeadBrief.requestedLeadCount) {
@@ -878,14 +908,23 @@ function buildAlfredTurnState(args: {
     }
 
     if (canonicalLeadBrief.outputFormat) {
-      if (args.leadState.artifacts.length > 0 || (args.runRecord?.artifactPaths?.length ?? 0) > 0) {
+      if (artifactMatchesRequestedPath || availableArtifacts.length > 0) {
         completedCriteria.push(`Requested output format is available (${canonicalLeadBrief.outputFormat}).`);
       } else {
         missingRequirements.push(`Need a ${canonicalLeadBrief.outputFormat} artifact before the task is complete.`);
       }
     }
-  } else if (args.lastAction?.status !== "completed") {
-    missingRequirements.push("Need either a successful action result or a direct answer for the current turn.");
+  } else {
+    if (requestedOutputPath) {
+      if (artifactMatchesRequestedPath) {
+        completedCriteria.push(`Requested output path is available (${requestedOutputPath}).`);
+      } else {
+        missingRequirements.push(`Need the requested output saved at ${requestedOutputPath}.`);
+      }
+    }
+    if (args.lastAction?.status !== "completed") {
+      missingRequirements.push("Need either a successful action result or a direct answer for the current turn.");
+    }
   }
 
   if (args.lastAction?.status === "failed") {
@@ -910,7 +949,8 @@ function buildAlfredTurnState(args: {
       artifactCount: Math.max(args.leadState.artifacts.length, args.runRecord?.artifactPaths?.length ?? 0),
       fetchedPageCount: args.leadState.fetchedPages.length,
       shortlistedUrlCount: args.leadState.shortlistedUrls?.length ?? 0,
-      outputFormat: canonicalLeadBrief?.outputFormat ?? null
+      outputFormat: canonicalLeadBrief?.outputFormat ?? null,
+      requestedOutputPath
     },
     lastAction: args.lastAction
   };
@@ -962,6 +1002,16 @@ async function runCompletionEvaluator(args: {
 
 function looksLikeCitation(text: string): boolean {
   return /https?:\/\/\S+/i.test(text) || /\b(source|citation|references?)\b/i.test(text);
+}
+
+function looksLikeClarificationResponse(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return (
+    /\bclarify|clarification|confirm|which|what|please provide|please confirm|could you\b/.test(normalized) ||
+    ((/\bproceed|proceeding|starting|working on|running|retrying|i will\b/.test(normalized) &&
+      normalized.length <= 180)) ||
+    normalized.includes("?")
+  );
 }
 
 function extractLeadCountHint(value: unknown): number {
@@ -1019,10 +1069,13 @@ function evaluateCompletionContractGate(args: {
     return { allowed: true };
   }
 
-  if (args.turnState.missingRequirements.length > 0) {
+  const criticalMissingRequirement = args.turnState.missingRequirements.find((item) =>
+    /requested output saved|artifact|more leads|email coverage|required/i.test(item.toLowerCase())
+  );
+  if (criticalMissingRequirement) {
     return {
       allowed: false,
-      reason: `contract_not_satisfied: ${args.turnState.missingRequirements[0]}`
+      reason: `contract_not_satisfied: ${criticalMissingRequirement}`
     };
   }
 
@@ -1458,6 +1511,47 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     });
 
     if (plan.actionType === "respond") {
+      if (
+        executionPermission !== "plan_only" &&
+        !looksLikeClarificationResponse(plan.responseText ?? "")
+      ) {
+        const respondGate = evaluateCompletionContractGate({
+          evaluation: {
+            thought: plan.thought,
+            shouldRespond: true,
+            responseText: plan.responseText,
+            continueReason: null,
+            confidence: 1
+          },
+          objectiveContract,
+          turnState: refreshTurnState(),
+          latestResult: {
+            planAction: "respond",
+            responseText: plan.responseText
+          }
+        });
+        if (!respondGate.allowed) {
+          await options.runStore.appendEvent({
+            runId: options.runId,
+            sessionId: options.sessionId,
+            phase: "thought",
+            eventType: "alfred_completion_contract_blocked",
+            payload: {
+              iteration,
+              actionSummary: "respond",
+              reason: respondGate.reason ?? "contract_not_satisfied"
+            },
+            timestamp: nowIso()
+          });
+          observations.push({
+            iteration,
+            summary: "completion_eval:continue",
+            outcome: (respondGate.reason ?? "contract_not_satisfied").slice(0, 260)
+          });
+          lastCompletionNote = `Completion evaluator: continue gathering. ${respondGate.reason ?? "contract_not_satisfied"}`;
+          continue;
+        }
+      }
       lastAction = {
         iteration,
         actionType: "respond",

@@ -363,6 +363,25 @@ function shouldApplyDiagnosticThrashGuard(
   return actions.length > 0 && actions.every((item) => DIAGNOSTIC_TOOLS.has(item.tool));
 }
 
+function defaultToolInputJson(tool: string, objective: string): string | null {
+  const objectiveQuery = deriveObjectiveQuery(objective);
+  switch (tool) {
+    case "search_status":
+    case "run_diagnostics":
+      return "{}";
+    case "search":
+      return JSON.stringify({ query: objectiveQuery, maxResults: 10 });
+    case "lead_search_shortlist":
+      return JSON.stringify({ query: objectiveQuery, maxResults: 10, maxUrls: 12 });
+    case "web_fetch":
+      return JSON.stringify({ query: objectiveQuery, maxPages: 10, browseConcurrency: 3 });
+    case "writer_agent":
+      return JSON.stringify({ instruction: objective.slice(0, 1200), maxWords: 950, format: "blog_post" });
+    default:
+      return null;
+  }
+}
+
 function buildSpecialistPlannerSystemPrompt(options: Pick<SpecialistToolLoopOptions, "skillSystemPrompt">): string {
   return composeSystemPrompt([
     {
@@ -1003,8 +1022,13 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
 
     const requestedActions =
       plan.actionType === "single"
-        ? plan.singleTool && plan.singleInputJson
-          ? [{ tool: plan.singleTool, inputJson: plan.singleInputJson }]
+        ? plan.singleTool
+          ? [
+              {
+                tool: plan.singleTool,
+                inputJson: plan.singleInputJson ?? (defaultToolInputJson(plan.singleTool, options.message) ?? "")
+              }
+            ]
           : []
         : (plan.parallelActions ?? []);
 
@@ -1013,8 +1037,29 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         tool: action.tool.trim(),
         inputJson: action.inputJson
       }))
-      .filter((action) => action.tool.length > 0)
+      .filter((action) => action.tool.length > 0 && typeof action.inputJson === "string" && action.inputJson.trim().length > 0)
       .slice(0, Math.max(1, options.maxParallelTools));
+
+    if (
+      plan.actionType === "single" &&
+      plan.singleTool &&
+      !plan.singleInputJson &&
+      actions.length > 0
+    ) {
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "thought",
+        eventType: "specialist_plan_adjusted",
+        payload: {
+          skillName: options.skillName,
+          iteration,
+          reason: "single_action_input_defaulted",
+          tool: plan.singleTool
+        },
+        timestamp: nowIso()
+      });
+    }
 
     if (actions.length > 0 && schemaRecoveryTools.size > 0) {
       let adjustedCount = 0;

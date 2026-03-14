@@ -117,6 +117,164 @@ function nowIso(): string {
 
 const SEARCH_FAMILY_TOOLS = new Set(["search", "lead_search_shortlist", "search_status"]);
 const DOWNSTREAM_PROGRESS_TOOLS = new Set(["web_fetch", "lead_extract", "writer_agent", "file_write", "write_csv"]);
+const DISCOVERY_PHASE_LOCK_MIN_SOURCE_URLS = 20;
+
+function isSchemaInputError(error: string | null): boolean {
+  if (!error) {
+    return false;
+  }
+  const normalized = error.toLowerCase();
+  return normalized.includes("tool_schema_validation_failed") || normalized.includes("invalid_input_json");
+}
+
+function safeParseObject(inputJson: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(inputJson) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function asString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function asInteger(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : null;
+}
+
+function firstString(values: unknown): string | null {
+  if (!Array.isArray(values)) {
+    return null;
+  }
+  for (const value of values) {
+    const parsed = asString(value);
+    if (parsed) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function deriveObjectiveQuery(objective: string): string {
+  return objective
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 280);
+}
+
+function extractOutputPathFromObjective(objective: string): string | null {
+  const match = objective.match(/\bworkspace\/[^\s"'`]+/i);
+  return match?.[0]?.trim() ?? null;
+}
+
+function normalizeActionInputForSchemaRecovery(tool: string, inputJson: string, objective: string): string {
+  const parsed = safeParseObject(inputJson) ?? {};
+  if (tool === "search" || tool === "lead_search_shortlist") {
+    const query =
+      asString(parsed.query)
+      ?? firstString(parsed.queries)
+      ?? asString(parsed.prompt)
+      ?? asString(parsed.instruction)
+      ?? deriveObjectiveQuery(objective);
+    const maxResults =
+      asInteger(parsed.maxResults) ?? asInteger(parsed.numResults) ?? asInteger(parsed.top_k) ?? 10;
+    const normalized: Record<string, unknown> = {
+      query,
+      maxResults
+    };
+    if (tool === "lead_search_shortlist") {
+      normalized.maxUrls = asInteger(parsed.maxUrls) ?? 12;
+    }
+    return JSON.stringify(normalized);
+  }
+  if (tool === "writer_agent") {
+    const instruction =
+      asString(parsed.instruction)
+      ?? asString(parsed.brief)
+      ?? asString(parsed.prompt)
+      ?? deriveObjectiveQuery(objective);
+    const outputPath = asString(parsed.outputPath) ?? extractOutputPathFromObjective(objective);
+    const normalized: Record<string, unknown> = {
+      instruction,
+      maxWords: asInteger(parsed.maxWords) ?? 950,
+      format: asString(parsed.format) ?? "blog_post"
+    };
+    if (outputPath) {
+      normalized.outputPath = outputPath;
+    }
+    return JSON.stringify(normalized);
+  }
+  return inputJson;
+}
+
+function shouldForcePhaseTransition(args: {
+  contract: SpecialistTaskContract;
+  progress: SpecialistProgressState;
+  actions: Array<{ tool: string; inputJson: string }>;
+  availableToolNames: Set<string>;
+}): { forced: Array<{ tool: string; inputJson: string }> | null; reason: string | null } {
+  const isSearchOnly = args.actions.length > 0 && args.actions.every((item) => SEARCH_FAMILY_TOOLS.has(item.tool));
+  if (!isSearchOnly) {
+    return { forced: null, reason: null };
+  }
+
+  if (
+    (args.contract.requiresDraft || args.contract.requiresCitations) &&
+    args.progress.sourceUrls.size >= DISCOVERY_PHASE_LOCK_MIN_SOURCE_URLS &&
+    args.progress.fetchedPageCount === 0 &&
+    args.availableToolNames.has("web_fetch")
+  ) {
+    return {
+      forced: [
+        {
+          tool: "web_fetch",
+          inputJson: JSON.stringify({
+            useStoredUrls: true,
+            maxPages: 10,
+            browseConcurrency: 3
+          })
+        }
+      ],
+      reason: "phase_lock_forced_transition_discovery_to_fetch"
+    };
+  }
+
+  if (
+    args.contract.requiresDraft &&
+    args.progress.fetchedPageCount >= 4 &&
+    args.progress.draftWordCount === 0 &&
+    args.availableToolNames.has("writer_agent")
+  ) {
+    return {
+      forced: [
+        {
+          tool: "writer_agent",
+          inputJson: JSON.stringify({
+            instruction: "Draft the requested response from fetched sources and include citation URLs.",
+            maxWords: 950,
+            format: "blog_post"
+          })
+        }
+      ],
+      reason: "phase_lock_forced_transition_fetch_to_synthesis"
+    };
+  }
+
+  return { forced: null, reason: null };
+}
 
 function buildSpecialistPlannerSystemPrompt(options: Pick<SpecialistToolLoopOptions, "skillSystemPrompt">): string {
   return composeSystemPrompt([
@@ -506,6 +664,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
   let phaseTransitionHintRaised = false;
   let previousIterationSignature: string | null = null;
   let lastSuccessfulExecution: ToolExecutionResult | null = null;
+  const schemaFailureStreakByTool = new Map<string, number>();
+  const schemaRecoveryTools = new Set<string>();
 
   await options.runStore.appendEvent({
     runId: options.runId,
@@ -573,6 +733,10 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
               },
               phaseTransitionHint,
               retryProfile,
+              schemaRecovery: {
+                repeatedSchemaFailureTools: Array.from(schemaRecoveryTools),
+                active: schemaRecoveryTools.size > 0
+              },
               availableTools: Array.from(availableTools.values()).map((tool) => ({
                 name: tool.name,
                 description: tool.description,
@@ -713,6 +877,67 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       .filter((action) => action.tool.length > 0)
       .slice(0, Math.max(1, options.maxParallelTools));
 
+    if (actions.length > 0 && schemaRecoveryTools.size > 0) {
+      let adjustedCount = 0;
+      const adjustedActions = actions.map((action) => {
+        if (!schemaRecoveryTools.has(action.tool)) {
+          return action;
+        }
+        const repairedInputJson = normalizeActionInputForSchemaRecovery(action.tool, action.inputJson, options.message);
+        if (repairedInputJson !== action.inputJson) {
+          adjustedCount += 1;
+          return {
+            ...action,
+            inputJson: repairedInputJson
+          };
+        }
+        return action;
+      });
+      if (adjustedCount > 0) {
+        await options.runStore.appendEvent({
+          runId: options.runId,
+          sessionId: options.sessionId,
+          phase: "thought",
+          eventType: "specialist_plan_adjusted",
+          payload: {
+            skillName: options.skillName,
+            iteration,
+            reason: "schema_recovery_forced",
+            tools: Array.from(schemaRecoveryTools),
+            adjustedCount
+          },
+          timestamp: nowIso()
+        });
+        actions = adjustedActions;
+      }
+    }
+
+    if (actions.length > 0) {
+      const phaseLock = shouldForcePhaseTransition({
+        contract: taskContract,
+        progress,
+        actions,
+        availableToolNames: new Set(Array.from(availableTools.keys()))
+      });
+      if (phaseLock.forced && phaseLock.forced.length > 0) {
+        await options.runStore.appendEvent({
+          runId: options.runId,
+          sessionId: options.sessionId,
+          phase: "thought",
+          eventType: "specialist_plan_adjusted",
+          payload: {
+            skillName: options.skillName,
+            iteration,
+            reason: phaseLock.reason,
+            originalActionCount: actions.length,
+            adjustedActionCount: phaseLock.forced.length
+          },
+          timestamp: nowIso()
+        });
+        actions = phaseLock.forced;
+      }
+    }
+
     if (actions.length > 1 && retryProfile.maxParallelSearchActions < 3) {
       let allowedSearchActions = 0;
       const adjustedActions: Array<{ tool: string; inputJson: string }> = [];
@@ -782,6 +1007,21 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     );
     for (const execution of executions) {
       updateSpecialistProgress(progress, execution);
+      if (execution.status === "error") {
+        if (isSchemaInputError(execution.error)) {
+          const nextStreak = (schemaFailureStreakByTool.get(execution.tool) ?? 0) + 1;
+          schemaFailureStreakByTool.set(execution.tool, nextStreak);
+          if (nextStreak >= 2) {
+            schemaRecoveryTools.add(execution.tool);
+          }
+        } else {
+          schemaFailureStreakByTool.delete(execution.tool);
+          schemaRecoveryTools.delete(execution.tool);
+        }
+      } else {
+        schemaFailureStreakByTool.delete(execution.tool);
+        schemaRecoveryTools.delete(execution.tool);
+      }
       if (execution.status === "ok") {
         lastSuccessfulExecution = execution;
       }

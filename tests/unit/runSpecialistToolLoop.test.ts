@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { RunStore } from "../../src/runs/runStore.js";
-import { runSpecialistToolLoop } from "../../src/core/runSpecialistToolLoop.js";
+import { runSpecialistToolLoop, shouldForcePhaseTransition } from "../../src/core/runSpecialistToolLoop.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
 
 class FakeSearchManager {
@@ -483,4 +483,41 @@ test("runSpecialistToolLoop returns latest structured tool output for ops tasks"
         (event.payload as { guard?: string }).guard === "repeated_no_change_success"
     )
   );
+});
+
+test("phase lock uses discovered URLs for discovery->fetch handoff when available", () => {
+  const urls = Array.from({ length: 24 }, (_, index) => `https://example.com/news/${index + 1}`);
+  const progress = {
+    successfulToolCalls: 0,
+    sourceUrls: new Set<string>([...urls, "not-a-url"]),
+    fetchedPageCount: 0,
+    draftWordCount: 0,
+    citationCount: 0,
+    searchTimeoutCount: 0,
+    errorSamples: []
+  };
+
+  const decision = shouldForcePhaseTransition({
+    contract: {
+      requiredDeliverable: "Draft",
+      requiresDraft: true,
+      requiresCitations: true,
+      minimumCitationCount: 2,
+      doneCriteria: []
+    },
+    progress,
+    actions: [
+      { tool: "search", inputJson: "{\"query\":\"ai news\"}" },
+      { tool: "search_status", inputJson: "{}" }
+    ],
+    availableToolNames: new Set(["search", "web_fetch"]),
+    objective: "Research top AI news and draft a blog post"
+  });
+
+  assert.equal(decision.reason, "phase_lock_forced_transition_discovery_to_fetch");
+  assert.ok(Array.isArray(decision.forced));
+  assert.equal(decision.forced?.[0]?.tool, "web_fetch");
+  const input = JSON.parse(decision.forced?.[0]?.inputJson ?? "{}") as { urls?: string[]; useStoredUrls?: boolean };
+  assert.deepEqual(input.urls, urls.slice(0, 12));
+  assert.equal(input.useStoredUrls, undefined);
 });

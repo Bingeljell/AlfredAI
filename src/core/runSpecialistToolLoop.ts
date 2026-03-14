@@ -180,6 +180,32 @@ function extractOutputPathFromObjective(objective: string): string | null {
   return match?.[0]?.trim() ?? null;
 }
 
+function normalizeCandidateUrl(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+export function selectFetchUrlsForHandoff(sourceUrls: Set<string>, maxUrls = 12): string[] {
+  const normalized = Array.from(sourceUrls)
+    .map((item) => normalizeCandidateUrl(item))
+    .filter((item): item is string => Boolean(item));
+  return normalized.slice(0, Math.max(1, maxUrls));
+}
+
 function normalizeActionInputForSchemaRecovery(tool: string, inputJson: string, objective: string): string {
   const parsed = safeParseObject(inputJson) ?? {};
   if (tool === "search" || tool === "lead_search_shortlist") {
@@ -220,11 +246,12 @@ function normalizeActionInputForSchemaRecovery(tool: string, inputJson: string, 
   return inputJson;
 }
 
-function shouldForcePhaseTransition(args: {
+export function shouldForcePhaseTransition(args: {
   contract: SpecialistTaskContract;
   progress: SpecialistProgressState;
   actions: Array<{ tool: string; inputJson: string }>;
   availableToolNames: Set<string>;
+  objective: string;
 }): { forced: Array<{ tool: string; inputJson: string }> | null; reason: string | null } {
   const isSearchOnly = args.actions.length > 0 && args.actions.every((item) => SEARCH_FAMILY_TOOLS.has(item.tool));
   if (!isSearchOnly) {
@@ -237,15 +264,22 @@ function shouldForcePhaseTransition(args: {
     args.progress.fetchedPageCount === 0 &&
     args.availableToolNames.has("web_fetch")
   ) {
+    const fetchUrls = selectFetchUrlsForHandoff(args.progress.sourceUrls, 12);
     return {
       forced: [
         {
           tool: "web_fetch",
-          inputJson: JSON.stringify({
-            useStoredUrls: true,
-            maxPages: 10,
-            browseConcurrency: 3
-          })
+          inputJson: fetchUrls.length > 0
+            ? JSON.stringify({
+                urls: fetchUrls,
+                maxPages: Math.min(10, fetchUrls.length),
+                browseConcurrency: 3
+              })
+            : JSON.stringify({
+                query: deriveObjectiveQuery(args.objective),
+                maxPages: 10,
+                browseConcurrency: 3
+              })
         }
       ],
       reason: "phase_lock_forced_transition_discovery_to_fetch"
@@ -485,6 +519,29 @@ function updateSpecialistProgress(progress: SpecialistProgressState, result: Too
       const url = (item as Record<string, unknown>).url;
       if (typeof url === "string" && url.trim()) {
         progress.sourceUrls.add(url.trim());
+      }
+    }
+  }
+
+  if (result.tool === "lead_search_shortlist") {
+    const urls = Array.isArray(payload.shortlistedUrls) ? payload.shortlistedUrls : [];
+    for (const url of urls) {
+      const normalized = normalizeCandidateUrl(url);
+      if (normalized) {
+        progress.sourceUrls.add(normalized);
+      }
+    }
+  }
+
+  if (result.tool === "web_fetch") {
+    const pages = Array.isArray(payload.samplePages) ? payload.samplePages : [];
+    for (const page of pages) {
+      if (!page || typeof page !== "object") {
+        continue;
+      }
+      const normalized = normalizeCandidateUrl((page as Record<string, unknown>).url);
+      if (normalized) {
+        progress.sourceUrls.add(normalized);
       }
     }
   }
@@ -917,7 +974,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         contract: taskContract,
         progress,
         actions,
-        availableToolNames: new Set(Array.from(availableTools.keys()))
+        availableToolNames: new Set(Array.from(availableTools.keys())),
+        objective: options.message
       });
       if (phaseLock.forced && phaseLock.forced.length > 0) {
         await options.runStore.appendEvent({

@@ -3,7 +3,7 @@ const TELEMETRY_EVENT_CAP = 400;
 const RAW_VIEW_CAP = 120_000;
 const POLL_INTERVAL_MS = 4_000;
 const PROVIDER_REFRESH_MS = 60_000;
-const CHAT_THINKING_LINE_COUNT = 3;
+const CHAT_THINKING_LINE_COUNT = 4;
 const CHAT_THINKING_THROTTLE_MS = 3_000;
 
 const VIEW_META = {
@@ -376,6 +376,44 @@ function distillThoughtForChat(event) {
   return "";
 }
 
+function distillActivityForChat(event) {
+  const thoughtLine = distillThoughtForChat(event);
+  if (thoughtLine) {
+    return thoughtLine;
+  }
+
+  const payload = event.payload || {};
+  if (event.phase === "observe" && event.eventType === "specialist_action_result") {
+    const results = Array.isArray(payload.results) ? payload.results : [];
+    if (results.length === 0) {
+      return "Executed specialist tools.";
+    }
+    const labels = results
+      .slice(0, 3)
+      .map((item) => `${item.tool}:${item.status}`)
+      .join(", ");
+    const hasError = results.some((item) => item.status === "error");
+    return hasError ? `Tool pass completed with errors (${labels}).` : `Tool pass completed (${labels}).`;
+  }
+
+  if (event.phase === "observe" && event.eventType === "agent_delegation_result") {
+    const name = payload.agentName || payload.skill || "specialist agent";
+    const status = payload.status || "unknown";
+    const artifacts = Number(payload.artifactCount || 0);
+    return artifacts > 0
+      ? `${name} returned ${status} with ${artifacts} artifact(s).`
+      : `${name} returned ${status}.`;
+  }
+
+  if (event.phase === "final" && event.eventType === "specialist_stop") {
+    return "Specialist run reached a guardrail stop.";
+  }
+  if (event.phase === "final" && event.eventType === "agent_stop") {
+    return "Agent run reached a guardrail stop.";
+  }
+  return "";
+}
+
 function getChatThinkingLines(run) {
   if (!run) {
     return [];
@@ -385,7 +423,9 @@ function getChatThinkingLines(run) {
     return [];
   }
   const candidateEvents = payload.events.filter((event) =>
-    event.phase === "thought" || (event.phase === "observe" && event.eventType === "heartbeat")
+    event.phase === "thought" ||
+    (event.phase === "observe" && ["heartbeat", "specialist_action_result", "agent_delegation_result"].includes(event.eventType)) ||
+    (event.phase === "final" && ["specialist_stop", "agent_stop"].includes(event.eventType))
   );
   const cache = state.thinkingCache.get(run.runId);
   const now = Date.now();
@@ -396,7 +436,7 @@ function getChatThinkingLines(run) {
   const deduped = [];
   const seen = new Set();
   for (let index = candidateEvents.length - 1; index >= 0; index -= 1) {
-    const line = distillThoughtForChat(candidateEvents[index]);
+    const line = distillActivityForChat(candidateEvents[index]);
     if (!line || seen.has(line)) {
       continue;
     }

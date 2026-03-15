@@ -73,6 +73,12 @@ interface ProgressSnapshot {
   artifactCount: number;
 }
 
+interface EvidenceSnapshot {
+  sourceUrlCount: number;
+  fetchedPageCount: number;
+  sourceCardCount: number;
+}
+
 const SPECIALIST_PLANNER_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -503,6 +509,104 @@ function shouldApplyEvidenceGapGuard(args: {
         }
       ],
       reason: "insufficient_evidence_for_writer",
+      detail
+    };
+  }
+
+  return { adjusted: null, reason: null, detail };
+}
+
+function hasEvidenceAdvanced(current: EvidenceSnapshot, previous: EvidenceSnapshot | null): boolean {
+  if (!previous) {
+    return true;
+  }
+  return (
+    current.sourceUrlCount > previous.sourceUrlCount
+    || current.fetchedPageCount > previous.fetchedPageCount
+    || current.sourceCardCount > previous.sourceCardCount
+  );
+}
+
+function shouldApplyWriterRetryBudgetGuard(args: {
+  actions: Array<{ tool: string; inputJson: string }>;
+  draftFailureStreak: number;
+  evidenceAdvancedSinceLastDraft: boolean;
+  availableToolNames: Set<string>;
+  progress: SpecialistProgressState;
+  objective: string;
+}): {
+  adjusted: Array<{ tool: string; inputJson: string }> | null;
+  reason: string | null;
+  detail: {
+    draftFailureStreak: number;
+    evidenceAdvancedSinceLastDraft: boolean;
+  };
+} {
+  const detail = {
+    draftFailureStreak: args.draftFailureStreak,
+    evidenceAdvancedSinceLastDraft: args.evidenceAdvancedSinceLastDraft
+  };
+  const includesDraftAction = args.actions.some((item) => DRAFT_TOOL_NAMES.has(item.tool));
+  if (!includesDraftAction) {
+    return { adjusted: null, reason: null, detail };
+  }
+  if (args.draftFailureStreak <= 0 || args.evidenceAdvancedSinceLastDraft) {
+    return { adjusted: null, reason: null, detail };
+  }
+
+  if (args.availableToolNames.has("web_fetch")) {
+    const urls = selectFetchUrlsForHandoff(args.progress.sourceUrls, 8);
+    return {
+      adjusted: [
+        {
+          tool: "web_fetch",
+          inputJson: urls.length > 0
+            ? JSON.stringify({
+                urls,
+                maxPages: Math.min(8, urls.length),
+                browseConcurrency: 3
+              })
+            : JSON.stringify({
+                query: deriveObjectiveQuery(args.objective),
+                maxPages: 8,
+                browseConcurrency: 3
+              })
+        }
+      ],
+      reason: "writer_retry_budget_guard",
+      detail
+    };
+  }
+
+  if (args.availableToolNames.has("search")) {
+    return {
+      adjusted: [
+        {
+          tool: "search",
+          inputJson: JSON.stringify({
+            query: deriveObjectiveQuery(args.objective),
+            maxResults: 10
+          })
+        }
+      ],
+      reason: "writer_retry_budget_guard",
+      detail
+    };
+  }
+
+  if (args.availableToolNames.has("lead_search_shortlist")) {
+    return {
+      adjusted: [
+        {
+          tool: "lead_search_shortlist",
+          inputJson: JSON.stringify({
+            query: deriveObjectiveQuery(args.objective),
+            maxResults: 10,
+            maxUrls: 12
+          })
+        }
+      ],
+      reason: "writer_retry_budget_guard",
       detail
     };
   }
@@ -1073,6 +1177,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
   const recentEfficiency: Array<{ iteration: number; valueDelta: number; costScore: number; efficiency: number }> = [];
   const schemaFailureStreakByTool = new Map<string, number>();
   const schemaRecoveryTools = new Set<string>();
+  let draftFailureStreak = 0;
+  let lastDraftAttemptEvidence: EvidenceSnapshot | null = null;
 
   await options.runStore.appendEvent({
     runId: options.runId,
@@ -1112,6 +1218,12 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     const retryProfile = buildSearchRetryProfile(progress, consecutiveSearchOnlyIterations);
     const expectedToolFamily = expectedPhaseToolFamily(currentPhase, options.skillName);
     const sourceCardCount = toolContext.getResearchSourceCards?.().length ?? 0;
+    const currentEvidenceSnapshot: EvidenceSnapshot = {
+      sourceUrlCount: progress.sourceUrls.size,
+      fetchedPageCount: progress.fetchedPageCount,
+      sourceCardCount
+    };
+    const evidenceAdvancedSinceLastDraft = hasEvidenceAdvanced(currentEvidenceSnapshot, lastDraftAttemptEvidence);
 
     if (lastPhaseState !== currentPhase) {
       lastPhaseState = currentPhase;
@@ -1189,6 +1301,10 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
               schemaRecovery: {
                 repeatedSchemaFailureTools: Array.from(schemaRecoveryTools),
                 active: schemaRecoveryTools.size > 0
+              },
+              writerRetryState: {
+                draftFailureStreak,
+                evidenceAdvancedSinceLastDraft
               },
               actionEconomy: {
                 lowValueIterationStreak,
@@ -1445,6 +1561,35 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     }
 
     if (actions.length > 0) {
+      const retryGuard = shouldApplyWriterRetryBudgetGuard({
+        actions,
+        draftFailureStreak,
+        evidenceAdvancedSinceLastDraft,
+        availableToolNames: new Set(Array.from(availableTools.keys())),
+        progress,
+        objective: options.message
+      });
+      if (retryGuard.adjusted && retryGuard.adjusted.length > 0) {
+        await options.runStore.appendEvent({
+          runId: options.runId,
+          sessionId: options.sessionId,
+          phase: "thought",
+          eventType: "specialist_plan_adjusted",
+          payload: {
+            skillName: options.skillName,
+            iteration,
+            reason: retryGuard.reason,
+            detail: retryGuard.detail,
+            originalActionCount: actions.length,
+            adjustedActionCount: retryGuard.adjusted.length
+          },
+          timestamp: nowIso()
+        });
+        actions = retryGuard.adjusted;
+      }
+    }
+
+    if (actions.length > 0) {
       const phaseLock = shouldForcePhaseTransition({
         contract: taskContract,
         progress,
@@ -1608,6 +1753,24 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       if (execution.status === "ok") {
         lastSuccessfulExecution = execution;
       }
+      if (DRAFT_TOOL_NAMES.has(execution.tool)) {
+        lastDraftAttemptEvidence = {
+          sourceUrlCount: progress.sourceUrls.size,
+          fetchedPageCount: progress.fetchedPageCount,
+          sourceCardCount: toolContext.getResearchSourceCards?.().length ?? 0
+        };
+        if (execution.status === "error") {
+          draftFailureStreak += 1;
+        } else {
+          const payload = execution.result ?? {};
+          const draftQuality = typeof payload.draftQuality === "string" ? payload.draftQuality : "unknown";
+          if (draftQuality === "complete") {
+            draftFailureStreak = 0;
+          } else {
+            draftFailureStreak += 1;
+          }
+        }
+      }
     }
     const afterSnapshot = captureProgressSnapshot(progress, toolContext.state.artifacts.length);
     const valueDelta = computeIterationValueDelta(beforeSnapshot, afterSnapshot);
@@ -1752,6 +1915,22 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
           guard: "low_value_action_thrash",
           lowValueIterationStreak,
           latestEfficiency: recentEfficiency.slice(-2)
+        },
+        timestamp: nowIso()
+      });
+      break;
+    }
+    if (draftFailureStreak >= 3 && !evidenceAdvancedSinceLastDraft) {
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "observe",
+        eventType: "specialist_loop_guard_triggered",
+        payload: {
+          skillName: options.skillName,
+          guard: "writer_retry_budget_exhausted",
+          draftFailureStreak,
+          evidenceAdvancedSinceLastDraft
         },
         timestamp: nowIso()
       });

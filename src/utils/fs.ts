@@ -9,7 +9,16 @@ export async function readJsonFile<T>(filePath: string, fallback: T): Promise<T>
   try {
     const raw = await readFile(filePath, "utf8");
     return JSON.parse(raw) as T;
-  } catch {
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 8));
+        const retryRaw = await readFile(filePath, "utf8");
+        return JSON.parse(retryRaw) as T;
+      } catch {
+        return fallback;
+      }
+    }
     return fallback;
   }
 }

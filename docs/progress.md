@@ -32,6 +32,8 @@
   - `ALFRED_ENV=dev|prod` policy behavior wired through approval decision logic.
 - **Phase 7**: In progress
   - Core tests added (unit/integration/smoke/security).
+  - Specialist writer retries are now budget-aware: repeated writer fallbacks without any new evidence trigger `writer_retry_budget_guard` reroutes to retrieval tools, and persistent retry thrash emits `writer_retry_budget_exhausted` to stop wasting run budget.
+  - Run-state JSON read resilience improved under concurrent tool execution: transient syntax-error reads now retry once before failing, reducing sporadic `Run not found` races seen during parallel specialist tool calls.
   - Specialist drafting now has an evidence-readiness guard: if planner asks for `writer_agent`/`article_writer` before enough retrieval evidence exists, runtime emits `specialist_plan_adjusted` (`insufficient_evidence_for_writer`) and reroutes to retrieval-first actions instead of burning writer attempts on low-evidence drafts.
   - Tool execution observability is now explicit: envelope execution emits `tool_action_started`, `tool_action_rejected`, `tool_action_completed`, and `tool_action_failed` events with redacted payload snippets so run timelines no longer treat tool calls as black boxes.
   - Naming clarity pass started: `article_writer` alias is now exposed alongside `writer_agent` in runtime tool discovery, policies, and planner contracts so specialist flows can migrate away from agent-like naming without breaking compatibility.

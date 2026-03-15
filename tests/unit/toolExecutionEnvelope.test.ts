@@ -117,6 +117,9 @@ test("executeToolWithEnvelope returns standardized success envelope and persists
   assert.equal(updatedRun?.toolCalls.length, 1);
   assert.equal(updatedRun?.toolCalls[0]?.toolName, "sample_tool");
   assert.equal(updatedRun?.toolCalls[0]?.status, "ok");
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(events.some((event) => event.eventType === "tool_action_started"));
+  assert.ok(events.some((event) => event.eventType === "tool_action_completed"));
 });
 
 test("executeToolWithEnvelope blocks approval-gated tools with standardized error envelope", async () => {
@@ -155,6 +158,8 @@ test("executeToolWithEnvelope blocks approval-gated tools with standardized erro
 
   const updatedRun = await runStore.getRun(run.runId);
   assert.equal(updatedRun?.toolCalls.length, 0);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(events.some((event) => event.eventType === "tool_action_rejected"));
 });
 
 test("executeToolWithEnvelope auto-repairs markdown-fenced JSON input", async () => {

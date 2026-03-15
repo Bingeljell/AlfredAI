@@ -34,6 +34,21 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+async function emitToolTraceEvent(
+  args: ExecuteToolWithEnvelopeArgs,
+  eventType: string,
+  payload: Record<string, unknown>
+): Promise<void> {
+  await args.runStore.appendEvent({
+    runId: args.runId,
+    sessionId: args.context.sessionId,
+    phase: "tool",
+    eventType,
+    payload: redactValue(payload) as Record<string, unknown>,
+    timestamp: nowIso()
+  });
+}
+
 interface ParsedToolInput {
   input: Record<string, unknown> | null;
   repaired: boolean;
@@ -510,7 +525,15 @@ export function applyToolAllowlist(
 export async function executeToolWithEnvelope(args: ExecuteToolWithEnvelopeArgs): Promise<ToolExecutionEnvelope> {
   const started = Date.now();
   const tool = args.tools.get(args.toolName);
+  await emitToolTraceEvent(args, "tool_action_started", {
+    toolName: args.toolName,
+    inputJson: args.inputJson
+  });
   if (!tool) {
+    await emitToolTraceEvent(args, "tool_action_rejected", {
+      toolName: args.toolName,
+      reason: "tool_not_available"
+    });
     return {
       tool: args.toolName,
       status: "error",
@@ -528,6 +551,12 @@ export async function executeToolWithEnvelope(args: ExecuteToolWithEnvelopeArgs)
   const parsedInputJson = parseToolInputJson(args.toolName, args.inputJson);
   const rawInput = parsedInputJson.input;
   if (!rawInput) {
+    await emitToolTraceEvent(args, "tool_action_rejected", {
+      toolName: args.toolName,
+      reason: "invalid_input_json",
+      inputRepairApplied: parsedInputJson.repaired,
+      inputRepairStrategy: parsedInputJson.strategy
+    });
     return {
       tool: args.toolName,
       status: "error",
@@ -543,6 +572,14 @@ export async function executeToolWithEnvelope(args: ExecuteToolWithEnvelopeArgs)
 
   const parsedInput = tool.inputSchema.safeParse(rawInput);
   if (!parsedInput.success) {
+    await emitToolTraceEvent(args, "tool_action_rejected", {
+      toolName: args.toolName,
+      reason: "tool_schema_validation_failed",
+      input: rawInput,
+      inputRepairApplied: parsedInputJson.repaired,
+      inputRepairStrategy: parsedInputJson.strategy,
+      error: parsedInput.error.message.slice(0, 200)
+    });
     return {
       tool: args.toolName,
       status: "error",
@@ -557,6 +594,11 @@ export async function executeToolWithEnvelope(args: ExecuteToolWithEnvelopeArgs)
   }
 
   if (requiresApproval) {
+    await emitToolTraceEvent(args, "tool_action_rejected", {
+      toolName: args.toolName,
+      reason: "approval_required_not_supported",
+      input: rawInput
+    });
     return {
       tool: args.toolName,
       status: "error",
@@ -582,6 +624,14 @@ export async function executeToolWithEnvelope(args: ExecuteToolWithEnvelopeArgs)
       status: "ok",
       timestamp: nowIso()
     });
+    await emitToolTraceEvent(args, "tool_action_completed", {
+      toolName: args.toolName,
+      durationMs,
+      inputRepairApplied: parsedInputJson.repaired,
+      inputRepairStrategy: parsedInputJson.strategy,
+      input: parsedInput.data,
+      output
+    });
     return {
       tool: args.toolName,
       status: "ok",
@@ -603,6 +653,14 @@ export async function executeToolWithEnvelope(args: ExecuteToolWithEnvelopeArgs)
       durationMs,
       status: "error",
       timestamp: nowIso()
+    });
+    await emitToolTraceEvent(args, "tool_action_failed", {
+      toolName: args.toolName,
+      durationMs,
+      inputRepairApplied: parsedInputJson.repaired,
+      inputRepairStrategy: parsedInputJson.strategy,
+      input: parsedInput.data,
+      error: errorMessage
     });
     return {
       tool: args.toolName,

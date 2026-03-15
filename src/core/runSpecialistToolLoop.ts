@@ -126,9 +126,12 @@ function nowIso(): string {
 }
 
 const SEARCH_FAMILY_TOOLS = new Set(["search", "lead_search_shortlist", "search_status"]);
-const DOWNSTREAM_PROGRESS_TOOLS = new Set(["web_fetch", "lead_extract", "writer_agent", "file_write", "write_csv"]);
+const DOWNSTREAM_PROGRESS_TOOLS = new Set(["web_fetch", "lead_extract", "writer_agent", "article_writer", "file_write", "write_csv"]);
 const DISCOVERY_PHASE_LOCK_MIN_SOURCE_URLS = 20;
 const DIAGNOSTIC_TOOLS = new Set(["search_status", "run_diagnostics"]);
+const DRAFT_TOOL_NAMES = new Set(["writer_agent", "article_writer"]);
+const MIN_FETCHED_PAGES_FOR_DRAFT = 2;
+const MIN_SOURCE_CARDS_FOR_DRAFT = 3;
 
 function isSchemaInputError(error: string | null): boolean {
   if (!error) {
@@ -237,7 +240,7 @@ function normalizeActionInputForSchemaRecovery(tool: string, inputJson: string, 
     }
     return JSON.stringify(normalized);
   }
-  if (tool === "writer_agent") {
+  if (tool === "writer_agent" || tool === "article_writer") {
     const instruction =
       asString(parsed.instruction)
       ?? asString(parsed.brief)
@@ -301,12 +304,12 @@ export function shouldForcePhaseTransition(args: {
     args.contract.requiresDraft &&
     args.progress.fetchedPageCount >= 4 &&
     args.progress.draftWordCount === 0 &&
-    args.availableToolNames.has("writer_agent")
+    (args.availableToolNames.has("writer_agent") || args.availableToolNames.has("article_writer"))
   ) {
     return {
       forced: [
         {
-          tool: "writer_agent",
+          tool: args.availableToolNames.has("article_writer") ? "article_writer" : "writer_agent",
           inputJson: JSON.stringify({
             instruction: "Draft the requested response from fetched sources and include citation URLs.",
             maxWords: 950,
@@ -351,11 +354,11 @@ function expectedPhaseToolFamily(phase: SpecialistPhase, skillName: string): str
     case "fetch":
       return "web_fetch";
     case "synthesis":
-      return skillName === "research_agent" ? "writer_agent" : "writer_agent/lead_extract";
+      return skillName === "research_agent" ? "writer_agent/article_writer" : "writer_agent/article_writer/lead_extract";
     case "persist":
       return skillName === "research_agent"
-        ? "writer_agent(outputPath)/file_write"
-        : "file_write/write_csv/writer_agent(outputPath)";
+        ? "writer_agent/article_writer(outputPath)/file_write"
+        : "file_write/write_csv/writer_agent/article_writer(outputPath)";
     case "complete":
       return "respond";
     default:
@@ -403,10 +406,108 @@ function defaultToolInputJson(tool: string, objective: string): string | null {
     case "web_fetch":
       return JSON.stringify({ query: objectiveQuery, maxPages: 10, browseConcurrency: 3 });
     case "writer_agent":
+    case "article_writer":
       return JSON.stringify({ instruction: objective.slice(0, 1200), maxWords: 950, format: "blog_post" });
     default:
       return null;
   }
+}
+
+function shouldApplyEvidenceGapGuard(args: {
+  contract: SpecialistTaskContract;
+  progress: SpecialistProgressState;
+  sourceCardCount: number;
+  actions: Array<{ tool: string; inputJson: string }>;
+  availableToolNames: Set<string>;
+  objective: string;
+}): {
+  adjusted: Array<{ tool: string; inputJson: string }> | null;
+  reason: string | null;
+  detail: {
+    fetchedPageCount: number;
+    sourceCardCount: number;
+    minFetchedPages: number;
+    minSourceCards: number;
+  };
+} {
+  const detail = {
+    fetchedPageCount: args.progress.fetchedPageCount,
+    sourceCardCount: args.sourceCardCount,
+    minFetchedPages: MIN_FETCHED_PAGES_FOR_DRAFT,
+    minSourceCards: MIN_SOURCE_CARDS_FOR_DRAFT
+  };
+  if (!args.contract.requiresDraft || args.progress.draftWordCount > 0) {
+    return { adjusted: null, reason: null, detail };
+  }
+  const includesDraftAction = args.actions.some((item) => DRAFT_TOOL_NAMES.has(item.tool));
+  if (!includesDraftAction) {
+    return { adjusted: null, reason: null, detail };
+  }
+  const lacksEvidence =
+    args.progress.fetchedPageCount < MIN_FETCHED_PAGES_FOR_DRAFT
+    || args.sourceCardCount < MIN_SOURCE_CARDS_FOR_DRAFT;
+  if (!lacksEvidence) {
+    return { adjusted: null, reason: null, detail };
+  }
+
+  if (args.availableToolNames.has("web_fetch")) {
+    const urls = selectFetchUrlsForHandoff(args.progress.sourceUrls, 8);
+    return {
+      adjusted: [
+        {
+          tool: "web_fetch",
+          inputJson: urls.length > 0
+            ? JSON.stringify({
+                urls,
+                maxPages: Math.min(8, urls.length),
+                browseConcurrency: 3
+              })
+            : JSON.stringify({
+                query: deriveObjectiveQuery(args.objective),
+                maxPages: 8,
+                browseConcurrency: 3
+              })
+        }
+      ],
+      reason: "insufficient_evidence_for_writer",
+      detail
+    };
+  }
+
+  if (args.availableToolNames.has("search")) {
+    return {
+      adjusted: [
+        {
+          tool: "search",
+          inputJson: JSON.stringify({
+            query: deriveObjectiveQuery(args.objective),
+            maxResults: 10
+          })
+        }
+      ],
+      reason: "insufficient_evidence_for_writer",
+      detail
+    };
+  }
+
+  if (args.availableToolNames.has("lead_search_shortlist")) {
+    return {
+      adjusted: [
+        {
+          tool: "lead_search_shortlist",
+          inputJson: JSON.stringify({
+            query: deriveObjectiveQuery(args.objective),
+            maxResults: 10,
+            maxUrls: 12
+          })
+        }
+      ],
+      reason: "insufficient_evidence_for_writer",
+      detail
+    };
+  }
+
+  return { adjusted: null, reason: null, detail };
 }
 
 function buildSpecialistPlannerSystemPrompt(options: Pick<SpecialistToolLoopOptions, "skillSystemPrompt">): string {
@@ -454,7 +555,7 @@ function extractArtifactPaths(tool: string, output: Record<string, unknown>): st
       paths.push(filePath.trim());
     }
   }
-  if (tool === "writer_agent") {
+  if (tool === "writer_agent" || tool === "article_writer") {
     const outputPath = output.outputPath;
     if (typeof outputPath === "string" && outputPath.trim()) {
       paths.push(outputPath.trim());
@@ -732,7 +833,7 @@ function updateSpecialistProgress(progress: SpecialistProgressState, result: Too
     progress.fetchedPageCount += Math.max(0, pagesFetched);
   }
 
-  if (result.tool === "writer_agent") {
+  if (DRAFT_TOOL_NAMES.has(result.tool)) {
     const content = typeof payload.content === "string" ? payload.content : "";
     const draftQuality = typeof payload.draftQuality === "string" ? payload.draftQuality : undefined;
     const fallbackUsed = payload.fallbackUsed === true;
@@ -1010,6 +1111,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     const phaseTransitionHint = derivePhaseTransitionHint(taskContract, progress, toolContext.state.artifacts.length);
     const retryProfile = buildSearchRetryProfile(progress, consecutiveSearchOnlyIterations);
     const expectedToolFamily = expectedPhaseToolFamily(currentPhase, options.skillName);
+    const sourceCardCount = toolContext.getResearchSourceCards?.().length ?? 0;
 
     if (lastPhaseState !== currentPhase) {
       lastPhaseState = currentPhase;
@@ -1054,8 +1156,18 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
                 citationCount: progress.citationCount,
                 searchTimeoutCount: progress.searchTimeoutCount
               },
+              evidenceState: {
+                sourceCardCount,
+                draftEvidenceReady:
+                  progress.fetchedPageCount >= MIN_FETCHED_PAGES_FOR_DRAFT
+                  && sourceCardCount >= MIN_SOURCE_CARDS_FOR_DRAFT,
+                minimumForDraft: {
+                  fetchedPages: MIN_FETCHED_PAGES_FOR_DRAFT,
+                  sourceCards: MIN_SOURCE_CARDS_FOR_DRAFT
+                }
+              },
               researchScratchpad: {
-                sourceCardCount: toolContext.getResearchSourceCards?.().length ?? 0,
+                sourceCardCount,
                 sampleSourceCards: (toolContext.getResearchSourceCards?.() ?? [])
                   .slice(-5)
                   .map((card) => ({
@@ -1300,6 +1412,35 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
           timestamp: nowIso()
         });
         actions = adjustedActions;
+      }
+    }
+
+    if (actions.length > 0) {
+      const evidenceGap = shouldApplyEvidenceGapGuard({
+        contract: taskContract,
+        progress,
+        sourceCardCount,
+        actions,
+        availableToolNames: new Set(Array.from(availableTools.keys())),
+        objective: options.message
+      });
+      if (evidenceGap.adjusted && evidenceGap.adjusted.length > 0) {
+        await options.runStore.appendEvent({
+          runId: options.runId,
+          sessionId: options.sessionId,
+          phase: "thought",
+          eventType: "specialist_plan_adjusted",
+          payload: {
+            skillName: options.skillName,
+            iteration,
+            reason: evidenceGap.reason,
+            detail: evidenceGap.detail,
+            originalActionCount: actions.length,
+            adjustedActionCount: evidenceGap.adjusted.length
+          },
+          timestamp: nowIso()
+        });
+        actions = evidenceGap.adjusted;
       }
     }
 

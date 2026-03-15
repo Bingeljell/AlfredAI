@@ -32,6 +32,7 @@
   - `ALFRED_ENV=dev|prod` policy behavior wired through approval decision logic.
 - **Phase 7**: In progress
   - Core tests added (unit/integration/smoke/security).
+  - Specialist drafting now has an evidence-readiness guard: if planner asks for `writer_agent`/`article_writer` before enough retrieval evidence exists, runtime emits `specialist_plan_adjusted` (`insufficient_evidence_for_writer`) and reroutes to retrieval-first actions instead of burning writer attempts on low-evidence drafts.
   - Tool execution observability is now explicit: envelope execution emits `tool_action_started`, `tool_action_rejected`, `tool_action_completed`, and `tool_action_failed` events with redacted payload snippets so run timelines no longer treat tool calls as black boxes.
   - Naming clarity pass started: `article_writer` alias is now exposed alongside `writer_agent` in runtime tool discovery, policies, and planner contracts so specialist flows can migrate away from agent-like naming without breaking compatibility.
   - Writer/research reliability pass: `writer_agent` now retries once with a compact prompt after structured-call failures, emits `draftQuality` metadata, and avoids writing placeholder instruction-dump drafts to target artifact paths when transient model/network failures occur.

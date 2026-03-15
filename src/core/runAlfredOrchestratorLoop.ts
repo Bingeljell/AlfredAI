@@ -1179,6 +1179,30 @@ function looksLikeClarificationResponse(text: string): boolean {
   );
 }
 
+function deriveResearchClarificationQuestion(message: string): string | null {
+  const normalized = message.toLowerCase();
+  const isResearchOrWritingAsk =
+    /\b(research|write|draft|blog|article|post|news|newsletter)\b/.test(normalized);
+  if (!isResearchOrWritingAsk) {
+    return null;
+  }
+  const hasAutonomyGrant =
+    /\b(you decide|whatever you decide|your call|up to you|surprise me|pick for me)\b/.test(normalized);
+  if (hasAutonomyGrant) {
+    return null;
+  }
+
+  const hasTimeframe = /\b(today|yesterday|this week|this month|last \d+|last week|last month|20\d{2})\b/.test(normalized);
+  const hasLength = /\b\d{3,4}\s*(?:-|to)\s*\d{3,4}\s*words?\b|\b\d{3,4}\s*words?\b/.test(normalized);
+  const hasScopeFocus = /\b(geopolitics?|humanitarian|technology|ai|policy|market|regulation|security)\b/.test(normalized);
+
+  if (hasTimeframe && (hasLength || hasScopeFocus)) {
+    return null;
+  }
+
+  return "Before I start, what should I optimize for: strategic/geopolitical analysis, humanitarian impact, or technology/AI angle? You can also say 'you decide' and I will proceed.";
+}
+
 function extractLeadCountHint(value: unknown): number {
   const text =
     typeof value === "string"
@@ -1519,6 +1543,27 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     };
   }
 
+  if (executionPermission === "execute") {
+    const clarificationQuestion = deriveResearchClarificationQuestion(turnObjective);
+    if (clarificationQuestion) {
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "thought",
+        eventType: "alfred_clarification_requested",
+        payload: {
+          source: "pre_execute_gate",
+          question: clarificationQuestion
+        },
+        timestamp: nowIso()
+      });
+      return {
+        status: "completed",
+        assistantText: clarificationQuestion
+      };
+    }
+  }
+
   for (let iteration = 1; iteration <= options.maxIterations; iteration += 1) {
     if (await options.isCancellationRequested()) {
       return {
@@ -1684,6 +1729,19 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     });
 
     if (plan.actionType === "respond") {
+      if (looksLikeClarificationResponse(plan.responseText ?? "")) {
+        await options.runStore.appendEvent({
+          runId: options.runId,
+          sessionId: options.sessionId,
+          phase: "thought",
+          eventType: "alfred_clarification_requested",
+          payload: {
+            source: "planner_response",
+            question: plan.responseText ?? ""
+          },
+          timestamp: nowIso()
+        });
+      }
       if (
         executionPermission !== "plan_only" &&
         !looksLikeClarificationResponse(plan.responseText ?? "")

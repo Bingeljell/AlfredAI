@@ -32,6 +32,7 @@
   - `ALFRED_ENV=dev|prod` policy behavior wired through approval decision logic.
 - **Phase 7**: In progress
   - Core tests added (unit/integration/smoke/security).
+  - Alfred now has a one-round pre-execution clarification gate for loose research+writing requests: when scope is underspecified it asks a concise “optimize for X/Y/Z?” question and exits early, while explicit autonomy grants (for example “you decide”) bypass the gate so execution can start immediately.
   - Workspace chat execution stream is now cleaner and more useful: distilled thought/action lines include tool start/completion/failure and writer stage updates, raw internal `phase:eventType` labels are suppressed from chat bubbles, and the visible live trace window is larger for easier runtime diagnosis.
   - Writer tool transparency is improved: `writer_agent` now emits `writer_stage` events for structured attempt, compact retry, and persistence phases (start/completed/failed/skipped), making long writer latency/fallback behavior observable in timeline traces instead of a single black-box tool result.
   - Added `docs/architecture/writing-flow.md` to lock the agreed research-writing design: JSON control-plane orchestration, plaintext draft/revise generation, revision-first gap handling before expensive re-fetch loops, and one-round clarification behavior for ambiguous loose prompts.

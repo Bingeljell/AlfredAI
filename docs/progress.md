@@ -32,6 +32,7 @@
   - `ALFRED_ENV=dev|prod` policy behavior wired through approval decision logic.
 - **Phase 7**: In progress
   - Core tests added (unit/integration/smoke/security).
+  - Specialist persist behavior now self-heals planner omissions: when objective text requests a save path and draft tools are called without `outputPath`, runtime injects the path (`persist_output_path_injected`) so successful drafts can write artifacts without extra deterministic fallback branching.
   - Specialist writer retries are now budget-aware: repeated writer fallbacks without any new evidence trigger `writer_retry_budget_guard` reroutes to retrieval tools, and persistent retry thrash emits `writer_retry_budget_exhausted` to stop wasting run budget.
   - Run-state JSON read resilience improved under concurrent tool execution: transient syntax-error reads now retry once before failing, reducing sporadic `Run not found` races seen during parallel specialist tool calls.
   - Specialist drafting now has an evidence-readiness guard: if planner asks for `writer_agent`/`article_writer` before enough retrieval evidence exists, runtime emits `specialist_plan_adjusted` (`insufficient_evidence_for_writer`) and reroutes to retrieval-first actions instead of burning writer attempts on low-evidence drafts.

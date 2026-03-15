@@ -614,6 +614,33 @@ function shouldApplyWriterRetryBudgetGuard(args: {
   return { adjusted: null, reason: null, detail };
 }
 
+function injectOutputPathIntoWriterAction(
+  action: { tool: string; inputJson: string },
+  outputPath: string
+): { adjusted: { tool: string; inputJson: string } | null; reason: string | null } {
+  if (!DRAFT_TOOL_NAMES.has(action.tool)) {
+    return { adjusted: null, reason: null };
+  }
+  const parsed = safeParseObject(action.inputJson);
+  if (!parsed) {
+    return { adjusted: null, reason: null };
+  }
+  if (asString(parsed.outputPath)) {
+    return { adjusted: null, reason: null };
+  }
+  const adjustedInput = {
+    ...parsed,
+    outputPath
+  };
+  return {
+    adjusted: {
+      ...action,
+      inputJson: JSON.stringify(adjustedInput)
+    },
+    reason: "persist_output_path_injected"
+  };
+}
+
 function buildSpecialistPlannerSystemPrompt(options: Pick<SpecialistToolLoopOptions, "skillSystemPrompt">): string {
   return composeSystemPrompt([
     {
@@ -1159,6 +1186,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
   const structuredChatRunner = options.structuredChatRunner ?? openAiClient.runOpenAiStructuredChatWithDiagnostics;
   const startMs = Date.now();
   const deadlineAtMs = startMs + options.maxDurationMs;
+  const requestedOutputPath = extractOutputPathFromObjective(options.message);
   const toolContext = createToolContext(options, deadlineAtMs);
   const taskContract = buildSpecialistTaskContract(options);
   const progress = createSpecialistProgressState();
@@ -1586,6 +1614,37 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
           timestamp: nowIso()
         });
         actions = retryGuard.adjusted;
+      }
+    }
+
+    if (actions.length > 0) {
+      if (requestedOutputPath) {
+        let adjustedCount = 0;
+        const adjustedActions = actions.map((action) => {
+          const injected = injectOutputPathIntoWriterAction(action, requestedOutputPath);
+          if (injected.adjusted) {
+            adjustedCount += 1;
+            return injected.adjusted;
+          }
+          return action;
+        });
+        if (adjustedCount > 0) {
+          await options.runStore.appendEvent({
+            runId: options.runId,
+            sessionId: options.sessionId,
+            phase: "thought",
+            eventType: "specialist_plan_adjusted",
+            payload: {
+              skillName: options.skillName,
+              iteration,
+              reason: "persist_output_path_injected",
+              outputPath: requestedOutputPath,
+              adjustedCount
+            },
+            timestamp: nowIso()
+          });
+          actions = adjustedActions;
+        }
       }
     }
 

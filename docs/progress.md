@@ -32,6 +32,7 @@
   - `ALFRED_ENV=dev|prod` policy behavior wired through approval decision logic.
 - **Phase 7**: In progress
   - Core tests added (unit/integration/smoke/security).
+  - Specialist delegation/runtime now share one `AgentTaskContract` source of truth: Alfred builds and forwards task requirements (deliverable, citation/draft expectations, requested output path, target word count) and specialist loops consume the same contract instead of deriving divergent local defaults; citation-intent detection now recognizes `cite/cited/citations`, and requested output-path parsing trims trailing punctuation before handoff.
   - Specialist writing retries are now revise-first: when `writer_agent` fails but existing evidence is already usable, the loop retries with a focused revision pass before re-triggering search/fetch expansion, reducing retrieval thrash while preserving retrieval fallback when evidence is still thin.
   - Alfred now has a one-round pre-execution clarification gate for loose research+writing requests: when scope is underspecified it asks a concise “optimize for X/Y/Z?” question and exits early, while explicit autonomy grants (for example “you decide”) bypass the gate so execution can start immediately.
   - Workspace chat execution stream is now cleaner and more useful: distilled thought/action lines include tool start/completion/failure and writer stage updates, raw internal `phase:eventType` labels are suppressed from chat bubbles, and the visible live trace window is larger for easier runtime diagnosis.

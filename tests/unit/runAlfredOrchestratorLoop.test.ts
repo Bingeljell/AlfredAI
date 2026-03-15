@@ -420,6 +420,115 @@ test("runAlfredOrchestratorLoop records delegation telemetry and passes scratchp
   assert.equal((delegatedEvent?.payload as { leadExecutionBrief?: { requestedLeadCount?: number } } | undefined)?.leadExecutionBrief?.requestedLeadCount, 3);
 });
 
+test("runAlfredOrchestratorLoop passes unified taskContract when delegating research_agent", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-research-task-contract");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun(
+    "session-1",
+    "Research latest AI news and write an 800-1000 word article with citations. Save to workspace/alfred/artifacts/blog_test/latest.md. You decide details and proceed.",
+    "running"
+  );
+
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      return {
+        result: {
+          thought: "Delegate this writing task to research_agent.",
+          actionType: "delegate_agent" as const,
+          delegateAgent: "research_agent",
+          delegateBrief: "Research latest AI news and draft the requested cited article.",
+          toolName: null,
+          toolInputJson: null,
+          responseText: null
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_completion_evaluation") {
+      return {
+        result: {
+          thought: "Delegated output is sufficient.",
+          shouldRespond: true,
+          responseText: "Research draft completed.",
+          continueReason: null,
+          confidence: 0.9
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  let delegatedInput: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["agentLoopRunner"]> extends (
+    options: infer TOptions
+  ) => Promise<unknown>
+    ? TOptions | undefined
+    : never;
+  const agentLoopRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["agentLoopRunner"]> = async (options) => {
+    delegatedInput = options;
+    return {
+      status: "completed",
+      assistantText: "Draft saved.",
+      artifactPaths: ["/tmp/latest.md"]
+    };
+  };
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message:
+      "Research latest AI news and write an 800-1000 word article with citations. Save to workspace/alfred/artifacts/blog_test/latest.md. You decide details and proceed.",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in research contract test");
+    },
+    maxIterations: 3,
+    maxDurationMs: 60_000,
+    maxToolCalls: 3,
+    maxParallelTools: 1,
+    plannerMaxCalls: 3,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner,
+    agentLoopRunner
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.match(outcome.assistantText ?? "", /research_agent status: completed/i);
+  assert.equal(delegatedInput?.skillName, "research_agent");
+  assert.equal(delegatedInput?.taskContract?.requiresDraft, true);
+  assert.equal(delegatedInput?.taskContract?.requiresCitations, true);
+  assert.equal(delegatedInput?.taskContract?.minimumCitationCount, 2);
+  assert.equal(
+    delegatedInput?.taskContract?.requestedOutputPath,
+    "workspace/alfred/artifacts/blog_test/latest.md"
+  );
+  assert.equal(delegatedInput?.taskContract?.targetWordCount, 900);
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  const delegatedEvent = events.find((event) => event.eventType === "agent_delegated");
+  const delegatedPayload = (delegatedEvent?.payload as { taskContract?: { targetWordCount?: number } } | undefined)
+    ?.taskContract;
+  assert.ok(delegatedPayload);
+  assert.equal(delegatedPayload?.targetWordCount, 900);
+});
+
 test("runAlfredOrchestratorLoop respects planner choice without forcing delegation", async () => {
   const workspace = await createTempWorkspace("alfred-orchestrator-planner-choice");
   const runStore = new RunStore(workspace);

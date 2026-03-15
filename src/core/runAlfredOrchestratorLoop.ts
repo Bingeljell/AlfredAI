@@ -12,6 +12,7 @@ import type { LeadAgentDefaults, LeadAgentState, LeadAgentToolContext } from "..
 import { discoverLeadAgentTools } from "../agent/tools/registry.js";
 import { redactValue } from "../utils/redact.js";
 import { listAgentSkills } from "../agent/skills/registry.js";
+import type { AgentTaskContract } from "../agent/skills/types.js";
 import { LeadExecutionBriefSchema, type LeadExecutionBrief } from "../tools/lead/schemas.js";
 import { parseRequestedLeadCount } from "../tools/lead/requestIntent.js";
 import { classifyStructuredFailure, computeRetryDelayMs, sleep } from "./reliability.js";
@@ -750,7 +751,7 @@ function deriveHardConstraints(message: string): string[] {
   if (wordRange?.[1] && wordRange?.[2]) {
     constraints.push(`Word range should be ${wordRange[1]}-${wordRange[2]}.`);
   }
-  if (/\bcite\b|\bcitation\b|\bsources?\b/.test(normalized)) {
+  if (/\b(cite|cited|citations?|sources?)\b/.test(normalized)) {
     constraints.push("Citations/sources are required.");
   }
   if (/\bx\b|\btwitter\b/.test(normalized)) {
@@ -763,14 +764,18 @@ function deriveHardConstraints(message: string): string[] {
   return constraints;
 }
 
+function normalizeRequestedOutputPath(pathValue: string): string {
+  return pathValue.trim().replace(/[).,;:!?]+$/, "");
+}
+
 function extractRequestedOutputPath(message: string): string | null {
   const direct = message.match(/\b(?:to|at)\s+(workspace\/[^\s"'`]+)/i);
   if (direct?.[1]) {
-    return direct[1].trim();
+    return normalizeRequestedOutputPath(direct[1]);
   }
   const inline = message.match(/\bworkspace\/[^\s"'`]+/i);
   if (inline?.[0]) {
-    return inline[0].trim();
+    return normalizeRequestedOutputPath(inline[0]);
   }
   return null;
 }
@@ -818,6 +823,53 @@ function buildObjectiveContract(message: string, leadExecutionBrief?: LeadExecut
     hardConstraints,
     softPreferences: [],
     doneCriteria
+  };
+}
+
+function extractTargetWordCount(message: string): number | null {
+  const rangeMatch = message.match(/\b(\d{2,4})\s*[-–]\s*(\d{2,4})\s*words?\b/i);
+  if (rangeMatch?.[1] && rangeMatch?.[2]) {
+    const lower = Number.parseInt(rangeMatch[1], 10);
+    const upper = Number.parseInt(rangeMatch[2], 10);
+    if (Number.isFinite(lower) && Number.isFinite(upper) && lower > 0 && upper > 0) {
+      return Math.round((lower + upper) / 2);
+    }
+  }
+  const singleMatch = message.match(/\b(\d{2,4})\s*words?\b/i);
+  if (singleMatch?.[1]) {
+    const parsed = Number.parseInt(singleMatch[1], 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function buildSpecialistTaskContract(args: {
+  agentName: string;
+  message: string;
+  objectiveContract: AlfredObjectiveContract;
+  requestedOutputPath: string | null;
+}): AgentTaskContract | undefined {
+  const agentName = args.agentName.trim().toLowerCase();
+  if (agentName !== "research_agent") {
+    return undefined;
+  }
+  const normalized = args.message.toLowerCase();
+  const requiresDraft =
+    /\b(blog|post|article|draft|write)\b/.test(normalized)
+    || /\bdraft\b/i.test(args.objectiveContract.requiredDeliverable);
+  const requiresCitations =
+    /\b(cite|cited|citations?|sources?)\b/.test(normalized)
+    || args.objectiveContract.hardConstraints.some((item) => /citation|source/i.test(item));
+  return {
+    requiredDeliverable: args.objectiveContract.requiredDeliverable,
+    requiresDraft,
+    requiresCitations,
+    minimumCitationCount: requiresCitations ? 2 : 0,
+    doneCriteria: args.objectiveContract.doneCriteria,
+    requestedOutputPath: args.requestedOutputPath,
+    targetWordCount: extractTargetWordCount(args.message)
   };
 }
 
@@ -1405,6 +1457,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       })
     : undefined;
   const objectiveContract = buildObjectiveContract(turnObjective, initialLeadBrief);
+  const requestedOutputPath = extractRequestedOutputPath(turnObjective);
   scratchpad.currentObjectiveContract = objectiveContract;
   if (initialLeadBrief) {
     scratchpad.currentLeadExecutionBrief = initialLeadBrief;
@@ -1424,9 +1477,14 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     return turnState;
   };
   refreshTurnState();
-  const buildLeadAgentRuntimeOptions = (message: string, leadExecutionBrief?: LeadExecutionBrief): LeadAgentRuntimeOptions => ({
+  const buildLeadAgentRuntimeOptions = (
+    message: string,
+    leadExecutionBrief?: LeadExecutionBrief,
+    taskContract?: AgentTaskContract
+  ): LeadAgentRuntimeOptions => ({
     scratchpad,
     leadExecutionBrief,
+    taskContract,
     runStore: options.runStore,
     searchManager: options.searchManager,
     workspaceDir: options.workspaceDir,
@@ -1816,6 +1874,12 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       }
 
       const delegatedMessage = (plan.delegateBrief ?? turnObjective).slice(0, 1200);
+      const delegatedTaskContract = buildSpecialistTaskContract({
+        agentName,
+        message: turnObjective,
+        objectiveContract,
+        requestedOutputPath
+      });
       const leadExecutionBrief = agentName === "lead_agent"
         ? await buildLeadExecutionBrief({
             apiKey: options.openAiApiKey,
@@ -1844,6 +1908,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           agentName,
           brief: delegatedMessage,
           leadExecutionBrief,
+          taskContract: delegatedTaskContract,
           scratchpadKeys: Object.keys(scratchpad).sort()
         },
         timestamp: nowIso()
@@ -1852,7 +1917,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         skillName: agentName,
         parentRunId: options.runId,
         delegationId,
-        ...buildLeadAgentRuntimeOptions(delegatedMessage, leadExecutionBrief)
+        ...buildLeadAgentRuntimeOptions(delegatedMessage, leadExecutionBrief, delegatedTaskContract)
       });
       scratchpad[`delegation.${delegationId}.result`] = {
         status: leadOutcome.status,

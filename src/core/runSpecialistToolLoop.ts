@@ -3,7 +3,7 @@ import type { RunOutcome } from "../types.js";
 import * as openAiClient from "../services/openAiClient.js";
 import { composeSystemPrompt } from "../prompts/composePrompt.js";
 import { ALFRED_MASTER_PROMPT_VERSION, ALFRED_MASTER_SYSTEM_PROMPT } from "../prompts/master/alfred.system.js";
-import type { AgentSkillRunOptions } from "../agent/skills/types.js";
+import type { AgentSkillRunOptions, AgentTaskContract } from "../agent/skills/types.js";
 import type { LeadAgentState, LeadAgentToolContext, ResearchSourceCard } from "../agent/types.js";
 import {
   applyToolAllowlist,
@@ -32,14 +32,6 @@ interface SpecialistPlannerOutput {
 }
 
 type ToolExecutionResult = ToolExecutionEnvelope & { summary: string };
-
-interface SpecialistTaskContract {
-  requiredDeliverable: string;
-  requiresDraft: boolean;
-  requiresCitations: boolean;
-  minimumCitationCount: number;
-  doneCriteria: string[];
-}
 
 type SpecialistPhaseTransitionHint =
   | "discovery_complete_fetch_pending"
@@ -196,9 +188,13 @@ function deriveObjectiveQuery(objective: string): string {
     .slice(0, 280);
 }
 
+function normalizeRequestedOutputPath(pathValue: string): string {
+  return pathValue.trim().replace(/[).,;:!?]+$/, "");
+}
+
 function extractOutputPathFromObjective(objective: string): string | null {
   const match = objective.match(/\bworkspace\/[^\s"'`]+/i);
-  return match?.[0]?.trim() ?? null;
+  return match?.[0] ? normalizeRequestedOutputPath(match[0]) : null;
 }
 
 function normalizeCandidateUrl(value: unknown): string | null {
@@ -268,7 +264,7 @@ function normalizeActionInputForSchemaRecovery(tool: string, inputJson: string, 
 }
 
 export function shouldForcePhaseTransition(args: {
-  contract: SpecialistTaskContract;
+  contract: AgentTaskContract;
   progress: SpecialistProgressState;
   actions: Array<{ tool: string; inputJson: string }>;
   availableToolNames: Set<string>;
@@ -332,7 +328,7 @@ export function shouldForcePhaseTransition(args: {
 }
 
 function deriveSpecialistPhase(
-  contract: SpecialistTaskContract,
+  contract: AgentTaskContract,
   progress: SpecialistProgressState,
   artifactCount: number
 ): SpecialistPhase {
@@ -421,7 +417,7 @@ function defaultToolInputJson(tool: string, objective: string): string | null {
 }
 
 function shouldApplyEvidenceGapGuard(args: {
-  contract: SpecialistTaskContract;
+  contract: AgentTaskContract;
   progress: SpecialistProgressState;
   sourceCardCount: number;
   actions: Array<{ tool: string; inputJson: string }>;
@@ -804,12 +800,31 @@ function buildSpecialistResultAssistantText(
   return `${skillName} latest successful tool result (${result.tool}): ${truncateForPrompt(payload, 1800)}`;
 }
 
-function buildSpecialistTaskContract(options: Pick<SpecialistToolLoopOptions, "skillName" | "message">): SpecialistTaskContract {
+function buildSpecialistTaskContract(options: Pick<SpecialistToolLoopOptions, "skillName" | "message">): AgentTaskContract {
   const normalized = options.message.toLowerCase();
   const isResearchSkill = options.skillName === "research_agent";
   const requiresDraft = isResearchSkill && /\b(blog|post|article|draft|write)\b/.test(normalized);
-  const requiresCitations = isResearchSkill && /\b(cite|citation|sources?)\b/.test(normalized);
+  const requiresCitations = isResearchSkill && /\b(cite|cited|citations?|sources?)\b/.test(normalized);
   const minimumCitationCount = requiresCitations ? 2 : 0;
+  const targetWordCount = (() => {
+    const rangeMatch = options.message.match(/\b(\d{2,4})\s*[-–]\s*(\d{2,4})\s*words?\b/i);
+    if (rangeMatch?.[1] && rangeMatch?.[2]) {
+      const lower = Number.parseInt(rangeMatch[1], 10);
+      const upper = Number.parseInt(rangeMatch[2], 10);
+      if (Number.isFinite(lower) && Number.isFinite(upper) && lower > 0 && upper > 0) {
+        return Math.round((lower + upper) / 2);
+      }
+    }
+    const singleMatch = options.message.match(/\b(\d{2,4})\s*words?\b/i);
+    if (singleMatch?.[1]) {
+      const parsed = Number.parseInt(singleMatch[1], 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+    return null;
+  })();
+  const requestedOutputPath = extractOutputPathFromObjective(options.message);
 
   if (isResearchSkill) {
     return {
@@ -823,7 +838,9 @@ function buildSpecialistTaskContract(options: Pick<SpecialistToolLoopOptions, "s
         "Gather source evidence from search/fetch outputs.",
         requiresDraft ? "Return full draft text (not only status)." : "Return synthesized findings.",
         requiresCitations ? `Include at least ${minimumCitationCount} citation links.` : "Citations preferred when available."
-      ]
+      ],
+      requestedOutputPath,
+      targetWordCount
     };
   }
 
@@ -832,7 +849,9 @@ function buildSpecialistTaskContract(options: Pick<SpecialistToolLoopOptions, "s
     requiresDraft: false,
     requiresCitations: false,
     minimumCitationCount: 0,
-    doneCriteria: ["Return a complete response for the delegated objective."]
+    doneCriteria: ["Return a complete response for the delegated objective."],
+    requestedOutputPath,
+    targetWordCount
   };
 }
 
@@ -1068,7 +1087,7 @@ function updateSpecialistProgress(progress: SpecialistProgressState, result: Too
 }
 
 function derivePhaseTransitionHint(
-  contract: SpecialistTaskContract,
+  contract: AgentTaskContract,
   progress: SpecialistProgressState,
   artifactCount: number
 ): SpecialistPhaseTransitionHint {
@@ -1114,7 +1133,7 @@ function buildSearchRetryProfile(progress: SpecialistProgressState, consecutiveS
 }
 
 function evaluateSpecialistContractGate(args: {
-  contract: SpecialistTaskContract;
+  contract: AgentTaskContract;
   progress: SpecialistProgressState;
   responseText: string | null;
 }): { satisfied: boolean; unmet: string[] } {
@@ -1234,9 +1253,9 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
   const structuredChatRunner = options.structuredChatRunner ?? openAiClient.runOpenAiStructuredChatWithDiagnostics;
   const startMs = Date.now();
   const deadlineAtMs = startMs + options.maxDurationMs;
-  const requestedOutputPath = extractOutputPathFromObjective(options.message);
   const toolContext = createToolContext(options, deadlineAtMs);
-  const taskContract = buildSpecialistTaskContract(options);
+  const taskContract = options.taskContract ?? buildSpecialistTaskContract(options);
+  const requestedOutputPath = taskContract.requestedOutputPath ?? extractOutputPathFromObjective(options.message);
   const progress = createSpecialistProgressState();
   const observations: Array<{ iteration: number; summary: string; outcome?: string }> = [];
   let plannerCallsUsed = 0;

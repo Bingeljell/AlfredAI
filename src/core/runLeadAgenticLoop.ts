@@ -9,6 +9,7 @@ import { runOpenAiStructuredChatWithDiagnostics } from "../services/openAiClient
 import { LlmBudgetManager } from "../tools/lead/llmBudget.js";
 import type { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
 import type { LeadExecutionBrief } from "../tools/lead/schemas.js";
+import type { AgentTaskContract } from "../agent/skills/types.js";
 import { writeLeadsCsv } from "../tools/csv/writeCsv.js";
 import { redactValue } from "../utils/redact.js";
 import { composeSystemPrompt } from "../prompts/composePrompt.js";
@@ -193,6 +194,7 @@ export interface LeadAgentRuntimeOptions {
   delegationId?: string;
   scratchpad?: Record<string, unknown>;
   leadExecutionBrief?: LeadExecutionBrief;
+  taskContract?: AgentTaskContract;
   runStore: RunStore;
   searchManager: SearchManager;
   workspaceDir: string;

@@ -5,11 +5,22 @@ import type { LeadAgentDefaults } from "../types.js";
 import type { executeLeadSubReactPipeline } from "../../tools/lead/subReactPipeline.js";
 import type { LeadExecutionBrief } from "../../tools/lead/schemas.js";
 
+export interface AgentTaskContract {
+  requiredDeliverable: string;
+  requiresDraft: boolean;
+  requiresCitations: boolean;
+  minimumCitationCount: number;
+  doneCriteria: string[];
+  requestedOutputPath?: string | null;
+  targetWordCount?: number | null;
+}
+
 export interface AgentSkillRunOptions {
   parentRunId?: string;
   delegationId?: string;
   scratchpad?: Record<string, unknown>;
   leadExecutionBrief?: LeadExecutionBrief;
+  taskContract?: AgentTaskContract;
   runStore: RunStore;
   searchManager: SearchManager;
   workspaceDir: string;

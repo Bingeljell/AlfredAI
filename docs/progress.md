@@ -32,6 +32,7 @@
   - `ALFRED_ENV=dev|prod` policy behavior wired through approval decision logic.
 - **Phase 7**: In progress
   - Core tests added (unit/integration/smoke/security).
+  - Added `docs/architecture/writing-flow.md` to lock the agreed research-writing design: JSON control-plane orchestration, plaintext draft/revise generation, revision-first gap handling before expensive re-fetch loops, and one-round clarification behavior for ambiguous loose prompts.
   - Added `docs/architecture/turn-lifecycle.md`, a codex-style numbered walkthrough of Alfred’s live runtime flow (request entry, thread/turn state machine, orchestrator planner loop, specialist delegation, tool envelope traces, and persistence/event lifecycle) to support architecture reviews and debugging.
   - Specialist persist behavior now self-heals planner omissions: when objective text requests a save path and draft tools are called without `outputPath`, runtime injects the path (`persist_output_path_injected`) so successful drafts can write artifacts without extra deterministic fallback branching.
   - Specialist writer retries are now budget-aware: repeated writer fallbacks without any new evidence trigger `writer_retry_budget_guard` reroutes to retrieval tools, and persistent retry thrash emits `writer_retry_budget_exhausted` to stop wasting run budget.

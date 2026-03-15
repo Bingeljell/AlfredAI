@@ -73,6 +73,30 @@ function deriveTitle(instruction: string): string {
   return clipText(trimmed, 80);
 }
 
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+async function emitWriterStageEvent(args: {
+  context: Parameters<LeadAgentToolDefinition["execute"]>[1];
+  stage: string;
+  status: "started" | "completed" | "failed" | "skipped";
+  payload?: Record<string, unknown>;
+}): Promise<void> {
+  await args.context.runStore.appendEvent({
+    runId: args.context.runId,
+    sessionId: args.context.sessionId,
+    phase: "tool",
+    eventType: "writer_stage",
+    payload: {
+      stage: args.stage,
+      status: args.status,
+      ...(args.payload ?? {})
+    },
+    timestamp: nowIso()
+  });
+}
+
 function sourceCardBullets(cards: ResearchSourceCard[], max = 8): string[] {
   return cards.slice(0, max).map((card, index) => {
     const title = card.title ? clipText(card.title, 70) : "Untitled source";
@@ -232,6 +256,18 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
     let compactRetryUsed = false;
 
     if (context.openAiApiKey) {
+      await emitWriterStageEvent({
+        context,
+        stage: "structured_attempt",
+        status: "started",
+        payload: {
+          maxWords,
+          format,
+          hasOutputPath: Boolean(input.outputPath),
+          sourceCardCount: sourceCards.length,
+          contextSnippetCount: contextSnippets.length
+        }
+      });
       const diagnostic = await runOpenAiStructuredChatWithDiagnostics(
         {
           apiKey: context.openAiApiKey,
@@ -262,6 +298,15 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
       await maybeRecordUsage(context, diagnostic.usage);
 
       if (diagnostic.result) {
+        await emitWriterStageEvent({
+          context,
+          stage: "structured_attempt",
+          status: "completed",
+          payload: {
+            attempts: diagnostic.attempts ?? 1,
+            wordCount: countWords(diagnostic.result.content)
+          }
+        });
         draft = {
           ...diagnostic.result,
           content: clipWords(diagnostic.result.content, maxWords)
@@ -270,9 +315,29 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
         fallbackReason = "none";
         draftQuality = "complete";
       } else {
+        await emitWriterStageEvent({
+          context,
+          stage: "structured_attempt",
+          status: "failed",
+          payload: {
+            attempts: diagnostic.attempts ?? 1,
+            failureCode: diagnostic.failureCode ?? "unknown",
+            failureClass: diagnostic.failureClass ?? "unknown",
+            failureMessage: diagnostic.failureMessage ?? null
+          }
+        });
         fallbackUsed = true;
         fallbackReason = diagnostic.failureCode ?? "llm_failure";
         failureMessage = diagnostic.failureMessage ?? null;
+        await emitWriterStageEvent({
+          context,
+          stage: "compact_retry",
+          status: "started",
+          payload: {
+            maxWords,
+            format
+          }
+        });
         const compactRetryDraft = await runCompactRetryDraft({
           apiKey: context.openAiApiKey,
           instruction: input.instruction,
@@ -285,11 +350,27 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
         });
         compactRetryUsed = true;
         if (compactRetryDraft) {
+          await emitWriterStageEvent({
+            context,
+            stage: "compact_retry",
+            status: "completed",
+            payload: {
+              wordCount: countWords(compactRetryDraft.content)
+            }
+          });
           draft = compactRetryDraft;
           failureMessage = null;
           fallbackReason = `${fallbackReason}_compact_retry_recovered`;
           draftQuality = "complete";
         } else {
+          await emitWriterStageEvent({
+            context,
+            stage: "compact_retry",
+            status: "failed",
+            payload: {
+              reason: "empty_or_short_response"
+            }
+          });
           draft = buildFallbackDraft({
             reason: diagnostic.failureMessage ?? diagnostic.failureCode ?? "structured model call failed",
             instruction: input.instruction,
@@ -303,27 +384,77 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
         }
       }
     } else {
+      await emitWriterStageEvent({
+        context,
+        stage: "structured_attempt",
+        status: "skipped",
+        payload: {
+          reason: "missing_api_key"
+        }
+      });
       draftQuality = "placeholder";
     }
 
     let writtenPath: string | null = null;
     const allowPlaceholderWrite = !context.openAiApiKey;
     if (input.outputPath && (draftQuality === "complete" || allowPlaceholderWrite)) {
-      const absoluteOutput = resolvePathInProject(context.projectRoot, input.outputPath);
-      await mkdir(path.dirname(absoluteOutput), { recursive: true });
-      const shouldOverwrite = input.overwrite !== false;
-      if (!shouldOverwrite) {
-        try {
-          await readFile(absoluteOutput, "utf8");
-          throw new Error("output file already exists and overwrite=false");
-        } catch (error) {
-          if (error instanceof Error && error.message.includes("overwrite=false")) {
-            throw error;
+      await emitWriterStageEvent({
+        context,
+        stage: "persist",
+        status: "started",
+        payload: {
+          outputPath: input.outputPath,
+          draftQuality
+        }
+      });
+      try {
+        const absoluteOutput = resolvePathInProject(context.projectRoot, input.outputPath);
+        await mkdir(path.dirname(absoluteOutput), { recursive: true });
+        const shouldOverwrite = input.overwrite !== false;
+        if (!shouldOverwrite) {
+          try {
+            await readFile(absoluteOutput, "utf8");
+            throw new Error("output file already exists and overwrite=false");
+          } catch (error) {
+            if (error instanceof Error && error.message.includes("overwrite=false")) {
+              throw error;
+            }
           }
         }
+        await writeFile(absoluteOutput, `${draft.title}\n\n${draft.content}\n`, "utf8");
+        writtenPath = toProjectRelative(context.projectRoot, absoluteOutput);
+        await emitWriterStageEvent({
+          context,
+          stage: "persist",
+          status: "completed",
+          payload: {
+            outputPath: writtenPath,
+            wordCount: countWords(draft.content)
+          }
+        });
+      } catch (error) {
+        await emitWriterStageEvent({
+          context,
+          stage: "persist",
+          status: "failed",
+          payload: {
+            outputPath: input.outputPath,
+            error: error instanceof Error ? error.message : String(error)
+          }
+        });
+        throw error;
       }
-      await writeFile(absoluteOutput, `${draft.title}\n\n${draft.content}\n`, "utf8");
-      writtenPath = toProjectRelative(context.projectRoot, absoluteOutput);
+    } else if (input.outputPath) {
+      await emitWriterStageEvent({
+        context,
+        stage: "persist",
+        status: "skipped",
+        payload: {
+          outputPath: input.outputPath,
+          reason: "draft_not_writable",
+          draftQuality
+        }
+      });
     }
 
     return {

@@ -7,10 +7,10 @@ import { toolDefinition as writerAgentTool } from "../../src/agent/tools/definit
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
 import type { LeadAgentToolContext } from "../../src/agent/types.js";
 
-function buildToolContext(workspace: string, runStore: RunStore): LeadAgentToolContext {
+function buildToolContext(workspace: string, runStore: RunStore, runId = "writer-run", sessionId = "session-1"): LeadAgentToolContext {
   return {
-    runId: "writer-run",
-    sessionId: "session-1",
+    runId,
+    sessionId,
     message: "writer test",
     deadlineAtMs: Date.now() + 60_000,
     policyMode: "trusted" as const,
@@ -123,4 +123,27 @@ test("writer_agent fallback includes source-card context and reports sourceCardC
   assert.equal(output.draftQuality, "placeholder");
   assert.equal(output.sourceCardCount, 1);
   assert.match(String(output.content), /https:\/\/example.com\/news\/ai-policy/);
+});
+
+test("writer_agent emits writer_stage trace events for attempt and persistence", async () => {
+  const workspace = await createTempWorkspace("alfred-writer-stage-events");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "writer stage test", "running");
+  const context = buildToolContext(workspace, runStore, run.runId, run.sessionId);
+
+  await writerAgentTool.execute(
+    {
+      instruction: "Write a short article draft about AI trends.",
+      format: "blog_post",
+      maxWords: 180,
+      outputPath: "artifacts/stage.md"
+    },
+    context
+  );
+
+  const events = await runStore.listRunEvents(run);
+  const writerStages = events.filter((event) => event.eventType === "writer_stage");
+  assert.ok(writerStages.length >= 2);
+  assert.ok(writerStages.some((event) => (event.payload as { stage?: string }).stage === "structured_attempt"));
+  assert.ok(writerStages.some((event) => (event.payload as { stage?: string }).stage === "persist"));
 });

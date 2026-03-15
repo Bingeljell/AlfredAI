@@ -418,7 +418,7 @@ function repairToolInputShape(
   if (toolName === "web_fetch") {
     return repairWebFetchInput(input);
   }
-  if (toolName === "writer_agent") {
+  if (toolName === "writer_agent" || toolName === "article_writer") {
     return repairWriterAgentInput(input);
   }
   return {
@@ -448,7 +448,7 @@ function coercePlainTextInput(
       strategy: "coerce_plain_query"
     };
   }
-  if (toolName === "writer_agent") {
+  if (toolName === "writer_agent" || toolName === "article_writer") {
     return {
       input: {
         instruction: normalized
@@ -482,6 +482,14 @@ export async function discoverLeadAgentTools(): Promise<Map<string, LeadAgentToo
       continue;
     }
     toolMap.set(definition.name, definition);
+    // Backward-compatible alias while migrating away from writer_agent naming.
+    if (definition.name === "writer_agent") {
+      toolMap.set("article_writer", {
+        ...definition,
+        name: "article_writer",
+        description: definition.description.replace("writer_agent", "article_writer")
+      });
+    }
   }
 
   return toolMap;

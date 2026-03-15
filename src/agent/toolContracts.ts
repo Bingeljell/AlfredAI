@@ -53,6 +53,15 @@ const CONTRACT_MAP: Record<string, ToolInputContract> = {
       outputPath: "workspace/alfred/artifacts/blog_test/latest.md"
     }
   },
+  article_writer: {
+    required: ["instruction"],
+    bounds: ["instruction length <= 3000", "maxWords between 80 and 3000", "contextPaths <= 8"],
+    exampleInput: {
+      instruction: "Write an 800-1000 word blog post with citations from fetched sources.",
+      format: "blog_post",
+      maxWords: 950
+    }
+  },
   file_write: {
     required: ["path", "content"],
     bounds: ["path must resolve inside project root"],

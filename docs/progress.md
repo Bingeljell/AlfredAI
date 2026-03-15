@@ -32,6 +32,7 @@
   - `ALFRED_ENV=dev|prod` policy behavior wired through approval decision logic.
 - **Phase 7**: In progress
   - Core tests added (unit/integration/smoke/security).
+  - Naming clarity pass started: `article_writer` alias is now exposed alongside `writer_agent` in runtime tool discovery, policies, and planner contracts so specialist flows can migrate away from agent-like naming without breaking compatibility.
   - Writer/research reliability pass: `writer_agent` now retries once with a compact prompt after structured-call failures, emits `draftQuality` metadata, and avoids writing placeholder instruction-dump drafts to target artifact paths when transient model/network failures occur.
   - Specialist synthesis progress now ignores placeholder writer fallbacks, reducing false "draft complete" signals that previously sent research loops back into wasteful rediscovery passes.
   - Search manager now performs a lightweight primary probe when SearXNG healthcheck flaps, allowing Alfred to continue using primary search when it is still serving real results instead of prematurely defaulting to fallback providers.

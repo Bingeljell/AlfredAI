@@ -34,6 +34,7 @@ test("agent skill registry exposes specialist metadata", () => {
   assert.ok(researchSkill);
   assert.match(researchSkill?.description ?? "", /research/i);
   assert.ok(researchSkill?.toolAllowlist?.includes("search"));
+  assert.ok(researchSkill?.toolAllowlist?.includes("article_writer"));
   assert.ok(researchSkill?.toolAllowlist?.includes("writer_agent"));
 
   const opsSkill = getAgentSkill("ops_agent");

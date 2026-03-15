@@ -104,6 +104,9 @@ interface AlfredTurnState {
     shortlistedUrlCount: number;
     outputFormat: string | null;
     requestedOutputPath: string | null;
+    draftWordCount: number;
+    citationCount: number;
+    resolvedOutputPath: string | null;
   };
   lastAction: AlfredActionSnapshot | null;
 }
@@ -811,7 +814,7 @@ function buildObjectiveContract(message: string, leadExecutionBrief?: LeadExecut
   const doneCriteria = [
     `Answer the current turn directly and honestly: ${message.replace(/\s+/g, " ").trim().slice(0, 240)}`
   ];
-  if (/\bcite\b|\bcitation\b|\bsources?\b/.test(normalized)) {
+  if (/\b(cite|cited|citations?|sources?)\b/.test(normalized)) {
     doneCriteria.push("Include explicit source citations for factual claims.");
   }
   if (/\bblog\b|\bpost\b/.test(normalized)) {
@@ -937,6 +940,25 @@ function countBracketCitations(value: string | null | undefined): number {
   return unique.size;
 }
 
+function countUrlCitations(value: string | null | undefined): number {
+  if (!value) {
+    return 0;
+  }
+  const matches = value.match(/https?:\/\/[^\s)>\]]+/gi) ?? [];
+  const unique = new Set(matches.map((item) => item.trim()));
+  return unique.size;
+}
+
+function countWords(text: string | null | undefined): number {
+  if (!text) {
+    return 0;
+  }
+  return text
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+}
+
 function inferResearchFactsFromRunRecord(
   runRecord: RunRecord | undefined
 ): {
@@ -980,8 +1002,10 @@ function inferResearchFactsFromRunRecord(
       if (wordCount > draftWordCount) {
         draftWordCount = wordCount;
       }
-      if (citationsFromContent > citationCount) {
-        citationCount = citationsFromContent;
+      const citationsFromUrls = countUrlCitations(content);
+      const citationSignal = Math.max(citationsFromContent, citationsFromUrls);
+      if (citationSignal > citationCount) {
+        citationCount = citationSignal;
       }
       if (typeof outputPathValue === "string" && outputPathValue.trim()) {
         outputPath = outputPathValue.trim();
@@ -1101,6 +1125,7 @@ function buildAlfredTurnState(args: {
   const availableArtifacts = Array.from(
     new Set([...(args.leadState.artifacts ?? []), ...(args.runRecord?.artifactPaths ?? [])])
   );
+  const researchFacts = inferResearchFactsFromRunRecord(args.runRecord);
   const artifactMatchesRequestedPath = requestedOutputPath
     ? availableArtifacts.some((artifact) =>
         normalizePathForCompare(artifact).endsWith(normalizePathForCompare(requestedOutputPath))
@@ -1134,6 +1159,13 @@ function buildAlfredTurnState(args: {
       }
     }
   } else {
+    const targetWordCount = extractTargetWordCount(args.message);
+    const requiresDraft = /blog draft|draft text|blog|article|write/i.test(args.objectiveContract.requiredDeliverable);
+    const requiresCitations = args.objectiveContract.hardConstraints.some((item) => /citation|source/i.test(item));
+    const minimumDraftWords = targetWordCount
+      ? Math.max(220, Math.floor(targetWordCount * 0.75))
+      : 400;
+
     if (requestedOutputPath) {
       if (artifactMatchesRequestedPath) {
         completedCriteria.push(`Requested output path is available (${requestedOutputPath}).`);
@@ -1141,7 +1173,24 @@ function buildAlfredTurnState(args: {
         missingRequirements.push(`Need the requested output saved at ${requestedOutputPath}.`);
       }
     }
-    if (args.lastAction?.status !== "completed") {
+    if (requiresDraft) {
+      if (researchFacts.draftWordCount >= minimumDraftWords) {
+        completedCriteria.push(`Draft length looks sufficient (${researchFacts.draftWordCount} words).`);
+      } else {
+        missingRequirements.push(
+          `Need a fuller draft (${researchFacts.draftWordCount}/${minimumDraftWords} words observed).`
+        );
+      }
+    }
+    if (requiresCitations) {
+      if (researchFacts.citationCount >= 2) {
+        completedCriteria.push(`Citation evidence present (${researchFacts.citationCount}).`);
+      } else {
+        missingRequirements.push(`Need explicit citation evidence (observed ${researchFacts.citationCount}).`);
+      }
+    }
+    const hasStrongPreexistingEvidence = missingRequirements.length === 0 && completedCriteria.length > 0;
+    if (args.lastAction?.status !== "completed" && !hasStrongPreexistingEvidence) {
       missingRequirements.push("Need either a successful action result or a direct answer for the current turn.");
     }
   }
@@ -1169,7 +1218,10 @@ function buildAlfredTurnState(args: {
       fetchedPageCount: args.leadState.fetchedPages.length,
       shortlistedUrlCount: args.leadState.shortlistedUrls?.length ?? 0,
       outputFormat: canonicalLeadBrief?.outputFormat ?? null,
-      requestedOutputPath
+      requestedOutputPath,
+      draftWordCount: researchFacts.draftWordCount,
+      citationCount: researchFacts.citationCount,
+      resolvedOutputPath: researchFacts.outputPath
     },
     lastAction: args.lastAction
   };
@@ -1328,7 +1380,12 @@ function evaluateCompletionContractGate(args: {
       args.evaluation.responseText ?? "",
       typeof args.latestResult === "string" ? args.latestResult : JSON.stringify(args.latestResult ?? {})
     ].join("\n");
-    if (!looksLikeCitation(evidenceText)) {
+    const citationSignals = Math.max(
+      args.turnState.facts.citationCount,
+      countBracketCitations(evidenceText),
+      countUrlCitations(evidenceText)
+    );
+    if (citationSignals < 2 && !looksLikeCitation(evidenceText)) {
       return {
         allowed: false,
         reason: "contract_not_satisfied: citation evidence missing"
@@ -1338,11 +1395,16 @@ function evaluateCompletionContractGate(args: {
 
   const requiresDraft = /blog draft|draft text|blog/i.test(args.objectiveContract.requiredDeliverable);
   if (requiresDraft) {
-    const responseLength = (args.evaluation.responseText ?? "").trim().length;
-    if (responseLength < 500) {
+    const targetWordCount = extractTargetWordCount(args.turnState.turnObjective);
+    const minimumDraftWords = targetWordCount
+      ? Math.max(220, Math.floor(targetWordCount * 0.75))
+      : 400;
+    const responseWordCount = countWords(args.evaluation.responseText);
+    const evidenceWordCount = Math.max(args.turnState.facts.draftWordCount, responseWordCount);
+    if (evidenceWordCount < minimumDraftWords) {
       return {
         allowed: false,
-        reason: "contract_not_satisfied: draft content is incomplete"
+        reason: `contract_not_satisfied: draft content is incomplete (${evidenceWordCount}/${minimumDraftWords} words)`
       };
     }
   }
@@ -1478,6 +1540,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     scratchpad.currentTurnState = turnState;
     return turnState;
   };
+  latestRunRecord = await options.runStore.getRun(options.runId);
   refreshTurnState();
   const buildLeadAgentRuntimeOptions = (
     message: string,

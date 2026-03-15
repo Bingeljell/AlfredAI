@@ -1327,3 +1327,95 @@ test("runAlfredOrchestratorLoop blocks completion when requested output path is 
   assert.ok(blocked);
   assert.match(JSON.stringify(blocked?.payload ?? {}), /requested output saved/i);
 });
+
+test("runAlfredOrchestratorLoop allows respond when draft/citation/output evidence already satisfies contract", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-writing-contract-satisfied");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun(
+    "session-1",
+    "Research AI news and write an 800-1000 word article with citations. Save to workspace/alfred/artifacts/blog_test/latest.md. You decide and proceed.",
+    "running"
+  );
+
+  const richContent = `${"AI policy updates and market context. ".repeat(80)} Sources: https://example.com/a https://example.com/b`;
+  await runStore.addToolCall(run.runId, {
+    toolName: "article_writer",
+    inputRedacted: {
+      instruction: "Write the article",
+      outputPath: "workspace/alfred/artifacts/blog_test/latest.md"
+    },
+    outputRedacted: {
+      wordCount: 860,
+      content: richContent,
+      outputPath: "workspace/alfred/artifacts/blog_test/latest.md",
+      draftQuality: "complete",
+      fallbackUsed: false
+    },
+    durationMs: 1800,
+    status: "ok",
+    timestamp: new Date().toISOString()
+  });
+  await runStore.updateRun(run.runId, {
+    artifactPaths: ["workspace/alfred/artifacts/blog_test/latest.md"]
+  });
+
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      return {
+        result: {
+          thought: "Evidence already satisfies the objective, return final answer.",
+          actionType: "respond" as const,
+          delegateAgent: null,
+          delegateBrief: null,
+          toolName: null,
+          toolInputJson: null,
+          responseText: "Done. The draft has been saved."
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message:
+      "Research AI news and write an 800-1000 word article with citations. Save to workspace/alfred/artifacts/blog_test/latest.md. You decide and proceed.",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in writing-contract-satisfied test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 30_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.equal(outcome.assistantText, "Done. The draft has been saved.");
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.equal(events.some((event) => event.eventType === "alfred_completion_contract_blocked"), false);
+});

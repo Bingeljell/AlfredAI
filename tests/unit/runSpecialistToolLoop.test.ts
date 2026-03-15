@@ -660,6 +660,78 @@ test("runSpecialistToolLoop reroutes premature writer actions when draft evidenc
   assert.equal(updatedRun?.toolCalls[0]?.toolName, "search");
 });
 
+test("runSpecialistToolLoop raises stricter evidence thresholds for long-form cited drafts", async () => {
+  const workspace = await createTempWorkspace("specialist-evidence-thresholds-longform");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun(
+    "session-1",
+    "Research AI news and write a 1200 words draft with citations",
+    "running"
+  );
+
+  const outcome = await runSpecialistToolLoop({
+    runStore,
+    searchManager: new FakeSearchManagerWithResults() as never,
+    workspaceDir: workspace,
+    message: "Research AI news and write a 1200 words draft with citations",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in this test");
+    },
+    maxIterations: 1,
+    maxDurationMs: 60_000,
+    maxToolCalls: 4,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    skillName: "research_agent",
+    skillDescription: "Research skill",
+    skillSystemPrompt: "Do research",
+    toolAllowlist: ["writer_agent", "search"],
+    structuredChatRunner: async <T>() =>
+      ({
+        result: {
+          thought: "Draft immediately.",
+          actionType: "single",
+          singleTool: "writer_agent",
+          singleInputJson: JSON.stringify({
+            instruction: "Write a cited long-form article now.",
+            maxWords: 1200,
+            format: "blog_post"
+          }),
+          parallelActions: null,
+          responseText: null
+        }
+      }) as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>
+  });
+
+  assert.equal(outcome.status, "completed");
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  const thresholdEvent = events.find(
+    (event) =>
+      event.eventType === "specialist_plan_adjusted"
+      && (event.payload as { reason?: string }).reason === "insufficient_evidence_for_writer"
+  );
+  assert.ok(thresholdEvent);
+  const detail = (thresholdEvent?.payload as { detail?: { minFetchedPages?: number; minSourceCards?: number } } | undefined)?.detail;
+  assert.equal(detail?.minFetchedPages, 5);
+  assert.equal(detail?.minSourceCards, 8);
+});
+
 test("runSpecialistToolLoop applies writer retry budget guard after repeated fallback without new evidence", async () => {
   const workspace = await createTempWorkspace("specialist-writer-retry-guard");
   const runStore = new RunStore(workspace);

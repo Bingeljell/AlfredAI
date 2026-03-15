@@ -71,6 +71,12 @@ interface EvidenceSnapshot {
   sourceCardCount: number;
 }
 
+interface EvidenceThresholds {
+  minFetchedPagesForDraft: number;
+  minSourceCardsForDraft: number;
+  minSourceCardsForRevise: number;
+}
+
 const SPECIALIST_PLANNER_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -131,6 +137,29 @@ const DRAFT_TOOL_NAMES = new Set(["writer_agent", "article_writer"]);
 const MIN_FETCHED_PAGES_FOR_DRAFT = 2;
 const MIN_SOURCE_CARDS_FOR_DRAFT = 3;
 const MIN_SOURCE_CARDS_FOR_WRITER_REVISE = 1;
+
+function deriveEvidenceThresholds(contract: AgentTaskContract): EvidenceThresholds {
+  let minFetchedPagesForDraft = MIN_FETCHED_PAGES_FOR_DRAFT;
+  let minSourceCardsForDraft = MIN_SOURCE_CARDS_FOR_DRAFT;
+
+  if (contract.targetWordCount && contract.targetWordCount >= 1100) {
+    minFetchedPagesForDraft = Math.max(minFetchedPagesForDraft, 5);
+    minSourceCardsForDraft = Math.max(minSourceCardsForDraft, 8);
+  } else if (contract.targetWordCount && contract.targetWordCount >= 800) {
+    minFetchedPagesForDraft = Math.max(minFetchedPagesForDraft, 4);
+    minSourceCardsForDraft = Math.max(minSourceCardsForDraft, 6);
+  }
+
+  if (contract.requiresCitations) {
+    minSourceCardsForDraft = Math.max(minSourceCardsForDraft, contract.minimumCitationCount + 2);
+  }
+
+  return {
+    minFetchedPagesForDraft,
+    minSourceCardsForDraft,
+    minSourceCardsForRevise: Math.max(MIN_SOURCE_CARDS_FOR_WRITER_REVISE, Math.min(3, minSourceCardsForDraft - 2))
+  };
+}
 
 function isSchemaInputError(error: string | null): boolean {
   if (!error) {
@@ -418,6 +447,7 @@ function defaultToolInputJson(tool: string, objective: string): string | null {
 
 function shouldApplyEvidenceGapGuard(args: {
   contract: AgentTaskContract;
+  thresholds: EvidenceThresholds;
   progress: SpecialistProgressState;
   sourceCardCount: number;
   actions: Array<{ tool: string; inputJson: string }>;
@@ -436,8 +466,8 @@ function shouldApplyEvidenceGapGuard(args: {
   const detail = {
     fetchedPageCount: args.progress.fetchedPageCount,
     sourceCardCount: args.sourceCardCount,
-    minFetchedPages: MIN_FETCHED_PAGES_FOR_DRAFT,
-    minSourceCards: MIN_SOURCE_CARDS_FOR_DRAFT
+    minFetchedPages: args.thresholds.minFetchedPagesForDraft,
+    minSourceCards: args.thresholds.minSourceCardsForDraft
   };
   if (!args.contract.requiresDraft || args.progress.draftWordCount > 0) {
     return { adjusted: null, reason: null, detail };
@@ -447,8 +477,8 @@ function shouldApplyEvidenceGapGuard(args: {
     return { adjusted: null, reason: null, detail };
   }
   const lacksEvidence =
-    args.progress.fetchedPageCount < MIN_FETCHED_PAGES_FOR_DRAFT
-    || args.sourceCardCount < MIN_SOURCE_CARDS_FOR_DRAFT;
+    args.progress.fetchedPageCount < args.thresholds.minFetchedPagesForDraft
+    || args.sourceCardCount < args.thresholds.minSourceCardsForDraft;
   if (!lacksEvidence) {
     return { adjusted: null, reason: null, detail };
   }
@@ -664,6 +694,7 @@ function shouldApplyLowBudgetFinalizeGuard(args: {
   actions: Array<{ tool: string; inputJson: string }>;
   progress: SpecialistProgressState;
   sourceCardCount: number;
+  thresholds: EvidenceThresholds;
   availableToolNames: Set<string>;
   objective: string;
   requestedOutputPath: string | null;
@@ -697,8 +728,8 @@ function shouldApplyLowBudgetFinalizeGuard(args: {
     return { adjusted: null, reason: null, detail };
   }
   const hasReusableEvidence =
-    args.progress.fetchedPageCount >= MIN_FETCHED_PAGES_FOR_DRAFT
-    || args.sourceCardCount >= MIN_SOURCE_CARDS_FOR_WRITER_REVISE
+    args.progress.fetchedPageCount >= Math.max(2, args.thresholds.minFetchedPagesForDraft - 1)
+    || args.sourceCardCount >= Math.max(1, args.thresholds.minSourceCardsForDraft - 2)
     || args.progress.sourceUrls.size >= 4;
   if (!hasReusableEvidence) {
     return { adjusted: null, reason: null, detail };
@@ -1102,7 +1133,10 @@ function updateSpecialistProgress(progress: SpecialistProgressState, result: Too
   }
 
   if (result.tool === "web_fetch") {
-    const pagesFetched = typeof payload.pagesFetched === "number" ? payload.pagesFetched : 0;
+    const pagesFetched =
+      typeof payload.usablePageCount === "number"
+        ? payload.usablePageCount
+        : (typeof payload.pagesFetched === "number" ? payload.pagesFetched : 0);
     progress.fetchedPageCount += Math.max(0, pagesFetched);
   }
 
@@ -1399,6 +1433,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     const retryProfile = buildSearchRetryProfile(progress, consecutiveSearchOnlyIterations);
     const expectedToolFamily = expectedPhaseToolFamily(currentPhase, options.skillName);
     const sourceCardCount = toolContext.getResearchSourceCards?.().length ?? 0;
+    const evidenceThresholds = deriveEvidenceThresholds(taskContract);
     const currentEvidenceSnapshot: EvidenceSnapshot = {
       sourceUrlCount: progress.sourceUrls.size,
       fetchedPageCount: progress.fetchedPageCount,
@@ -1452,11 +1487,11 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
               evidenceState: {
                 sourceCardCount,
                 draftEvidenceReady:
-                  progress.fetchedPageCount >= MIN_FETCHED_PAGES_FOR_DRAFT
-                  && sourceCardCount >= MIN_SOURCE_CARDS_FOR_DRAFT,
+                  progress.fetchedPageCount >= evidenceThresholds.minFetchedPagesForDraft
+                  && sourceCardCount >= evidenceThresholds.minSourceCardsForDraft,
                 minimumForDraft: {
-                  fetchedPages: MIN_FETCHED_PAGES_FOR_DRAFT,
-                  sourceCards: MIN_SOURCE_CARDS_FOR_DRAFT
+                  fetchedPages: evidenceThresholds.minFetchedPagesForDraft,
+                  sourceCards: evidenceThresholds.minSourceCardsForDraft
                 }
               },
               researchScratchpad: {
@@ -1715,6 +1750,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     if (actions.length > 0) {
       const evidenceGap = shouldApplyEvidenceGapGuard({
         contract: taskContract,
+        thresholds: evidenceThresholds,
         progress,
         sourceCardCount,
         actions,
@@ -1778,6 +1814,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         actions,
         progress,
         sourceCardCount,
+        thresholds: evidenceThresholds,
         availableToolNames: new Set(Array.from(availableTools.keys())),
         objective: options.message,
         requestedOutputPath,

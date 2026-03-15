@@ -658,6 +658,81 @@ function shouldApplyWriterRetryBudgetGuard(args: {
   return { adjusted: null, reason: null, detail };
 }
 
+function shouldApplyLowBudgetFinalizeGuard(args: {
+  skillName: string;
+  remainingMs: number;
+  actions: Array<{ tool: string; inputJson: string }>;
+  progress: SpecialistProgressState;
+  sourceCardCount: number;
+  availableToolNames: Set<string>;
+  objective: string;
+  requestedOutputPath: string | null;
+  targetWordCount?: number | null;
+}): {
+  adjusted: Array<{ tool: string; inputJson: string }> | null;
+  reason: string | null;
+  detail: {
+    remainingMs: number;
+    fetchedPageCount: number;
+    sourceCardCount: number;
+    draftWordCount: number;
+  };
+} {
+  const detail = {
+    remainingMs: args.remainingMs,
+    fetchedPageCount: args.progress.fetchedPageCount,
+    sourceCardCount: args.sourceCardCount,
+    draftWordCount: args.progress.draftWordCount
+  };
+  if (args.skillName !== "research_agent") {
+    return { adjusted: null, reason: null, detail };
+  }
+  if (args.remainingMs > 45_000) {
+    return { adjusted: null, reason: null, detail };
+  }
+  const hasSearchHeavyMix =
+    args.actions.some((item) => SEARCH_FAMILY_TOOLS.has(item.tool))
+    && !args.actions.some((item) => DRAFT_TOOL_NAMES.has(item.tool));
+  if (!hasSearchHeavyMix) {
+    return { adjusted: null, reason: null, detail };
+  }
+  const hasReusableEvidence =
+    args.progress.fetchedPageCount >= MIN_FETCHED_PAGES_FOR_DRAFT
+    || args.sourceCardCount >= MIN_SOURCE_CARDS_FOR_WRITER_REVISE
+    || args.progress.sourceUrls.size >= 4;
+  if (!hasReusableEvidence) {
+    return { adjusted: null, reason: null, detail };
+  }
+  const draftTool = args.availableToolNames.has("article_writer")
+    ? "article_writer"
+    : (args.availableToolNames.has("writer_agent") ? "writer_agent" : null);
+  if (!draftTool) {
+    return { adjusted: null, reason: null, detail };
+  }
+  const outputPath = args.requestedOutputPath ?? extractOutputPathFromObjective(args.objective);
+  const revisionInput: Record<string, unknown> = {
+    instruction:
+      "Finalize the best possible draft now from existing evidence. Improve structure and include explicit source links. Do not start new discovery loops.",
+    maxWords: args.targetWordCount && args.targetWordCount > 0
+      ? Math.max(300, Math.min(1400, args.targetWordCount))
+      : 950,
+    format: "blog_post"
+  };
+  if (outputPath) {
+    revisionInput.outputPath = outputPath;
+  }
+  return {
+    adjusted: [
+      {
+        tool: draftTool,
+        inputJson: JSON.stringify(revisionInput)
+      }
+    ],
+    reason: "low_budget_finalize_draft",
+    detail
+  };
+}
+
 function injectOutputPathIntoWriterAction(
   action: { tool: string; inputJson: string },
   outputPath: string
@@ -1158,12 +1233,22 @@ function evaluateSpecialistContractGate(args: {
   };
 }
 
-function buildResearchFailureSummary(progress: SpecialistProgressState, observations: Array<{ iteration: number; summary: string }>): string {
+function buildResearchFailureSummary(args: {
+  progress: SpecialistProgressState;
+  observations: Array<{ iteration: number; summary: string }>;
+  artifactCount: number;
+  partialResultReturned: boolean;
+}): string {
+  const progress = args.progress;
+  const observations = args.observations;
   const recent = observations.slice(-4).map((item) => `iter ${item.iteration}: ${item.summary}`).join(" | ");
   const errors = progress.errorSamples.length > 0 ? progress.errorSamples.join(" | ") : "none";
   return [
-    "I couldn't finish a publish-ready draft within this run budget.",
+    args.partialResultReturned
+      ? "I reached guardrails, so I am returning the best partial draft/evidence collected so far."
+      : "I couldn't finish a publish-ready draft within this run budget.",
     `Progress so far: ${progress.sourceUrls.size} sources discovered, ${progress.fetchedPageCount} pages fetched, ${progress.draftWordCount} draft words, ${progress.citationCount} citations.`,
+    args.artifactCount > 0 ? `Artifacts currently available: ${args.artifactCount}.` : "No artifacts were produced yet.",
     `Most recent blockers: ${errors}.`,
     `Recent loop notes: ${recent || "none"}.`
   ].join(" ");
@@ -1308,6 +1393,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     if (Date.now() >= deadlineAtMs || plannerCallsUsed >= options.plannerMaxCalls || toolCallsUsed >= options.maxToolCalls) {
       break;
     }
+    const remainingMs = Math.max(0, deadlineAtMs - Date.now());
     const currentPhase = deriveSpecialistPhase(taskContract, progress, toolContext.state.artifacts.length);
     const phaseTransitionHint = derivePhaseTransitionHint(taskContract, progress, toolContext.state.artifacts.length);
     const retryProfile = buildSearchRetryProfile(progress, consecutiveSearchOnlyIterations);
@@ -1352,7 +1438,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
             content: JSON.stringify({
               objective: options.message,
               iteration,
-              remainingMs: Math.max(0, deadlineAtMs - Date.now()),
+              remainingMs,
               remainingToolCalls: Math.max(0, options.maxToolCalls - toolCallsUsed),
               taskContract,
               progress: {
@@ -1682,6 +1768,38 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
           timestamp: nowIso()
         });
         actions = retryGuard.adjusted;
+      }
+    }
+
+    if (actions.length > 0) {
+      const lowBudgetFinalizeGuard = shouldApplyLowBudgetFinalizeGuard({
+        skillName: options.skillName,
+        remainingMs,
+        actions,
+        progress,
+        sourceCardCount,
+        availableToolNames: new Set(Array.from(availableTools.keys())),
+        objective: options.message,
+        requestedOutputPath,
+        targetWordCount: taskContract.targetWordCount ?? null
+      });
+      if (lowBudgetFinalizeGuard.adjusted && lowBudgetFinalizeGuard.adjusted.length > 0) {
+        await options.runStore.appendEvent({
+          runId: options.runId,
+          sessionId: options.sessionId,
+          phase: "thought",
+          eventType: "specialist_plan_adjusted",
+          payload: {
+            skillName: options.skillName,
+            iteration,
+            reason: lowBudgetFinalizeGuard.reason,
+            detail: lowBudgetFinalizeGuard.detail,
+            originalActionCount: actions.length,
+            adjustedActionCount: lowBudgetFinalizeGuard.adjusted.length
+          },
+          timestamp: nowIso()
+        });
+        actions = lowBudgetFinalizeGuard.adjusted;
       }
     }
 
@@ -2085,9 +2203,21 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     progress,
     responseText: null
   });
+  const partialResultReturned =
+    options.skillName === "research_agent"
+    && (
+      toolContext.state.artifacts.length > 0
+      || progress.draftWordCount >= 180
+      || progress.citationCount >= Math.max(1, taskContract.minimumCitationCount)
+    );
   const assistantText =
     options.skillName === "research_agent" && !unmetContract.satisfied
-      ? buildResearchFailureSummary(progress, observations)
+      ? buildResearchFailureSummary({
+          progress,
+          observations,
+          artifactCount: toolContext.state.artifacts.length,
+          partialResultReturned
+        })
       : lastSuccessfulExecution
         ? buildSpecialistResultAssistantText(options.skillName, lastSuccessfulExecution)
         : buildFallbackAssistantText(options.skillName, observations);
@@ -2099,6 +2229,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     payload: {
       skillName: options.skillName,
       reason: "budget_or_iteration_guardrail",
+      partialResultReturned,
       plannerCallsUsed,
       toolCallsUsed,
       searchTimeoutCount: progress.searchTimeoutCount,

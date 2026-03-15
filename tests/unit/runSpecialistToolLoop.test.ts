@@ -882,6 +882,88 @@ test("runSpecialistToolLoop injects requested outputPath into writer actions whe
   );
 });
 
+test("runSpecialistToolLoop switches to finalize-draft action under low remaining budget", async () => {
+  const workspace = await createTempWorkspace("specialist-low-budget-finalize");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun(
+    "session-1",
+    "Research AI updates with citations and save to workspace/alfred/artifacts/lowbudget.md",
+    "running"
+  );
+
+  let plannerStep = 0;
+  const outcome = await runSpecialistToolLoop({
+    runStore,
+    searchManager: new FakeSearchManagerWithResults() as never,
+    workspaceDir: workspace,
+    message: "Research AI updates with citations and save to workspace/alfred/artifacts/lowbudget.md",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in this test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 40_000,
+    maxToolCalls: 4,
+    maxParallelTools: 1,
+    plannerMaxCalls: 3,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    skillName: "research_agent",
+    skillDescription: "Research skill",
+    skillSystemPrompt: "Do research",
+    toolAllowlist: ["search", "writer_agent"],
+    structuredChatRunner: async <T>() => {
+      plannerStep += 1;
+      if (plannerStep <= 2) {
+        return {
+          result: {
+            thought: "Keep searching for more sources.",
+            actionType: "single",
+            singleTool: "search",
+            singleInputJson: JSON.stringify({ query: "latest ai updates", maxResults: 8 }),
+            parallelActions: null,
+            responseText: null
+          }
+        } as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>;
+      }
+      return {
+        result: {
+          thought: "Done",
+          actionType: "respond",
+          singleTool: null,
+          singleInputJson: null,
+          parallelActions: null,
+          responseText: "Done"
+        }
+      } as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>;
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(
+    events.some(
+      (event) =>
+        event.eventType === "specialist_plan_adjusted"
+        && (event.payload as { reason?: string }).reason === "low_budget_finalize_draft"
+    )
+  );
+  assert.ok(updatedRun?.toolCalls.some((call) => call.toolName === "writer_agent"));
+});
+
 test("phase lock uses discovered URLs for discovery->fetch handoff when available", () => {
   const urls = Array.from({ length: 24 }, (_, index) => `https://example.com/news/${index + 1}`);
   const progress = {

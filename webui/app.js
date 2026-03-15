@@ -3,7 +3,7 @@ const TELEMETRY_EVENT_CAP = 400;
 const RAW_VIEW_CAP = 120_000;
 const POLL_INTERVAL_MS = 4_000;
 const PROVIDER_REFRESH_MS = 60_000;
-const CHAT_THINKING_LINE_COUNT = 12;
+const CHAT_THINKING_LINE_COUNT = 16;
 const CHAT_THINKING_THROTTLE_MS = 1_500;
 
 const VIEW_META = {
@@ -348,6 +348,34 @@ function distillThoughtForChat(event) {
     const reason = mapPlanAdjustmentReason(payload.reason) || String(payload.reason || "plan_adjusted");
     return `Adjust • ${reason}`;
   }
+  if (event.eventType === "alfred_turn_mode_selected") {
+    const mode = payload.turnMode || "execute";
+    const permission = payload.executionPermission || "execute";
+    return `State • turn mode=${mode}, permission=${permission}`;
+  }
+  if (event.eventType === "alfred_turn_objective_resolved") {
+    const source = payload.source || "message";
+    return `State • objective resolved from ${source}`;
+  }
+  if (event.eventType === "alfred_objective_contract_created") {
+    return "State • objective contract established for this turn.";
+  }
+  if (event.eventType === "alfred_turn_state_updated") {
+    const missing = Array.isArray(payload.turnState?.missingRequirements)
+      ? payload.turnState.missingRequirements.length
+      : 0;
+    const blocked = Array.isArray(payload.turnState?.blockingIssues)
+      ? payload.turnState.blockingIssues.length
+      : 0;
+    return `State • requirements missing=${missing}, blocking=${blocked}`;
+  }
+  if (event.eventType === "alfred_plan_adjusted") {
+    const reason = String(payload.reason || "plan_adjusted");
+    return `Adjust • planner action adjusted (${reason}).`;
+  }
+  if (event.eventType === "alfred_completion_contract_blocked") {
+    return `Adjust • completion blocked: ${toShortText(payload.reason || "contract_not_satisfied", 160)}`;
+  }
   if (event.eventType === "intent_identified") {
     return payload.intent ? `Thought • intent=${payload.intent}` : "";
   }
@@ -374,9 +402,31 @@ function distillActivityForChat(event) {
   }
 
   const payload = event.payload || {};
+  if (event.phase === "tool" && event.eventType === "writer_stage") {
+    const stage = payload.stage || "unknown";
+    const status = payload.status || "unknown";
+    return `Action • writer ${stage} (${status})`;
+  }
+
   if (event.phase === "tool") {
-    const detail = payload.toolName || payload.provider || payload.primaryProvider || payload.status || event.eventType;
-    return `Action • ${event.eventType} detail=${toShortText(detail, 120)}`;
+    if (event.eventType === "tool_action_started") {
+      return `Action • running ${payload.toolName || "tool"}...`;
+    }
+    if (event.eventType === "tool_action_completed") {
+      const toolName = payload.toolName || "tool";
+      const duration = Number(payload.durationMs || 0);
+      return `Action • ${toolName} completed (${duration}ms)`;
+    }
+    if (event.eventType === "tool_action_failed") {
+      const toolName = payload.toolName || "tool";
+      const err = toShortText(payload.error || "tool failed", 120);
+      return `Action • ${toolName} failed (${err})`;
+    }
+    if (event.eventType === "tool_action_rejected") {
+      return `Action • ${payload.toolName || "tool"} rejected (approval required)`;
+    }
+    const detail = payload.toolName || payload.provider || payload.primaryProvider || payload.status || "";
+    return detail ? `Action • ${toShortText(detail, 150)}` : "";
   }
 
   if (event.phase === "observe" && event.eventType === "specialist_action_result") {
@@ -412,11 +462,12 @@ function distillActivityForChat(event) {
   if (event.phase === "final" && event.eventType === "agent_stop") {
     return `Stop • agent reason=${payload.reason || "unknown"}`;
   }
-  const genericPayload = compactJson(payload, 180);
-  if (genericPayload) {
-    return `${event.phase}:${event.eventType} • ${genericPayload}`;
+
+  if (event.phase === "thought") {
+    return "";
   }
-  return `${event.phase}:${event.eventType}`;
+  const genericPayload = compactJson(payload, 180);
+  return genericPayload ? `${event.phase} • ${genericPayload}` : "";
 }
 
 function getChatThinkingLines(run) {
@@ -700,7 +751,7 @@ function renderChatHistory() {
     const thinkingBlock = thinkingLines.length > 0
       ? `
           <div class="thinking-stream">
-            <div class="thinking-title">Alfred live trace (thought/action/observe)...</div>
+            <div class="thinking-title">Alfred execution stream</div>
             ${thinkingLines.map((line) => `<div class="thinking-line">${escapeHtml(line)}</div>`).join("")}
           </div>
         `

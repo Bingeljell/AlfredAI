@@ -728,6 +728,90 @@ test("runSpecialistToolLoop applies writer retry budget guard after repeated fal
   assert.equal(updatedRun?.toolCalls[1]?.toolName, "search");
 });
 
+test("runSpecialistToolLoop prefers revise pass before retrieval when evidence already exists", async () => {
+  const workspace = await createTempWorkspace("specialist-writer-revise-first");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "Research AI trend highlights", "running");
+
+  let plannerStep = 0;
+  const outcome = await runSpecialistToolLoop({
+    runStore,
+    searchManager: new FakeSearchManagerWithResults() as never,
+    workspaceDir: workspace,
+    message: "Research AI trend highlights",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in this test");
+    },
+    maxIterations: 3,
+    maxDurationMs: 60_000,
+    maxToolCalls: 5,
+    maxParallelTools: 1,
+    plannerMaxCalls: 4,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    skillName: "research_agent",
+    skillDescription: "Research skill",
+    skillSystemPrompt: "Do research",
+    toolAllowlist: ["search", "writer_agent"],
+    structuredChatRunner: async <T>() => {
+      plannerStep += 1;
+      if (plannerStep === 1) {
+        return {
+          result: {
+            thought: "Discover sources first.",
+            actionType: "single",
+            singleTool: "search",
+            singleInputJson: JSON.stringify({ query: "AI trend highlights", maxResults: 8 }),
+            parallelActions: null,
+            responseText: null
+          }
+        } as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>;
+      }
+      return {
+        result: {
+          thought: "Draft now.",
+          actionType: "single",
+          singleTool: "writer_agent",
+          singleInputJson: JSON.stringify({
+            instruction: "Write a brief cited update on current AI trend highlights.",
+            maxWords: 500,
+            format: "memo"
+          }),
+          parallelActions: null,
+          responseText: null
+        }
+      } as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>;
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  const updatedRun = await runStore.getRun(run.runId);
+  assert.equal(updatedRun?.toolCalls[0]?.toolName, "search");
+  assert.equal(updatedRun?.toolCalls[1]?.toolName, "writer_agent");
+  assert.equal(updatedRun?.toolCalls[2]?.toolName, "writer_agent");
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  const reviseGuardEvent = events.find(
+    (event) =>
+      event.eventType === "specialist_plan_adjusted"
+      && (event.payload as { reason?: string }).reason === "writer_retry_budget_guard"
+      && (event.payload as { detail?: { strategy?: string } }).detail?.strategy === "revise_existing_evidence"
+  );
+  assert.ok(reviseGuardEvent);
+});
+
 test("runSpecialistToolLoop injects requested outputPath into writer actions when omitted by planner", async () => {
   const workspace = await createTempWorkspace("specialist-writer-outputpath-inject");
   const runStore = new RunStore(workspace);

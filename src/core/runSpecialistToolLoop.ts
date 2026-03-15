@@ -138,6 +138,7 @@ const DIAGNOSTIC_TOOLS = new Set(["search_status", "run_diagnostics"]);
 const DRAFT_TOOL_NAMES = new Set(["writer_agent", "article_writer"]);
 const MIN_FETCHED_PAGES_FOR_DRAFT = 2;
 const MIN_SOURCE_CARDS_FOR_DRAFT = 3;
+const MIN_SOURCE_CARDS_FOR_WRITER_REVISE = 1;
 
 function isSchemaInputError(error: string | null): boolean {
   if (!error) {
@@ -533,6 +534,7 @@ function shouldApplyWriterRetryBudgetGuard(args: {
   evidenceAdvancedSinceLastDraft: boolean;
   availableToolNames: Set<string>;
   progress: SpecialistProgressState;
+  sourceCardCount: number;
   objective: string;
 }): {
   adjusted: Array<{ tool: string; inputJson: string }> | null;
@@ -540,11 +542,15 @@ function shouldApplyWriterRetryBudgetGuard(args: {
   detail: {
     draftFailureStreak: number;
     evidenceAdvancedSinceLastDraft: boolean;
+    sourceCardCount: number;
+    strategy: "none" | "revise_existing_evidence" | "retrieve_more_evidence";
   };
 } {
   const detail = {
     draftFailureStreak: args.draftFailureStreak,
-    evidenceAdvancedSinceLastDraft: args.evidenceAdvancedSinceLastDraft
+    evidenceAdvancedSinceLastDraft: args.evidenceAdvancedSinceLastDraft,
+    sourceCardCount: args.sourceCardCount,
+    strategy: "none" as const
   };
   const includesDraftAction = args.actions.some((item) => DRAFT_TOOL_NAMES.has(item.tool));
   if (!includesDraftAction) {
@@ -552,6 +558,39 @@ function shouldApplyWriterRetryBudgetGuard(args: {
   }
   if (args.draftFailureStreak <= 0 || args.evidenceAdvancedSinceLastDraft) {
     return { adjusted: null, reason: null, detail };
+  }
+
+  const hasReusableEvidence =
+    args.progress.fetchedPageCount >= MIN_FETCHED_PAGES_FOR_DRAFT ||
+    args.sourceCardCount >= MIN_SOURCE_CARDS_FOR_WRITER_REVISE ||
+    args.progress.sourceUrls.size > 0;
+  if (hasReusableEvidence) {
+    const draftTool =
+      args.actions.find((item) => DRAFT_TOOL_NAMES.has(item.tool))?.tool
+      ?? (args.availableToolNames.has("article_writer") ? "article_writer" : "writer_agent");
+    const outputPath = extractOutputPathFromObjective(args.objective);
+    const revisionInput: Record<string, unknown> = {
+      instruction:
+        "Revise and complete the draft using the evidence already collected. Improve structure and citations before requesting any new retrieval.",
+      maxWords: 950,
+      format: "blog_post"
+    };
+    if (outputPath) {
+      revisionInput.outputPath = outputPath;
+    }
+    return {
+      adjusted: [
+        {
+          tool: draftTool,
+          inputJson: JSON.stringify(revisionInput)
+        }
+      ],
+      reason: "writer_retry_budget_guard",
+      detail: {
+        ...detail,
+        strategy: "revise_existing_evidence"
+      }
+    };
   }
 
   if (args.availableToolNames.has("web_fetch")) {
@@ -574,7 +613,10 @@ function shouldApplyWriterRetryBudgetGuard(args: {
         }
       ],
       reason: "writer_retry_budget_guard",
-      detail
+      detail: {
+        ...detail,
+        strategy: "retrieve_more_evidence"
+      }
     };
   }
 
@@ -590,7 +632,10 @@ function shouldApplyWriterRetryBudgetGuard(args: {
         }
       ],
       reason: "writer_retry_budget_guard",
-      detail
+      detail: {
+        ...detail,
+        strategy: "retrieve_more_evidence"
+      }
     };
   }
 
@@ -607,7 +652,10 @@ function shouldApplyWriterRetryBudgetGuard(args: {
         }
       ],
       reason: "writer_retry_budget_guard",
-      detail
+      detail: {
+        ...detail,
+        strategy: "retrieve_more_evidence"
+      }
     };
   }
 
@@ -654,7 +702,7 @@ function buildSpecialistPlannerSystemPrompt(options: Pick<SpecialistToolLoopOpti
     {
       label: "ReAct Directives",
       content:
-        "Use iterative reasoning: choose tools, observe output, and replan. Prefer the smallest set of high-yield actions. Respect the specialist objective contract you receive in planner input: do not return actionType=respond until required deliverable criteria are satisfied, unless you explicitly report a failure summary with concrete evidence. Maintain phase progression when drafting tasks are requested: discovery -> fetch -> synthesis -> persist. If discovery has URLs but fetch is still zero, prioritize downstream transition over repeating search-only cycles. Each tool includes an `inputContract` in planner context: obey required fields and bounds strictly. For tool actions, always provide valid JSON object input."
+        "Use iterative reasoning: choose tools, observe output, and replan. Prefer the smallest set of high-yield actions. Respect the specialist objective contract you receive in planner input: do not return actionType=respond until required deliverable criteria are satisfied, unless you explicitly report a failure summary with concrete evidence. Maintain phase progression when drafting tasks are requested: discovery -> fetch -> synthesis -> persist. If discovery has URLs but fetch is still zero, prioritize downstream transition over repeating search-only cycles. If a draft attempt fails but existing evidence is already available, try a revise-style writer pass before triggering fresh retrieval. Each tool includes an `inputContract` in planner context: obey required fields and bounds strictly. For tool actions, always provide valid JSON object input."
     }
   ]);
 }
@@ -1595,6 +1643,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         evidenceAdvancedSinceLastDraft,
         availableToolNames: new Set(Array.from(availableTools.keys())),
         progress,
+        sourceCardCount,
         objective: options.message
       });
       if (retryGuard.adjusted && retryGuard.adjusted.length > 0) {

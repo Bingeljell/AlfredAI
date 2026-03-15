@@ -73,6 +73,37 @@ function deriveTitle(instruction: string): string {
   return clipText(trimmed, 80);
 }
 
+function normalizeWriterFormat(value: unknown): "blog_post" | "email" | "memo" | "outline" | "social_post" | "notes" {
+  if (typeof value !== "string") {
+    return "blog_post";
+  }
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, "_");
+  switch (normalized) {
+    case "blog":
+    case "blogpost":
+    case "blog_post":
+    case "blog_article":
+    case "article":
+    case "news":
+    case "news_article":
+      return "blog_post";
+    case "email":
+      return "email";
+    case "memo":
+      return "memo";
+    case "outline":
+      return "outline";
+    case "social":
+    case "social_post":
+      return "social_post";
+    case "note":
+    case "notes":
+      return "notes";
+    default:
+      return "blog_post";
+  }
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -232,7 +263,7 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
   inputSchema: WriterAgentToolInputSchema,
   inputHint: "Use for drafting content quickly; set outputPath to save draft to a file.",
   async execute(input, context) {
-    const format = input.format ?? "blog_post";
+    const format = normalizeWriterFormat(input.format);
     const tone = input.tone ?? "clear and practical";
     const audience = input.audience ?? "general technical audience";
     const maxWords = input.maxWords ?? 700;
@@ -396,8 +427,16 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
     }
 
     let writtenPath: string | null = null;
-    const allowPlaceholderWrite = !context.openAiApiKey;
-    if (input.outputPath && (draftQuality === "complete" || allowPlaceholderWrite)) {
+    const fallbackWordCount = countWords(draft.content);
+    const allowPlaceholderWrite =
+      draftQuality !== "complete" &&
+      (
+        !context.openAiApiKey ||
+        fallbackWordCount >= 140 ||
+        ((sourceCards.length > 0 || contextSnippets.length > 0) && fallbackWordCount >= 90)
+      );
+    const shouldPersistDraft = draftQuality === "complete" || allowPlaceholderWrite;
+    if (input.outputPath && shouldPersistDraft) {
       await emitWriterStageEvent({
         context,
         stage: "persist",
@@ -452,7 +491,8 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
         payload: {
           outputPath: input.outputPath,
           reason: "draft_not_writable",
-          draftQuality
+          draftQuality,
+          wordCount: fallbackWordCount
         }
       });
     }
@@ -473,6 +513,7 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
       failureMessage,
       draftQuality,
       compactRetryUsed,
+      persistedFallbackDraft: writtenPath !== null && draftQuality !== "complete",
       outputPath: writtenPath
     };
   }

@@ -67,6 +67,7 @@ test("writer_agent creates fallback draft and writes output file", async () => {
 
   assert.equal(output.fallbackUsed, true);
   assert.equal(output.outputPath, "artifacts/draft.md");
+  assert.equal(output.persistedFallbackDraft, true);
   assert.ok((output.wordCount as number) > 0);
 
   const written = await readFile(path.join(workspace, "artifacts/draft.md"), "utf8");

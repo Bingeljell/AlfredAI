@@ -340,6 +340,35 @@ function repairWriterAgentInput(input: Record<string, unknown>): {
     strategies.push("tool_shape_repair_output_path");
   }
 
+  const normalizedFormat = (() => {
+    const raw = asNonEmptyString(next.format);
+    if (!raw) {
+      return null;
+    }
+    const normalized = raw.trim().toLowerCase().replace(/\s+/g, "_");
+    const aliases: Record<string, string> = {
+      blog: "blog_post",
+      blogpost: "blog_post",
+      blog_post: "blog_post",
+      blog_article: "blog_post",
+      article: "blog_post",
+      news: "blog_post",
+      news_article: "blog_post",
+      memo: "memo",
+      email: "email",
+      outline: "outline",
+      social: "social_post",
+      social_post: "social_post",
+      note: "notes",
+      notes: "notes"
+    };
+    return aliases[normalized] ?? null;
+  })();
+  if (normalizedFormat && next.format !== normalizedFormat) {
+    next.format = normalizedFormat;
+    strategies.push("tool_shape_repair_format");
+  }
+
   return {
     input: next,
     repaired: strategies.length > 0,

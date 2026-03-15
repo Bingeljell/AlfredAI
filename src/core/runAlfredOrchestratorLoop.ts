@@ -953,9 +953,10 @@ function inferResearchFactsFromRunRecord(
   let outputPath: string | null = null;
   let writerFallback = false;
   let writerFailureReason: string | null = null;
+  const writerToolNames = new Set(["writer_agent", "article_writer"]);
 
   for (const toolCall of [...(runRecord?.toolCalls ?? [])].reverse()) {
-    if (toolCall.toolName === "writer_agent" && toolCall.status === "ok") {
+    if (writerToolNames.has(toolCall.toolName) && toolCall.status === "ok") {
       const wordCount = findNumericField(toolCall.outputRedacted, ["wordCount"]) ?? 0;
       const content =
         toolCall.outputRedacted && typeof toolCall.outputRedacted === "object"
@@ -1057,15 +1058,16 @@ function summarizeDelegationOutcome(args: {
 }
 
 function summarizeToolOutput(toolName: string, output: unknown): string {
-  if (toolName === "writer_agent" && output && typeof output === "object") {
+  if ((toolName === "writer_agent" || toolName === "article_writer") && output && typeof output === "object") {
     const payload = output as Record<string, unknown>;
     const wordCount = typeof payload.wordCount === "number" ? payload.wordCount : 0;
     const quality = typeof payload.draftQuality === "string" ? payload.draftQuality : "unknown";
     const path = typeof payload.outputPath === "string" ? payload.outputPath : null;
+    const writerName = toolName === "article_writer" ? "article_writer" : "writer_agent";
     if (path) {
-      return `writer_agent produced a ${quality} draft (${wordCount} words) at ${path}`;
+      return `${writerName} produced a ${quality} draft (${wordCount} words) at ${path}`;
     }
-    return `writer_agent returned a ${quality} draft (${wordCount} words)`;
+    return `${writerName} returned a ${quality} draft (${wordCount} words)`;
   }
   if (toolName === "file_write" && output && typeof output === "object") {
     const payload = output as Record<string, unknown>;

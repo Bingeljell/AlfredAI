@@ -277,6 +277,50 @@ test("executeToolWithEnvelope coerces plain string input for writer_agent", asyn
   });
 });
 
+test("executeToolWithEnvelope repairs writer format aliases into canonical schema value", async () => {
+  const workspace = await createTempWorkspace("tool-envelope-writer-format-repair");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "test", "running");
+  const context = makeToolContext(runStore);
+  context.runId = run.runId;
+
+  const schema = z.object({
+    instruction: z.string().min(8),
+    format: z.enum(["blog_post", "email", "memo", "outline", "social_post", "notes"]).optional()
+  });
+  const tool: LeadAgentToolDefinition<typeof schema> = {
+    name: "writer_agent",
+    description: "writer",
+    inputSchema: schema,
+    inputHint: "writer",
+    async execute(input) {
+      return {
+        echoed: input
+      };
+    }
+  };
+
+  const result = await executeToolWithEnvelope({
+    toolName: "writer_agent",
+    inputJson: JSON.stringify({
+      instruction: "Write an article from these notes.",
+      format: "news_article"
+    }),
+    tools: new Map([[tool.name, tool]]),
+    context,
+    runStore,
+    runId: run.runId
+  });
+
+  assert.equal(result.status, "ok");
+  assert.equal(result.inputRepairApplied, true);
+  assert.match(result.inputRepairStrategy ?? "", /tool_shape_repair_format/);
+  assert.deepEqual(result.input, {
+    instruction: "Write an article from these notes.",
+    format: "blog_post"
+  });
+});
+
 test("executeToolWithEnvelope repairs web_fetch query/url aliases and noisy URL payloads", async () => {
   const workspace = await createTempWorkspace("tool-envelope-web-fetch-shape-repair");
   const runStore = new RunStore(workspace);

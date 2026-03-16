@@ -16,10 +16,11 @@ class FakeSearchManager {
   }
 }
 
-test("runAlfredOrchestratorLoop asks one clarification question for loose research-writing requests", async () => {
-  const workspace = await createTempWorkspace("alfred-orchestrator-clarification-gate");
+test("runAlfredOrchestratorLoop does not use deterministic pre-execution clarification gates", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-no-preexecute-clarification-gate");
   const runStore = new RunStore(workspace);
   const run = await runStore.createRun("session-1", "Research the Middle East war and write me an article", "running");
+  let plannerCalled = false;
 
   const outcome = await runAlfredOrchestratorLoop({
     runStore,
@@ -38,7 +39,7 @@ test("runAlfredOrchestratorLoop asks one clarification question for loose resear
       subReactMinConfidence: 0.6
     },
     leadPipelineExecutor: async () => {
-      throw new Error("lead pipeline should not run in clarification-gate test");
+      throw new Error("lead pipeline should not run in no-preexecute-clarification-gate test");
     },
     maxIterations: 3,
     maxDurationMs: 60_000,
@@ -49,18 +50,33 @@ test("runAlfredOrchestratorLoop asks one clarification question for loose resear
     diminishingThreshold: 1,
     policyMode: "trusted",
     isCancellationRequested: async () => false,
-    structuredChatRunner: async () => {
-      throw new Error("planner should not run when pre-execute clarification gate triggers");
+    structuredChatRunner: async <T>(options: { schemaName: string }): Promise<StructuredChatDiagnostic<T>> => {
+      plannerCalled = true;
+      if (options.schemaName === "alfred_orchestrator_plan") {
+        return {
+          result: {
+            thought: "Proceed directly based on user prompt.",
+            actionType: "respond" as const,
+            delegateAgent: null,
+            delegateBrief: null,
+            toolName: null,
+            toolInputJson: null,
+            responseText: "Proceeding with research and drafting."
+          }
+        } as StructuredChatDiagnostic<T>;
+      }
+      throw new Error(`unexpected schema request: ${options.schemaName}`);
     }
   });
 
   assert.equal(outcome.status, "completed");
-  assert.match(outcome.assistantText ?? "", /what should i optimize for/i);
+  assert.equal(outcome.assistantText, "Proceeding with research and drafting.");
+  assert.equal(plannerCalled, true);
 
   const updatedRun = await runStore.getRun(run.runId);
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
   assert.ok(
-    events.some(
+    !events.some(
       (event) =>
         event.eventType === "alfred_clarification_requested" &&
         (event.payload as { source?: string }).source === "pre_execute_gate"
@@ -712,7 +728,7 @@ test("runAlfredOrchestratorLoop respects plan-only execution permission and does
   const runStore = new RunStore(workspace);
   const run = await runStore.createRun(
     "session-1",
-    "Before doing anything, list which agent/tool you would use for: find 20 MSP leads in Texas with emails. Do not execute",
+    "/plan find 20 MSP leads in Texas with emails",
     "running"
   );
 
@@ -761,8 +777,7 @@ test("runAlfredOrchestratorLoop respects plan-only execution permission and does
     runStore,
     searchManager: new FakeSearchManager() as unknown as SearchManager,
     workspaceDir: workspace,
-    message:
-      "Before doing anything, list which agent/tool you would use for: find 20 MSP leads in Texas with emails. Do not execute",
+    message: "/plan find 20 MSP leads in Texas with emails",
     runId: run.runId,
     sessionId: "session-1",
     openAiApiKey: "test-key",
@@ -819,7 +834,7 @@ test("runAlfredOrchestratorLoop respects plan-only execution permission and does
   );
 });
 
-test("runAlfredOrchestratorLoop treats run-id failure analysis prompts as diagnostic mode", async () => {
+test("runAlfredOrchestratorLoop treats /diagnose run-id prompts as diagnostic mode", async () => {
   const workspace = await createTempWorkspace("alfred-orchestrator-run-id-diagnostic");
   const runStore = new RunStore(workspace);
   const prior = await runStore.createRun("session-1", "Sample prior run", "completed");
@@ -828,13 +843,13 @@ test("runAlfredOrchestratorLoop treats run-id failure analysis prompts as diagno
     assistantText: "Previous run completed with failures."
   });
 
-  const run = await runStore.createRun("session-1", `Why did run ${prior.runId} fail?`, "running");
+  const run = await runStore.createRun("session-1", `/diagnose ${prior.runId}`, "running");
 
   const outcome = await runAlfredOrchestratorLoop({
     runStore,
     searchManager: new FakeSearchManager() as unknown as SearchManager,
     workspaceDir: workspace,
-    message: `Why did run ${prior.runId} fail?`,
+    message: `/diagnose ${prior.runId}`,
     runId: run.runId,
     sessionId: "session-1",
     openAiApiKey: "test-key",
@@ -878,6 +893,77 @@ test("runAlfredOrchestratorLoop treats run-id failure analysis prompts as diagno
         (event.payload as { turnMode?: string }).turnMode === "diagnostic"
     )
   );
+});
+
+test("runAlfredOrchestratorLoop does not misclassify article prompts containing 'why' as diagnostic", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-why-in-article-prompt");
+  const runStore = new RunStore(workspace);
+  const message =
+    "Write me an ~800 word article on the latest AI coding agents. Rank the top 5 and mention why. Save to workspace/alfred/artifacts/blog_test/agents.md and proceed.";
+  const run = await runStore.createRun("session-1", message, "running");
+  let plannerCalled = false;
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message,
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in why-in-article-prompt test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 30_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner: async <T>(options: { schemaName: string }): Promise<StructuredChatDiagnostic<T>> => {
+      plannerCalled = true;
+      if (options.schemaName === "alfred_orchestrator_plan") {
+        return {
+          result: {
+            thought: "Proceed with writing flow.",
+            actionType: "respond" as const,
+            delegateAgent: null,
+            delegateBrief: null,
+            toolName: null,
+            toolInputJson: null,
+            responseText: "Executing article workflow."
+          }
+        } as StructuredChatDiagnostic<T>;
+      }
+      throw new Error(`unexpected schema request: ${options.schemaName}`);
+    }
+  });
+
+  assert.ok(outcome.status === "completed" || outcome.status === "failed");
+  assert.ok(!/Run diagnosis for/i.test(outcome.assistantText ?? ""));
+  assert.equal(plannerCalled, true);
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(
+    events.some(
+      (event) =>
+        event.eventType === "alfred_turn_mode_selected" &&
+        (event.payload as { turnMode?: string }).turnMode === "execute"
+    )
+  );
+  assert.ok(!events.some((event) => event.eventType === "alfred_diagnostic_response"));
 });
 
 test("runAlfredOrchestratorLoop carries forward objective on follow-up execute turns", async () => {
@@ -980,6 +1066,212 @@ test("runAlfredOrchestratorLoop carries forward objective on follow-up execute t
   );
 });
 
+test("runAlfredOrchestratorLoop treats 'You decide' as follow-up continuation of the prior objective", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-followup-you-decide");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "You decide", "running");
+
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string; messages?: Array<{ role: string; content: string }> }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      const plannerInput = JSON.parse(options.messages?.[1]?.content ?? "{}") as {
+        turnObjective?: string;
+      };
+      assert.match(plannerInput.turnObjective ?? "", /Research the latest AI chip announcements/i);
+      assert.match(plannerInput.turnObjective ?? "", /Follow-up instruction: You decide/i);
+      return {
+        result: {
+          thought: "Continue with previous objective and choose defaults.",
+          actionType: "respond" as const,
+          delegateAgent: null,
+          delegateBrief: null,
+          toolName: null,
+          toolInputJson: null,
+          responseText: "Proceeding with chosen defaults."
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message: "You decide",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in follow-up 'You decide' test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 30_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner,
+    sessionContext: {
+      activeObjective: "You decide",
+      recentTurns: [
+        {
+          role: "user",
+          content: "Research the latest AI chip announcements and draft an 800-word article with citations.",
+          timestamp: "2026-03-15T18:00:00.000Z"
+        },
+        {
+          role: "assistant",
+          content: "Which angle should I prioritize?",
+          timestamp: "2026-03-15T18:00:20.000Z"
+        },
+        {
+          role: "user",
+          content: "You decide",
+          timestamp: "2026-03-15T18:00:35.000Z"
+        }
+      ]
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.equal(outcome.assistantText, "Proceeding with chosen defaults.");
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  const resolvedEvent = events.find((event) => event.eventType === "alfred_turn_objective_resolved");
+  assert.ok(resolvedEvent);
+  assert.equal((resolvedEvent?.payload as { source?: string }).source, "recent_turn");
+});
+
+test("runAlfredOrchestratorLoop can ground a follow-up turn against recent session outputs", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-recent-output-grounding");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "Paste it here", "running");
+
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string; messages?: Array<{ role: string; content: string }> }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_turn_grounding") {
+      return {
+        result: {
+          thought: "User is referring to the latest article artifact in session memory.",
+          source: "recent_output" as const,
+          groundedObjective:
+            "Use the recent session article output titled 'Iran conflict analysis' and paste it here for the user. If the saved artifact is available, paste it directly; otherwise explain what is available and how to regenerate it.",
+          referencedOutputId: "run-prev:article"
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      const plannerInput = JSON.parse(options.messages?.[1]?.content ?? "{}") as {
+        turnObjective?: string;
+      };
+      assert.match(plannerInput.turnObjective ?? "", /Iran conflict analysis/i);
+      assert.match(plannerInput.turnObjective ?? "", /paste it here/i);
+      return {
+        result: {
+          thought: "Grounded objective is clear from session output memory.",
+          actionType: "respond" as const,
+          delegateAgent: null,
+          delegateBrief: null,
+          toolName: null,
+          toolInputJson: null,
+          responseText: "Proceeding with the grounded article output."
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message: "Paste it here",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in recent-output grounding test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 30_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner,
+    sessionContext: {
+      activeObjective: "Paste it here",
+      recentOutputs: [
+        {
+          id: "run-prev:article",
+          kind: "article",
+          runId: "run-prev",
+          createdAt: "2026-03-16T09:00:00.000Z",
+          title: "Iran conflict analysis",
+          summary: "A fully cited article about the Iran conflict.",
+          artifactPath: "workspace/alfred/sessions/session-1/outputs/run-prev-article.md",
+          availability: "body_available",
+          metadata: {
+            wordCount: 930,
+            outputFormat: "blog_post"
+          }
+        }
+      ],
+      recentTurns: [
+        {
+          role: "user",
+          content: "Research the Iran conflict and write a cited article.",
+          timestamp: "2026-03-16T09:00:00.000Z"
+        },
+        {
+          role: "assistant",
+          content: "The article has been prepared and saved.",
+          timestamp: "2026-03-16T09:01:00.000Z"
+        }
+      ]
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.equal(outcome.assistantText, "Proceeding with the grounded article output.");
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  const resolvedEvent = events.find((event) => event.eventType === "alfred_turn_objective_resolved");
+  assert.ok(resolvedEvent);
+  assert.equal((resolvedEvent?.payload as { source?: string }).source, "recent_output");
+});
+
 test("runAlfredOrchestratorLoop answers diagnostic turns from run evidence without delegating", async () => {
   const workspace = await createTempWorkspace("alfred-orchestrator-diagnostic-turn");
   const runStore = new RunStore(workspace);
@@ -1030,7 +1322,7 @@ test("runAlfredOrchestratorLoop answers diagnostic turns from run evidence witho
 
   const run = await runStore.createRun(
     "session-1",
-    "Why did you waste so many tokens and tool calls?",
+    "/diagnose",
     "running"
   );
 
@@ -1038,7 +1330,7 @@ test("runAlfredOrchestratorLoop answers diagnostic turns from run evidence witho
     runStore,
     searchManager: new FakeSearchManager() as unknown as SearchManager,
     workspaceDir: workspace,
-    message: "Why did you waste so many tokens and tool calls?",
+    message: "/diagnose",
     runId: run.runId,
     sessionId: "session-1",
     openAiApiKey: "test-key",

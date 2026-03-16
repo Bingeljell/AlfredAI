@@ -67,6 +67,13 @@ interface AlfredLeadBriefOutput {
   objectiveBrief: LeadExecutionBrief["objectiveBrief"];
 }
 
+interface AlfredTurnGroundingOutput {
+  thought: string;
+  source: "message" | "recent_output" | "recent_turn" | "active_objective" | "last_completed_run";
+  groundedObjective: string;
+  referencedOutputId: string | null;
+}
+
 type AlfredTaskType = "lead_generation" | "general";
 
 interface AlfredActionSnapshot {
@@ -346,6 +353,95 @@ function resolveTurnObjective(
   };
 }
 
+function buildAlfredTurnGroundingSystemPrompt(sessionContext?: SessionPromptContext): string {
+  return composeSystemPrompt([
+    {
+      label: `Persona ${ALFRED_MASTER_PROMPT_VERSION}`,
+      content: ALFRED_MASTER_SYSTEM_PROMPT
+    },
+    {
+      label: "Role",
+      content:
+        "Ground the current user turn against recent session outputs and recent conversation when the user is clearly referring to prior work."
+    },
+    {
+      label: "Directives",
+      content:
+        "Use the current user turn as the primary source of truth. If it clearly refers to a prior session output or earlier task, rewrite the objective into one grounded objective that combines the prior work with the current request. Prefer `recent_output` when the user is acting on an existing artifact or draft. Do not invent unavailable body text; if only metadata exists, keep the grounded objective truthful about that limitation. If the current turn already stands alone, return `source=message` and preserve it closely."
+    },
+    {
+      label: "Session Context",
+      content: formatSessionContextBlock(sessionContext)
+    },
+    {
+      label: "Recent Conversation",
+      content: formatRecentTurnsBlock(sessionContext)
+    }
+  ]);
+}
+
+async function resolveTurnObjectiveWithSessionGrounding(args: {
+  apiKey?: string;
+  structuredChatRunner: typeof openAiClient.runOpenAiStructuredChatWithDiagnostics;
+  message: string;
+  sessionContext?: SessionPromptContext;
+}): Promise<openAiClient.StructuredChatDiagnostic<AlfredTurnGroundingOutput> & {
+  fallback: { objective: string; source: "message" | "recent_turn" | "active_objective" | "last_completed_run" };
+}> {
+  const fallback = resolveTurnObjective(args.message, args.sessionContext);
+  if (!args.apiKey || (args.sessionContext?.recentOutputs?.length ?? 0) === 0) {
+    return {
+      result: {
+        thought: "No session-output grounding required.",
+        source: fallback.source,
+        groundedObjective: fallback.objective,
+        referencedOutputId: null
+      },
+      fallback
+    };
+  }
+
+  const recentOutputs = (args.sessionContext?.recentOutputs ?? []).slice(-4).map((output) => ({
+    id: output.id,
+    kind: output.kind,
+    title: output.title,
+    summary: output.summary,
+    availability: output.availability,
+    artifactPath: output.artifactPath ?? null,
+    metadata: output.metadata ?? null
+  }));
+
+  const diagnostic = await args.structuredChatRunner(
+    {
+      apiKey: args.apiKey,
+      schemaName: "alfred_turn_grounding",
+      jsonSchema: ALFRED_TURN_GROUNDING_JSON_SCHEMA,
+      messages: [
+        {
+          role: "system",
+          content: buildAlfredTurnGroundingSystemPrompt(args.sessionContext)
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            currentMessage: args.message,
+            recentOutputs,
+            recentTurns: args.sessionContext?.recentTurns?.slice(-6) ?? [],
+            activeObjective: args.sessionContext?.activeObjective ?? null,
+            lastCompletedRun: args.sessionContext?.lastCompletedRun ?? null
+          })
+        }
+      ]
+    },
+    AlfredTurnGroundingOutputSchema
+  );
+
+  return {
+    ...diagnostic,
+    fallback
+  };
+}
+
 function looksLikeExecutableLeadRequest(message: string): boolean {
   const hasLeadIntent = containsAnyWord(message, ["find", "get", "list", "collect", "source", "prospect"]);
   const hasLeadEntity = containsAnyWord(message, ["lead", "leads", "msp", "contact", "contacts"])
@@ -510,6 +606,28 @@ const AlfredLeadBriefOutputSchema: z.ZodType<AlfredLeadBriefOutput> = z.object({
   emailRequired: z.boolean(),
   outputFormat: z.string().min(2).max(80).nullable(),
   objectiveBrief: LeadExecutionBriefSchema.shape.objectiveBrief
+});
+
+const ALFRED_TURN_GROUNDING_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    thought: { type: "string", minLength: 1, maxLength: 500 },
+    source: {
+      type: "string",
+      enum: ["message", "recent_output", "recent_turn", "active_objective", "last_completed_run"]
+    },
+    groundedObjective: { type: "string", minLength: 1, maxLength: 1200 },
+    referencedOutputId: { anyOf: [{ type: "string", minLength: 1, maxLength: 160 }, { type: "null" }] }
+  },
+  required: ["thought", "source", "groundedObjective", "referencedOutputId"]
+} as const;
+
+const AlfredTurnGroundingOutputSchema: z.ZodType<AlfredTurnGroundingOutput> = z.object({
+  thought: z.string().min(1).max(500),
+  source: z.enum(["message", "recent_output", "recent_turn", "active_objective", "last_completed_run"]),
+  groundedObjective: z.string().min(1).max(1200),
+  referencedOutputId: z.string().min(1).max(160).nullable()
 });
 
 function nowIso(): string {
@@ -1625,7 +1743,22 @@ function evaluateCompletionContractGate(args: {
 export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptions): Promise<RunOutcome> {
   const startMs = Date.now();
   const deadlineAtMs = startMs + options.maxDurationMs;
-  const resolvedTurnObjective = resolveTurnObjective(options.message, options.sessionContext);
+  const structuredChatRunner = options.structuredChatRunner ?? openAiClient.runOpenAiStructuredChatWithDiagnostics;
+  const turnGrounding = await resolveTurnObjectiveWithSessionGrounding({
+    apiKey: options.openAiApiKey,
+    structuredChatRunner,
+    message: options.message,
+    sessionContext: options.sessionContext
+  });
+  if (turnGrounding.usage) {
+    await options.runStore.addLlmUsage(options.runId, turnGrounding.usage, 1);
+  }
+  const resolvedTurnObjective = turnGrounding.result
+    ? {
+        objective: turnGrounding.result.groundedObjective,
+        source: turnGrounding.result.source
+      }
+    : turnGrounding.fallback;
   const turnObjective = resolvedTurnObjective.objective;
   const discoveredTools = await discoverLeadAgentTools();
   const availableTools = discoveredTools;
@@ -1717,7 +1850,6 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   let lastAction: AlfredActionSnapshot | null = null;
   let latestRunRecord: RunRecord | undefined;
   let consecutivePlannerFailures = 0;
-  const structuredChatRunner = options.structuredChatRunner ?? openAiClient.runOpenAiStructuredChatWithDiagnostics;
   const agentLoopRunner = options.agentLoopRunner ?? runAgentLoop;
   const scratchpad: Record<string, unknown> = {
     currentTurnObjective: turnObjective

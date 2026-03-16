@@ -1386,12 +1386,14 @@ function buildSpecialistTaskContract(args: {
   const requiresCitations = args.objectiveContract.requiresCitations;
   return {
     requiredDeliverable: args.objectiveContract.requiredDeliverable,
+    requiresAssembly: true,
     requiresDraft,
     requiresCitations,
     minimumCitationCount: requiresCitations ? 2 : 0,
     doneCriteria: args.objectiveContract.doneCriteria,
     requestedOutputPath: args.requestedOutputPath ?? args.objectiveContract.requestedOutputPathHint,
-    targetWordCount: args.objectiveContract.targetWordCountHint
+    targetWordCount: args.objectiveContract.targetWordCountHint,
+    clarificationAllowed: false
   };
 }
 

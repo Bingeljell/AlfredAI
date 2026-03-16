@@ -7,12 +7,14 @@ import type { LeadExecutionBrief } from "../../tools/lead/schemas.js";
 
 export interface AgentTaskContract {
   requiredDeliverable: string;
+  requiresAssembly?: boolean;
   requiresDraft: boolean;
   requiresCitations: boolean;
   minimumCitationCount: number;
   doneCriteria: string[];
   requestedOutputPath?: string | null;
   targetWordCount?: number | null;
+  clarificationAllowed?: boolean;
 }
 
 export interface AgentSkillRunOptions {

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { RunStore } from "../../src/runs/runStore.js";
-import { runSpecialistToolLoop, shouldForcePhaseTransition } from "../../src/core/runSpecialistToolLoop.js";
+import { runSpecialistToolLoop, shouldApplyAssemblyGuard, shouldForcePhaseTransition } from "../../src/core/runSpecialistToolLoop.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
 
 class FakeSearchManager {
@@ -249,6 +249,103 @@ test("runSpecialistToolLoop blocks unsupported long-form respond attempts withou
   const unmet = (blockedEvent?.payload as { unmet?: string[] } | undefined)?.unmet ?? [];
   assert.ok(unmet.includes("supporting_evidence_missing"));
   assert.ok(unmet.includes("synthesis_not_ready"));
+});
+
+test("runSpecialistToolLoop blocks specialist clarification when task contract disallows it", async () => {
+  const workspace = await createTempWorkspace("specialist-clarification-lock");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "Proceed with defaults", "running");
+
+  let plannerStep = 0;
+  const outcome = await runSpecialistToolLoop({
+    runStore,
+    searchManager: new FakeSearchManagerWithResults() as never,
+    workspaceDir: workspace,
+    message: "Proceed with defaults",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in this test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 60_000,
+    maxToolCalls: 3,
+    maxParallelTools: 1,
+    plannerMaxCalls: 3,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    taskContract: {
+      requiredDeliverable: "Produce a verified ranked list from gathered evidence.",
+      requiresAssembly: true,
+      requiresDraft: false,
+      requiresCitations: false,
+      minimumCitationCount: 0,
+      doneCriteria: ["Return the ranked list once evidence is gathered."],
+      clarificationAllowed: false
+    },
+    skillName: "research_agent",
+    skillDescription: "Research skill",
+    skillSystemPrompt: "Do research",
+    toolAllowlist: ["lead_search_shortlist"],
+    structuredChatRunner: async <T>() => {
+      plannerStep += 1;
+      if (plannerStep === 1) {
+        return {
+          result: {
+            thought: "Shortlist likely sources first.",
+            actionType: "single",
+            responseKind: null,
+            singleTool: "lead_search_shortlist",
+            singleInputJson: JSON.stringify({ query: "family friendly pc games", maxResults: 8, maxUrls: 8 }),
+            parallelActions: null,
+            responseText: null
+          }
+        } as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>;
+      }
+      return {
+        result: {
+          thought: "Ask a follow-up question.",
+          actionType: "respond",
+          responseKind: "clarification",
+          singleTool: null,
+          singleInputJson: null,
+          parallelActions: null,
+          responseText: "Should I prioritize critic scores or co-op value?"
+        }
+      } as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>;
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.doesNotMatch(outcome.assistantText ?? "", /critic scores or co-op value/i);
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(
+    events.some(
+      (event) =>
+        event.eventType === "specialist_plan_adjusted"
+        && (event.payload as { reason?: string }).reason === "specialist_clarification_blocked"
+    )
+  );
+  assert.ok(
+    events.some(
+      (event) =>
+        event.eventType === "specialist_phase_state"
+        && (event.payload as { phase?: string }).phase === "fetch"
+    )
+  );
 });
 
 test("runSpecialistToolLoop triggers loop-shape guard after repeated search-only iterations", async () => {
@@ -544,6 +641,35 @@ test("runSpecialistToolLoop applies flaky-search retry profile to parallel searc
         (event.payload as { reason?: string }).reason === "flaky_search_retry_profile"
     )
   );
+});
+
+test("assembly guard reroutes search-heavy synthesis plans once evidence is ready", () => {
+  const adjusted = shouldApplyAssemblyGuard({
+    skillName: "research_agent",
+    phase: "synthesis",
+    actions: [{ tool: "search", inputJson: JSON.stringify({ query: "family games" }) }],
+    availableToolNames: new Set(["search", "writer_agent"]),
+    objective: "Assemble a ranked family-friendly PC games list",
+    contract: {
+      requiredDeliverable: "A ranked, source-backed list.",
+      requiresAssembly: true,
+      requiresDraft: false,
+      requiresCitations: true,
+      minimumCitationCount: 2,
+      doneCriteria: ["Return the ranked list with citations."]
+    },
+    requestedOutputPath: null,
+    writerReadiness: {
+      evidenceReady: true,
+      finalizeReady: true,
+      hasReusableEvidence: true,
+      missingEvidence: []
+    }
+  });
+
+  assert.equal(adjusted.reason, "assembly_from_evidence_ready");
+  assert.ok(adjusted.adjusted);
+  assert.equal(adjusted.adjusted?.[0]?.tool, "writer_agent");
 });
 
 test("runSpecialistToolLoop forces schema-recovery input rewrite after repeated schema errors", async () => {

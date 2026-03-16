@@ -36,6 +36,7 @@ interface SpecialistToolLoopOptions extends AgentSkillRunOptions {
 interface SpecialistPlannerOutput {
   thought: string;
   actionType: "single" | "parallel" | "respond";
+  responseKind?: "final" | "clarification" | "progress" | null;
   singleTool: string | null;
   singleInputJson: string | null;
   parallelActions: Array<{ tool: string; inputJson: string }> | null;
@@ -110,6 +111,7 @@ const SPECIALIST_PLANNER_JSON_SCHEMA = {
   properties: {
     thought: { type: "string", minLength: 1, maxLength: 600 },
     actionType: { type: "string", enum: ["single", "parallel", "respond"] },
+    responseKind: { anyOf: [{ type: "string", enum: ["final", "clarification", "progress"] }, { type: "null" }] },
     singleTool: { anyOf: [{ type: "string", minLength: 1, maxLength: 80 }, { type: "null" }] },
     singleInputJson: { anyOf: [{ type: "string", minLength: 2, maxLength: 2400 }, { type: "null" }] },
     parallelActions: {
@@ -132,12 +134,13 @@ const SPECIALIST_PLANNER_JSON_SCHEMA = {
     },
     responseText: { anyOf: [{ type: "string", minLength: 1, maxLength: 5000 }, { type: "null" }] }
   },
-  required: ["thought", "actionType", "singleTool", "singleInputJson", "parallelActions", "responseText"]
+  required: ["thought", "actionType", "responseKind", "singleTool", "singleInputJson", "parallelActions", "responseText"]
 } as const;
 
 const SpecialistPlannerOutputSchema: z.ZodType<SpecialistPlannerOutput> = z.object({
   thought: z.string().min(1).max(600),
   actionType: z.enum(["single", "parallel", "respond"]),
+  responseKind: z.enum(["final", "clarification", "progress"]).nullable().optional(),
   singleTool: z.string().min(1).max(80).nullable(),
   singleInputJson: z.string().min(2).max(2400).nullable(),
   parallelActions: z
@@ -388,7 +391,8 @@ function deriveSpecialistPhase(
   progress: SpecialistProgressState,
   artifactCount: number
 ): SpecialistPhase {
-  if (!(contract.requiresDraft || contract.requiresCitations)) {
+  const requiresAssembly = contract.requiresAssembly === true || contract.requiresDraft || contract.requiresCitations;
+  if (!requiresAssembly) {
     return progress.successfulToolCalls > 0 ? "complete" : "discovery";
   }
   if (progress.sourceUrls.size === 0) {
@@ -563,6 +567,46 @@ function assessWriterReadiness(args: {
     hasReusableEvidence,
     missingEvidence
   };
+}
+
+function buildAssemblyAction(args: {
+  availableToolNames: Set<string>;
+  contract: AgentTaskContract;
+  objective: string;
+  requestedOutputPath: string | null;
+}): Array<{ tool: string; inputJson: string }> | null {
+  const draftTool = args.availableToolNames.has("article_writer")
+    ? "article_writer"
+    : (args.availableToolNames.has("writer_agent") ? "writer_agent" : null);
+  if (!draftTool) {
+    return null;
+  }
+  const assemblyInput: Record<string, unknown> = {
+    instruction: [
+      `Assemble the current deliverable from the evidence already collected.`,
+      `Required deliverable: ${args.contract.requiredDeliverable}`,
+      args.contract.doneCriteria.length > 0
+        ? `Done criteria: ${args.contract.doneCriteria.join(" ")}`
+        : null,
+      "Do not restart discovery unless the current evidence is explicitly insufficient.",
+      args.contract.requiresCitations
+        ? "Include explicit source links for factual claims."
+        : "Use the collected evidence directly and note any uncertainty honestly."
+    ].filter(Boolean).join(" "),
+    maxWords: args.contract.targetWordCount && args.contract.targetWordCount > 0
+      ? Math.max(300, Math.min(1400, args.contract.targetWordCount))
+      : 1100,
+    format: args.contract.requiresDraft ? "blog_post" : "memo"
+  };
+  if (args.requestedOutputPath) {
+    assemblyInput.outputPath = args.requestedOutputPath;
+  }
+  return [
+    {
+      tool: draftTool,
+      inputJson: JSON.stringify(assemblyInput)
+    }
+  ];
 }
 
 function shouldApplyEvidenceGapGuard(args: {
@@ -771,6 +815,45 @@ function shouldApplyLowBudgetFinalizeGuard(args: {
   };
 }
 
+export function shouldApplyAssemblyGuard(args: {
+  skillName: string;
+  phase: SpecialistPhase;
+  actions: Array<{ tool: string; inputJson: string }>;
+  availableToolNames: Set<string>;
+  objective: string;
+  contract: AgentTaskContract;
+  requestedOutputPath: string | null;
+  writerReadiness: WriterReadinessState;
+}): {
+  adjusted: Array<{ tool: string; inputJson: string }> | null;
+  reason: string | null;
+} {
+  if (args.skillName !== "research_agent") {
+    return { adjusted: null, reason: null };
+  }
+  if (args.phase !== "synthesis") {
+    return { adjusted: null, reason: null };
+  }
+  const hasSearchHeavyMix =
+    args.actions.some((item) => SEARCH_FAMILY_TOOLS.has(item.tool))
+    && !args.actions.some((item) => DRAFT_TOOL_NAMES.has(item.tool));
+  if (!hasSearchHeavyMix) {
+    return { adjusted: null, reason: null };
+  }
+  if (!args.writerReadiness.evidenceReady) {
+    return { adjusted: null, reason: null };
+  }
+  return {
+    adjusted: buildAssemblyAction({
+      availableToolNames: args.availableToolNames,
+      contract: args.contract,
+      objective: args.objective,
+      requestedOutputPath: args.requestedOutputPath
+    }),
+    reason: "assembly_from_evidence_ready"
+  };
+}
+
 function injectOutputPathIntoWriterAction(
   action: { tool: string; inputJson: string },
   outputPath: string
@@ -811,7 +894,7 @@ function buildSpecialistPlannerSystemPrompt(options: Pick<SpecialistToolLoopOpti
     {
       label: "ReAct Directives",
       content:
-        "Use iterative reasoning: choose tools, observe output, and replan. Prefer the smallest set of high-yield actions. Respect the specialist objective contract you receive in planner input: do not return actionType=respond until required deliverable criteria are satisfied, unless you explicitly report a failure summary with concrete evidence. Maintain phase progression when drafting tasks are requested: discovery -> fetch -> synthesis -> persist. If discovery has URLs but fetch is still zero, prioritize downstream transition over repeating search-only cycles. If a draft attempt fails but existing evidence is already available, try a revise-style writer pass before triggering fresh retrieval. Each tool includes an `inputContract` in planner context: obey required fields and bounds strictly. For tool actions, always provide valid JSON object input."
+        "Use iterative reasoning: choose tools, observe output, and replan. Prefer the smallest set of high-yield actions. Respect the specialist objective contract you receive in planner input: do not return actionType=respond until required deliverable criteria are satisfied, unless you explicitly report a failure summary with concrete evidence. When actionType=respond, set responseKind explicitly: use `final` for a completed deliverable, `clarification` only when a new blocker truly requires user input, and `progress` for interim status. Maintain phase progression when drafting or assembly tasks are requested: discovery -> fetch -> synthesis -> persist. If discovery has URLs but fetch is still zero, prioritize downstream transition over repeating search-only cycles. If a synthesis attempt fails but existing evidence is already available, try a revise-style writer pass before triggering fresh retrieval. Each tool includes an `inputContract` in planner context: obey required fields and bounds strictly. For tool actions, always provide valid JSON object input."
     }
   ]);
 }
@@ -1015,9 +1098,7 @@ function buildSynthesisState(args: {
   artifactCount: number;
 }): AgentSynthesisState {
   const missingEvidence: string[] = [];
-  if (args.contract.requiresDraft && args.progress.draftWordCount === 0) {
-    missingEvidence.push("A synthesized draft body has not been produced yet.");
-  }
+  const completionGaps: string[] = [];
   if (args.progress.fetchedPageCount < args.thresholds.minFetchedPagesForDraft) {
     missingEvidence.push(
       `Fetched evidence is below the current threshold (${args.progress.fetchedPageCount}/${args.thresholds.minFetchedPagesForDraft} pages).`
@@ -1028,25 +1109,22 @@ function buildSynthesisState(args: {
       `Structured evidence coverage is below the current threshold (${args.sourceCardCount}/${args.thresholds.minSourceCardsForDraft} source cards).`
     );
   }
+  if (args.contract.requiresDraft && args.progress.draftWordCount === 0) {
+    completionGaps.push("A synthesized draft body has not been produced yet.");
+  }
   if (args.contract.requiresCitations && args.progress.citationCount < args.contract.minimumCitationCount) {
-    missingEvidence.push(
+    completionGaps.push(
       `Citation coverage is below the task minimum (${args.progress.citationCount}/${args.contract.minimumCitationCount}).`
     );
   }
   if (args.requestedOutputPath && args.artifactCount === 0) {
-    missingEvidence.push("The requested persisted artifact has not been written yet.");
+    completionGaps.push("The requested persisted artifact has not been written yet.");
   }
 
-  const readyForSynthesis =
-    missingEvidence.length === 0
-    || (
-      args.contract.requiresDraft
-      && args.progress.fetchedPageCount >= args.thresholds.minFetchedPagesForDraft
-      && args.sourceCardCount >= args.thresholds.minSourceCardsForRevise
-    );
+  const readyForSynthesis = missingEvidence.length === 0;
 
   let status: AgentSynthesisState["status"] = "not_ready";
-  if (args.progress.draftWordCount > 0 && missingEvidence.length === 0) {
+  if (readyForSynthesis && completionGaps.length === 0 && (args.progress.draftWordCount > 0 || !args.contract.requiresDraft)) {
     status = args.artifactCount > 0 || !args.requestedOutputPath ? "complete" : "partial";
   } else if (readyForSynthesis) {
     status = "ready";
@@ -1067,6 +1145,7 @@ function buildSynthesisState(args: {
     status,
     summary,
     missingEvidence,
+    completionGaps,
     readyForSynthesis,
     metadata: makeMetadata([
       ["sourceUrlCount", args.progress.sourceUrls.size],
@@ -1099,7 +1178,7 @@ function deriveActiveWorkState(args: {
     sourceCardCount,
     artifactCount: args.context.state.artifacts.length
   });
-  const unresolvedItems = synthesisState.missingEvidence.slice(0, 8);
+  const unresolvedItems = [...synthesisState.missingEvidence, ...(synthesisState.completionGaps ?? [])].slice(0, 8);
   const mainTaskId = `task-${slugifyId(args.objective, "current-objective")}`;
   const activeWorkItems: AgentActiveWorkItem[] = [
     {
@@ -1293,6 +1372,7 @@ function buildSpecialistTaskContract(options: Pick<SpecialistToolLoopOptions, "s
       requiredDeliverable: requiresDraft
         ? "Produce a complete research-backed draft response."
         : "Produce a concise research synthesis response.",
+      requiresAssembly: true,
       requiresDraft,
       requiresCitations,
       minimumCitationCount,
@@ -1302,18 +1382,21 @@ function buildSpecialistTaskContract(options: Pick<SpecialistToolLoopOptions, "s
         requiresCitations ? `Include at least ${minimumCitationCount} citation links.` : "Citations preferred when available."
       ],
       requestedOutputPath,
-      targetWordCount
+      targetWordCount,
+      clarificationAllowed: false
     };
   }
 
   return {
     requiredDeliverable: "Return a complete specialist response for the current objective.",
+    requiresAssembly: false,
     requiresDraft: false,
     requiresCitations: false,
     minimumCitationCount: 0,
     doneCriteria: ["Return a complete response for the delegated objective."],
     requestedOutputPath,
-    targetWordCount
+    targetWordCount,
+    clarificationAllowed: true
   };
 }
 
@@ -1556,7 +1639,8 @@ function derivePhaseTransitionHint(
   progress: SpecialistProgressState,
   artifactCount: number
 ): SpecialistPhaseTransitionHint {
-  if (!(contract.requiresDraft || contract.requiresCitations)) {
+  const requiresAssembly = contract.requiresAssembly === true || contract.requiresDraft || contract.requiresCitations;
+  if (!requiresAssembly) {
     return null;
   }
   if (progress.sourceUrls.size > 0 && progress.fetchedPageCount === 0) {
@@ -1660,11 +1744,14 @@ function buildResearchFailureSummary(args: {
       : "I couldn't finish a publish-ready draft within this run budget.",
     `Progress so far: ${progress.sourceUrls.size} sources discovered, ${progress.fetchedPageCount} pages fetched, ${progress.draftWordCount} draft words, ${progress.citationCount} citations.`,
     `Synthesis state: ${args.activeWorkState.synthesisState.status}. ${args.activeWorkState.synthesisState.summary}`,
+    (args.activeWorkState.synthesisState.completionGaps?.length ?? 0) > 0
+      ? `Completion gaps: ${args.activeWorkState.synthesisState.completionGaps?.slice(0, 4).join(" | ")}.`
+      : null,
     args.artifactCount > 0 ? `Artifacts currently available: ${args.artifactCount}.` : "No artifacts were produced yet.",
     `Unresolved work: ${unresolved}.`,
     `Most recent blockers: ${errors}.`,
     `Recent loop notes: ${recent || "none"}.`
-  ].join(" ");
+  ].filter(Boolean).join(" ");
 }
 
 function createToolContext(options: SpecialistToolLoopOptions, deadlineAtMs: number): LeadAgentToolContext {
@@ -2054,6 +2141,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         iteration,
         thought: plan.thought,
         actionType: plan.actionType,
+        responseKind: plan.responseKind ?? null,
         singleTool: plan.singleTool,
         parallelActions: plan.parallelActions,
         phaseState: {
@@ -2066,7 +2154,42 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       timestamp: nowIso()
     });
 
+    let forcedActionsFromRespond: Array<{ tool: string; inputJson: string }> | null = null;
     if (plan.actionType === "respond") {
+      if (plan.responseKind === "clarification" && taskContract.clarificationAllowed !== true) {
+        const assemblyActions = buildAssemblyAction({
+          availableToolNames: new Set(Array.from(availableTools.keys())),
+          contract: taskContract,
+          objective: options.message,
+          requestedOutputPath
+        });
+        await options.runStore.appendEvent({
+          runId: options.runId,
+          sessionId: options.sessionId,
+          phase: "thought",
+          eventType: "specialist_plan_adjusted",
+          payload: {
+            skillName: options.skillName,
+            iteration,
+            reason: assemblyActions ? "specialist_clarification_locked" : "specialist_clarification_blocked",
+            responseKind: plan.responseKind,
+            synthesisReady: activeWorkState.synthesisState.readyForSynthesis
+          },
+          timestamp: nowIso()
+        });
+        if (assemblyActions && activeWorkState.synthesisState.readyForSynthesis) {
+          forcedActionsFromRespond = assemblyActions;
+        } else {
+          observations.push({
+            iteration,
+            summary: "clarification_blocked_by_contract"
+          });
+          continue;
+        }
+      }
+    }
+
+    if (plan.actionType === "respond" && !forcedActionsFromRespond) {
       const contractGate = evaluateSpecialistContractGate({
         contract: taskContract,
         progress,
@@ -2123,7 +2246,9 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       ) &&
       Boolean(singleActionDefaultInput);
 
-    const requestedActions =
+    const requestedActions = forcedActionsFromRespond
+      ? forcedActionsFromRespond
+      : (
       plan.actionType === "single"
         ? plan.singleTool
           ? [
@@ -2135,7 +2260,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
               }
             ]
           : []
-        : (plan.parallelActions ?? []);
+        : (plan.parallelActions ?? [])
+      );
 
     let actions = requestedActions
       .map((action) => ({
@@ -2261,6 +2387,36 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
           timestamp: nowIso()
         });
         actions = retryGuard.adjusted;
+      }
+    }
+
+    if (actions.length > 0) {
+      const assemblyGuard = shouldApplyAssemblyGuard({
+        skillName: options.skillName,
+        phase: currentPhase,
+        actions,
+        availableToolNames: new Set(Array.from(availableTools.keys())),
+        objective: options.message,
+        contract: taskContract,
+        requestedOutputPath,
+        writerReadiness
+      });
+      if (assemblyGuard.adjusted && assemblyGuard.adjusted.length > 0) {
+        await options.runStore.appendEvent({
+          runId: options.runId,
+          sessionId: options.sessionId,
+          phase: "thought",
+          eventType: "specialist_plan_adjusted",
+          payload: {
+            skillName: options.skillName,
+            iteration,
+            reason: assemblyGuard.reason,
+            originalActionCount: actions.length,
+            adjustedActionCount: assemblyGuard.adjusted.length
+          },
+          timestamp: nowIso()
+        });
+        actions = assemblyGuard.adjusted;
       }
     }
 

@@ -70,6 +70,7 @@ export interface AgentSynthesisState {
   status: "not_ready" | "emerging" | "ready" | "partial" | "complete";
   summary: string;
   missingEvidence: string[];
+  completionGaps?: string[];
   readyForSynthesis: boolean;
   metadata?: Record<string, AgentMetadataValue>;
 }

@@ -203,6 +203,8 @@ Implementation status:
 - Specialist response blocking now consults generic active-work evidence state, not just draft-word or citation counters.
 - Unsupported long-form `respond` attempts are blocked when the runtime has no evidence backbone or synthesis is still unresolved.
 - Failure telemetry and fallback summaries now carry unresolved-work and synthesis-state detail so debugging can see where convergence failed.
+- Research tasks now carry `requiresAssembly`, so the specialist phase machine no longer marks non-draft research asks as `complete` after a single shortlist/search step.
+- Synthesis readiness now distinguishes evidence readiness from final completion gaps (for example missing citations or not-yet-written artifacts), which lets the model assemble from evidence before polishing the final deliverable.
 
 ### Phase 5: Writer Readiness Contract
 
@@ -228,6 +230,18 @@ Implementation status:
 - Specialist runtime now computes a shared `writerReadiness` assessment from evidence coverage plus active-work synthesis state.
 - Writer-evidence rerouting, revise-vs-retrieve retries, and low-budget finalize decisions now consume that shared readiness state instead of duplicating scattered threshold logic.
 - Remaining work in this phase is to keep tightening final-response paths so placeholder or low-evidence drafts cannot masquerade as complete outcomes.
+- Synthesis-phase search loops can now be rerouted into an assembly pass once evidence readiness is satisfied, instead of waiting to hit a low-budget emergency fallback.
+
+### Phase 6: Remaining Heuristic Ownership
+
+Implementation status:
+
+- Specialist planner now has explicit `responseKind` and research contracts default to `clarificationAllowed: false`, which blocks unnecessary follow-up questions once Alfred has already accepted defaults.
+- Major heuristic ownership still remains in:
+  - `buildSpecialistTaskContract` prompt regexing for draft/citation/word-count intent
+  - orchestrator-side objective/task helpers (`detectObjectiveTaskType`, `deriveHardConstraints`, `extractTargetWordCount`)
+  - specialist loop guards that still encode runtime progression heuristics
+- The runtime is now closer to `LLM owns semantics / runtime owns mechanics`, but Phase 6 is still the main unfinished cleanup pass.
 
 ### Phase 6: Reduce Remaining Heuristic Ownership
 

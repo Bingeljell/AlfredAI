@@ -103,6 +103,9 @@ interface WriterReadinessState {
   finalizeReady: boolean;
   hasReusableEvidence: boolean;
   missingEvidence: string[];
+  timeBudgetReady: boolean;
+  outputContractReady: boolean;
+  minimumRemainingMs: number;
 }
 
 const SPECIALIST_PLANNER_JSON_SCHEMA = {
@@ -362,27 +365,6 @@ export function shouldForcePhaseTransition(args: {
     };
   }
 
-  if (
-    args.contract.requiresDraft &&
-    args.progress.fetchedPageCount >= 4 &&
-    args.progress.draftWordCount === 0 &&
-    (args.availableToolNames.has("writer_agent") || args.availableToolNames.has("article_writer"))
-  ) {
-    return {
-      forced: [
-        {
-          tool: args.availableToolNames.has("article_writer") ? "article_writer" : "writer_agent",
-          inputJson: JSON.stringify({
-            instruction: "Draft the requested response from fetched sources and include citation URLs.",
-            maxWords: 950,
-            format: "blog_post"
-          })
-        }
-      ],
-      reason: "phase_lock_forced_transition_fetch_to_synthesis"
-    };
-  }
-
   return { forced: null, reason: null };
 }
 
@@ -535,6 +517,7 @@ function assessWriterReadiness(args: {
   progress: SpecialistProgressState;
   sourceCardCount: number;
   synthesisState: AgentSynthesisState;
+  remainingMs: number;
 }): WriterReadinessState {
   const missingEvidence: string[] = [];
   const fetchedReady = args.progress.fetchedPageCount >= args.thresholds.minFetchedPagesForDraft;
@@ -554,6 +537,21 @@ function assessWriterReadiness(args: {
     );
   }
 
+  const outputContractReady =
+    !args.contract.requestedOutputPath || args.contract.requestedOutputPath.trim().length > 0;
+  const minimumRemainingMs = args.contract.requiresDraft
+    ? 55_000
+    : (args.contract.requiresAssembly ? 40_000 : 25_000);
+  const timeBudgetReady = args.remainingMs >= minimumRemainingMs;
+  if (!timeBudgetReady) {
+    missingEvidence.push(
+      `Remaining budget is below the minimum recommended writer window (${args.remainingMs}/${minimumRemainingMs}ms).`
+    );
+  }
+  if (!outputContractReady) {
+    missingEvidence.push("Output contract is incomplete.");
+  }
+
   const evidenceReady = !args.contract.requiresDraft || (fetchedReady && sourceCardsReady);
   const hasReusableEvidence = reusableFetch || reusableSourceCards || reusableDiscovery;
   const finalizeReady =
@@ -565,7 +563,10 @@ function assessWriterReadiness(args: {
     evidenceReady,
     finalizeReady,
     hasReusableEvidence,
-    missingEvidence
+    missingEvidence,
+    timeBudgetReady,
+    outputContractReady,
+    minimumRemainingMs
   };
 }
 
@@ -628,6 +629,7 @@ function shouldApplyEvidenceGapGuard(args: {
     minSourceCards: number;
     writerReady: boolean;
     missingEvidence: string[];
+    timeBudgetReady: boolean;
   };
 } {
   const detail = {
@@ -636,7 +638,8 @@ function shouldApplyEvidenceGapGuard(args: {
     minFetchedPages: args.thresholds.minFetchedPagesForDraft,
     minSourceCards: args.thresholds.minSourceCardsForDraft,
     writerReady: args.writerReadiness.evidenceReady,
-    missingEvidence: args.writerReadiness.missingEvidence
+    missingEvidence: args.writerReadiness.missingEvidence,
+    timeBudgetReady: args.writerReadiness.timeBudgetReady
   };
   if (!args.contract.requiresDraft || args.progress.draftWordCount > 0) {
     return { adjusted: null, reason: null, detail };
@@ -760,6 +763,7 @@ function shouldApplyLowBudgetFinalizeGuard(args: {
     draftWordCount: number;
     finalizeReady: boolean;
     missingEvidence: string[];
+    timeBudgetReady: boolean;
   };
 } {
   const detail = {
@@ -768,7 +772,8 @@ function shouldApplyLowBudgetFinalizeGuard(args: {
     sourceCardCount: args.sourceCardCount,
     draftWordCount: args.progress.draftWordCount,
     finalizeReady: args.writerReadiness.finalizeReady,
-    missingEvidence: args.writerReadiness.missingEvidence
+    missingEvidence: args.writerReadiness.missingEvidence,
+    timeBudgetReady: args.writerReadiness.timeBudgetReady
   };
   if (args.skillName !== "research_agent") {
     return { adjusted: null, reason: null, detail };
@@ -783,6 +788,9 @@ function shouldApplyLowBudgetFinalizeGuard(args: {
     return { adjusted: null, reason: null, detail };
   }
   if (!args.writerReadiness.finalizeReady) {
+    return { adjusted: null, reason: null, detail };
+  }
+  if (!args.writerReadiness.timeBudgetReady) {
     return { adjusted: null, reason: null, detail };
   }
   const draftTool = args.availableToolNames.has("article_writer")
@@ -841,6 +849,9 @@ export function shouldApplyAssemblyGuard(args: {
     return { adjusted: null, reason: null };
   }
   if (!args.writerReadiness.evidenceReady) {
+    return { adjusted: null, reason: null };
+  }
+  if (!args.writerReadiness.timeBudgetReady) {
     return { adjusted: null, reason: null };
   }
   return {
@@ -1951,7 +1962,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       thresholds: evidenceThresholds,
       progress,
       sourceCardCount,
-      synthesisState: activeWorkState.synthesisState
+      synthesisState: activeWorkState.synthesisState,
+      remainingMs
     });
     const currentEvidenceSnapshot: EvidenceSnapshot = {
       sourceUrlCount: progress.sourceUrls.size,

@@ -205,6 +205,8 @@ Implementation status:
 - Failure telemetry and fallback summaries now carry unresolved-work and synthesis-state detail so debugging can see where convergence failed.
 - Research tasks now carry `requiresAssembly`, so the specialist phase machine no longer marks non-draft research asks as `complete` after a single shortlist/search step.
 - Synthesis readiness now distinguishes evidence readiness from final completion gaps (for example missing citations or not-yet-written artifacts), which lets the model assemble from evidence before polishing the final deliverable.
+- Forced fetch-to-synthesis phase jumps have been removed, so specialist progression is no longer hard-switched into writing just because a fetch threshold was crossed.
+- Assembly and low-budget fallback guards now require both evidence readiness and a viable writer time window, which keeps the runtime from routing into doomed write passes when there is not enough budget left for a real synthesis attempt.
 
 ### Phase 5: Writer Readiness Contract
 
@@ -229,6 +231,8 @@ Implementation status:
 
 - Specialist runtime now computes a shared `writerReadiness` assessment from evidence coverage plus active-work synthesis state.
 - Writer-evidence rerouting, revise-vs-retrieve retries, and low-budget finalize decisions now consume that shared readiness state instead of duplicating scattered threshold logic.
+- Writer readiness now includes `timeBudgetReady`, `outputContractReady`, and a task-shape-specific minimum writer window so specialist/runtime code can reason about whether a write pass is mechanically viable before invoking the writer.
+- Low-confidence placeholder drafts from failed low-budget or no-output passes are no longer persisted as fresh artifacts by default; explicit output paths still preserve overwrite protection and complete-draft downgrade protection.
 - Remaining work in this phase is to keep tightening final-response paths so placeholder or low-evidence drafts cannot masquerade as complete outcomes.
 - Synthesis-phase search loops can now be rerouted into an assembly pass once evidence readiness is satisfied, instead of waiting to hit a low-budget emergency fallback.
 

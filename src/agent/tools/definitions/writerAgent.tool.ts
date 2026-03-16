@@ -418,6 +418,38 @@ function evaluateDraftCompleteness(content: string, maxWords: number): {
   };
 }
 
+function shouldPersistPlaceholderDraft(args: {
+  providersConfigured: boolean;
+  draftQuality: "complete" | "placeholder";
+  fallbackWordCount: number;
+  sourceCardCount: number;
+  contextSnippetCount: number;
+  fallbackReason: string;
+  failureMessage: string | null;
+}): boolean {
+  if (args.draftQuality === "complete") {
+    return true;
+  }
+  const blockedReasons = new Set([
+    "multi_pass_no_output",
+    "compact_retry_skipped",
+    "plan_pass_skipped",
+    "writer_not_completed"
+  ]);
+  const normalizedFailure = (args.failureMessage ?? "").toLowerCase();
+  if (
+    blockedReasons.has(args.fallbackReason)
+    || normalizedFailure.includes("insufficient_deadline_budget")
+    || normalizedFailure.includes("low remaining budget")
+  ) {
+    return false;
+  }
+  if (!args.providersConfigured) {
+    return args.fallbackWordCount >= 140 || ((args.sourceCardCount > 0 || args.contextSnippetCount > 0) && args.fallbackWordCount >= 90);
+  }
+  return args.fallbackWordCount >= 140 || ((args.sourceCardCount > 0 || args.contextSnippetCount > 0) && args.fallbackWordCount >= 90);
+}
+
 function deriveTitleFromContent(content: string): string {
   const firstNonEmpty = content
     .split("\n")
@@ -1331,14 +1363,15 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
     let didWriteDraft = false;
     let preservedExistingDraft = false;
     const fallbackWordCount = countWords(draft.content);
-    const allowPlaceholderWrite =
-      draftQuality !== "complete" &&
-      (
-        providers.length === 0 ||
-        fallbackWordCount >= 140 ||
-        ((sourceCards.length > 0 || contextSnippets.length > 0) && fallbackWordCount >= 90)
-      );
-    const shouldPersistDraft = draftQuality === "complete" || allowPlaceholderWrite;
+    const shouldPersistDraft = shouldPersistPlaceholderDraft({
+      providersConfigured: providers.length > 0,
+      draftQuality,
+      fallbackWordCount,
+      sourceCardCount: sourceCards.length,
+      contextSnippetCount: contextSnippets.length,
+      fallbackReason,
+      failureMessage
+    });
     const resolvedOutputPath = shouldPersistDraft
       ? (input.outputPath ?? buildDefaultSessionOutputPath({
           sessionId: context.sessionId,
@@ -1446,16 +1479,87 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
         throw error;
       }
     } else if (resolvedOutputPath) {
+      const absoluteOutput = resolvePathInProject(context.projectRoot, resolvedOutputPath);
+      let existingContent: string | null = null;
+      try {
+        existingContent = await readFile(absoluteOutput, "utf8");
+      } catch (error) {
+        if (!(error instanceof Error) || !("code" in error) || (error as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw error;
+        }
+      }
+      if (input.overwrite === false && existingContent !== null) {
+        throw new Error("output file already exists and overwrite=false");
+      }
+      if (draftQuality !== "complete" && typeof existingContent === "string" && existingContent.trim().length > 0) {
+        const existingQuality = evaluateDraftCompleteness(existingContent, maxWords);
+        if (existingQuality.isComplete) {
+          preservedExistingDraft = true;
+          writtenPath = toProjectRelative(context.projectRoot, absoluteOutput);
+          draft = {
+            title: deriveTitleFromContent(existingContent),
+            content: existingContent.trim(),
+            summary: "Preserved existing complete draft at output path.",
+            nextSteps: [
+              "Review factual claims against cited sources",
+              "Adjust style and voice for final publication",
+              "Publish or share"
+            ]
+          };
+          draftQuality = "complete";
+          fallbackUsed = false;
+          fallbackReason = "none";
+          failureMessage = null;
+          context.addArtifact(writtenPath);
+          await emitWriterStageEvent({
+            context,
+            stage: "persist",
+            status: "skipped",
+            payload: {
+              outputPath: writtenPath,
+              reason: "quality_downgrade_prevented",
+              attemptedDraftQuality: "placeholder",
+              attemptedWordCount: fallbackWordCount,
+              existingDraftQuality: "complete",
+              existingWordCount: existingQuality.wordCount,
+              existingCitationCount: existingQuality.citationCount
+            }
+          });
+          return {
+            title: draft.title,
+            content: draft.content,
+            summary: draft.summary,
+            nextSteps: draft.nextSteps,
+            format,
+            tone,
+            audience,
+            wordCount: countWords(draft.content),
+            contextSnippetCount: contextSnippets.length,
+            sourceCardCount: sourceCards.length,
+            fallbackUsed,
+            fallbackReason,
+            failureMessage,
+            draftQuality,
+            compactRetryUsed,
+            providerUsed,
+            passCount,
+            persistedFallbackDraft: false,
+            outputPath: writtenPath
+          };
+        }
+      }
       await emitWriterStageEvent({
         context,
         stage: "persist",
         status: "skipped",
         payload: {
           outputPath: resolvedOutputPath,
-          reason: "draft_not_writable",
+          reason: draftQuality !== "complete" ? "placeholder_persist_blocked" : "draft_not_writable",
           draftQuality,
           wordCount: fallbackWordCount,
-          autoSelectedOutputPath: !input.outputPath
+          autoSelectedOutputPath: !input.outputPath,
+          fallbackReason,
+          failureMessage
         }
       });
     }

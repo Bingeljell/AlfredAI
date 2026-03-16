@@ -71,12 +71,10 @@ test("writer_agent creates fallback draft and writes output file", async () => {
   );
 
   assert.equal(output.fallbackUsed, true);
-  assert.equal(output.outputPath, "artifacts/draft.md");
-  assert.equal(output.persistedFallbackDraft, true);
+  assert.equal(output.outputPath, null);
+  assert.equal(output.persistedFallbackDraft, false);
   assert.ok((output.wordCount as number) > 0);
-
-  const written = await readFile(path.join(workspace, "artifacts/draft.md"), "utf8");
-  assert.match(written, /Draft unavailable:/);
+  await assert.rejects(() => readFile(path.join(workspace, "artifacts/draft.md"), "utf8"), /ENOENT/);
 });
 
 test("writer_agent respects overwrite=false and errors on existing file", async () => {
@@ -147,11 +145,9 @@ test("writer_agent persists to a session-scoped default path when outputPath is 
   );
 
   const expectedPath = `workspace/alfred/sessions/${run.sessionId}/outputs/${run.runId}-memo.md`;
-  assert.equal(output.outputPath, expectedPath);
-  assert.ok(context.state.artifacts.includes(expectedPath));
-
-  const written = await readFile(path.join(workspace, expectedPath), "utf8");
-  assert.match(written, /Draft unavailable:/);
+  assert.equal(output.outputPath, null);
+  assert.ok(!context.state.artifacts.includes(expectedPath));
+  await assert.rejects(() => readFile(path.join(workspace, expectedPath), "utf8"), /ENOENT/);
 });
 
 test("writer_agent emits writer_stage trace events for attempt and persistence", async () => {
@@ -224,4 +220,47 @@ test("writer_agent does not overwrite an existing complete draft with a placehol
     && (event.payload as { stage?: string; reason?: string }).reason === "quality_downgrade_prevented"
   );
   assert.ok(downgradeEvent);
+});
+
+test("writer_agent skips placeholder persistence when deadline budget is insufficient", async () => {
+  const workspace = await createTempWorkspace("alfred-writer-budget-blocked");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "writer deadline test", "running");
+  const context = buildToolContext(workspace, runStore, run.runId, run.sessionId);
+  context.openAiApiKey = "test-key";
+  context.deadlineAtMs = Date.now() + 2_000;
+  context.state.researchSourceCards = [
+    {
+      url: "https://example.com/source",
+      title: "Example Source",
+      date: "2026-03-16",
+      claim: "Example grounded claim for writing.",
+      quote: null,
+      sourceTool: "web_fetch"
+    }
+  ];
+  context.getResearchSourceCards = () => context.state.researchSourceCards ?? [];
+
+  const output = await writerAgentTool.execute(
+    {
+      instruction: "Write a concise cited note from the source.",
+      format: "memo",
+      maxWords: 220,
+      outputPath: "artifacts/budget.md"
+    },
+    context
+  );
+
+  assert.equal(output.draftQuality, "placeholder");
+  assert.equal(output.persistedFallbackDraft, false);
+  assert.equal(output.outputPath, null);
+  await assert.rejects(() => readFile(path.join(workspace, "artifacts/budget.md"), "utf8"), /ENOENT/);
+
+  const events = await runStore.listRunEvents(run);
+  const persistSkipped = events.find((event) =>
+    event.eventType === "writer_stage"
+    && (event.payload as { stage?: string; reason?: string }).stage === "persist"
+    && (event.payload as { stage?: string; reason?: string }).reason === "placeholder_persist_blocked"
+  );
+  assert.ok(persistSkipped);
 });

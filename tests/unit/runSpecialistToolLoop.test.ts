@@ -553,6 +553,7 @@ test("runSpecialistToolLoop exposes generic active-work state to the planner", a
     evidenceReady?: boolean;
     finalizeReady?: boolean;
     missingEvidence?: string[];
+    timeBudgetReady?: boolean;
   } | undefined;
   assert.ok(activeWorkState);
   assert.ok(writerReadiness);
@@ -563,6 +564,7 @@ test("runSpecialistToolLoop exposes generic active-work state to the planner", a
   assert.ok((activeWorkState?.evidenceRecords?.length ?? 0) >= 1);
   assert.match(activeWorkState?.synthesisState?.status ?? "", /not_ready|emerging|ready|partial|complete/);
   assert.equal(writerReadiness?.evidenceReady, false);
+  assert.equal(typeof writerReadiness?.timeBudgetReady, "boolean");
   assert.ok((writerReadiness?.missingEvidence?.length ?? 0) >= 1);
 });
 
@@ -663,7 +665,10 @@ test("assembly guard reroutes search-heavy synthesis plans once evidence is read
       evidenceReady: true,
       finalizeReady: true,
       hasReusableEvidence: true,
-      missingEvidence: []
+      missingEvidence: [],
+      timeBudgetReady: true,
+      outputContractReady: true,
+      minimumRemainingMs: 40_000
     }
   });
 
@@ -1242,7 +1247,7 @@ test("runSpecialistToolLoop injects requested outputPath into writer actions whe
   );
 });
 
-test("runSpecialistToolLoop switches to finalize-draft action under low remaining budget", async () => {
+test("runSpecialistToolLoop does not force writer when remaining budget is below viable writer window", async () => {
   const workspace = await createTempWorkspace("specialist-low-budget-finalize");
   const runStore = new RunStore(workspace);
   const run = await runStore.createRun(
@@ -1315,13 +1320,13 @@ test("runSpecialistToolLoop switches to finalize-draft action under low remainin
   const updatedRun = await runStore.getRun(run.runId);
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
   assert.ok(
-    events.some(
+    !events.some(
       (event) =>
         event.eventType === "specialist_plan_adjusted"
         && (event.payload as { reason?: string }).reason === "low_budget_finalize_draft"
     )
   );
-  assert.ok(updatedRun?.toolCalls.some((call) => call.toolName === "writer_agent"));
+  assert.ok(!(updatedRun?.toolCalls.some((call) => call.toolName === "writer_agent")));
 });
 
 test("phase lock uses discovered URLs for discovery->fetch handoff when available", () => {

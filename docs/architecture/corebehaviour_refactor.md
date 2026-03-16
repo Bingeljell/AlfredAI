@@ -170,6 +170,18 @@ Acceptance:
 
 - Alfred can converge on ranked lists, comparisons, drafts, and research packets without domain-specific control logic
 
+Implementation status:
+
+- Shared runtime scaffolding is landed across Alfred, specialist, and lead tool contexts:
+  - `assumptions`
+  - `unresolvedItems`
+  - `activeWorkItems`
+  - `candidateSets`
+  - `evidenceRecords`
+  - `synthesisState`
+- Specialist planner context now receives a generic `activeWorkState` snapshot derived from runtime evidence, candidates, assumptions, and synthesis readiness.
+- Remaining work in this phase is to let the model rely on this state for stronger convergence decisions before replacing more heuristic progression guards.
+
 ### Phase 4: Evidence-Driven Specialist Convergence
 
 Files:

@@ -307,6 +307,93 @@ test("runSpecialistToolLoop emits phase-transition hint before search-only guard
   );
 });
 
+test("runSpecialistToolLoop exposes generic active-work state to the planner", async () => {
+  const workspace = await createTempWorkspace("specialist-active-work-state");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "Research today's AI news and draft a cited post", "running");
+
+  let plannerStep = 0;
+  let secondPlannerPayload: Record<string, unknown> | null = null;
+
+  const outcome = await runSpecialistToolLoop({
+    runStore,
+    searchManager: new FakeSearchManagerWithResults() as never,
+    workspaceDir: workspace,
+    message: "Research today's AI news and draft a cited post",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in this test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 60_000,
+    maxToolCalls: 4,
+    maxParallelTools: 1,
+    plannerMaxCalls: 3,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    skillName: "research_agent",
+    skillDescription: "Research skill",
+    skillSystemPrompt: "Do research",
+    toolAllowlist: ["search"],
+    structuredChatRunner: async <T>({ messages }: { messages: Array<{ role: string; content: string }> }) => {
+      plannerStep += 1;
+      const payload = JSON.parse(messages[1]?.content ?? "{}") as Record<string, unknown>;
+      if (plannerStep === 2) {
+        secondPlannerPayload = payload;
+      }
+      return {
+        result: plannerStep === 1
+          ? {
+              thought: "Search first.",
+              actionType: "single",
+              singleTool: "search",
+              singleInputJson: JSON.stringify({ query: "ai news", maxResults: 5 }),
+              parallelActions: null,
+              responseText: null
+            }
+          : {
+              thought: "Done.",
+              actionType: "respond",
+              singleTool: null,
+              singleInputJson: null,
+              parallelActions: null,
+              responseText: "Partial synthesis pending."
+            }
+      } as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>;
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.ok(secondPlannerPayload);
+  const plannerPayload = secondPlannerPayload as Record<string, unknown>;
+  const activeWorkState = plannerPayload.activeWorkState as {
+    assumptions?: Array<{ statement?: string }>;
+    activeWorkItems?: Array<{ kind?: string }>;
+    candidateSets?: Array<{ itemCount?: number }>;
+    evidenceRecords?: Array<{ kind?: string }>;
+    synthesisState?: { status?: string; readyForSynthesis?: boolean };
+  } | undefined;
+  assert.ok(activeWorkState);
+  assert.ok((activeWorkState?.assumptions?.length ?? 0) >= 1);
+  assert.ok((activeWorkState?.activeWorkItems?.length ?? 0) >= 1);
+  assert.ok((activeWorkState?.candidateSets?.length ?? 0) >= 1);
+  assert.ok((activeWorkState?.candidateSets?.[0]?.itemCount ?? 0) >= 1);
+  assert.ok((activeWorkState?.evidenceRecords?.length ?? 0) >= 1);
+  assert.match(activeWorkState?.synthesisState?.status ?? "", /not_ready|emerging|ready|partial|complete/);
+});
+
 test("runSpecialistToolLoop applies flaky-search retry profile to parallel search plans", async () => {
   const workspace = await createTempWorkspace("specialist-flaky-search-profile");
   const runStore = new RunStore(workspace);

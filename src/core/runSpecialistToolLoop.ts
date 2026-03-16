@@ -5,6 +5,12 @@ import { composeSystemPrompt } from "../prompts/composePrompt.js";
 import { ALFRED_MASTER_PROMPT_VERSION, ALFRED_MASTER_SYSTEM_PROMPT } from "../prompts/master/alfred.system.js";
 import type { AgentSkillRunOptions, AgentTaskContract } from "../agent/skills/types.js";
 import type {
+  AgentActiveWorkItem,
+  AgentCandidateEntry,
+  AgentCandidateSet,
+  AgentEvidenceRecord,
+  AgentMetadataValue,
+  AgentWorkAssumption,
   AgentSynthesisState,
   LeadAgentState,
   LeadAgentToolContext,
@@ -80,6 +86,15 @@ interface EvidenceThresholds {
   minFetchedPagesForDraft: number;
   minSourceCardsForDraft: number;
   minSourceCardsForRevise: number;
+}
+
+interface ActiveWorkStateSnapshot {
+  assumptions: AgentWorkAssumption[];
+  unresolvedItems: string[];
+  activeWorkItems: AgentActiveWorkItem[];
+  candidateSets: AgentCandidateSet[];
+  evidenceRecords: AgentEvidenceRecord[];
+  synthesisState: AgentSynthesisState;
 }
 
 const SPECIALIST_PLANNER_JSON_SCHEMA = {
@@ -827,6 +842,355 @@ function truncateForPrompt(value: unknown, maxLength = 2200): string {
   return serialized.slice(0, maxLength);
 }
 
+function slugifyId(value: string, fallback: string): string {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+  return normalized || fallback;
+}
+
+function makeMetadata(entries: Array<[string, AgentMetadataValue | undefined]>): Record<string, AgentMetadataValue> | undefined {
+  const next = entries.reduce<Record<string, AgentMetadataValue>>((acc, [key, value]) => {
+    if (value !== undefined) {
+      acc[key] = value;
+    }
+    return acc;
+  }, {});
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+function buildProgressAssumptions(contract: AgentTaskContract, requestedOutputPath: string | null): AgentWorkAssumption[] {
+  const assumptions: AgentWorkAssumption[] = [];
+  if (contract.requiresDraft) {
+    assumptions.push({
+      id: "draft-required",
+      statement: "The task needs a synthesized draft, not only status updates or raw notes.",
+      source: "runtime",
+      confidence: "high"
+    });
+  }
+  if (contract.requiresCitations) {
+    assumptions.push({
+      id: "citations-required",
+      statement: `The response should include citation evidence (minimum ${contract.minimumCitationCount}).`,
+      source: "runtime",
+      confidence: "high"
+    });
+  }
+  if (contract.targetWordCount && contract.targetWordCount > 0) {
+    assumptions.push({
+      id: "target-word-count",
+      statement: `Target draft length is approximately ${contract.targetWordCount} words.`,
+      source: "runtime",
+      confidence: "medium"
+    });
+  }
+  if (requestedOutputPath) {
+    assumptions.push({
+      id: "requested-output-path",
+      statement: `A persisted artifact is expected at ${requestedOutputPath}.`,
+      source: "runtime",
+      confidence: "high"
+    });
+  }
+  return assumptions;
+}
+
+function buildCandidateSetsFromState(
+  context: LeadAgentToolContext,
+  progress: SpecialistProgressState
+): AgentCandidateSet[] {
+  const sets: AgentCandidateSet[] = [];
+  const sourceUrlItems: AgentCandidateEntry[] = Array.from(progress.sourceUrls)
+    .slice(0, 12)
+    .map((url, index) => ({
+      id: `candidate-source-url-${index + 1}`,
+      label: url,
+      summary: "Discovered source candidate available for follow-up retrieval or synthesis support.",
+      status: context.getFetchedPages?.().some((page) => page.url === url) ? "supported" : "candidate",
+      metadata: makeMetadata([["rank", index + 1]])
+    }));
+  if (sourceUrlItems.length > 0) {
+    sets.push({
+      id: "candidate-set-discovered-sources",
+      label: "Discovered sources",
+      objective: "Potential evidence sources gathered from current task discovery.",
+      status: sourceUrlItems.some((item) => item.status === "supported") ? "narrowing" : "open",
+      items: sourceUrlItems
+    });
+  }
+
+  const shortlistedUrls = context.getShortlistedUrls?.() ?? [];
+  if (shortlistedUrls.length > 0) {
+    const items: AgentCandidateEntry[] = shortlistedUrls.slice(0, 12).map((url, index) => ({
+      id: `candidate-url-${index + 1}`,
+      label: url,
+      summary: "Candidate source discovered for possible follow-up retrieval.",
+      status: "candidate",
+      metadata: makeMetadata([["rank", index + 1]])
+    }));
+    sets.push({
+      id: "candidate-set-shortlisted-sources",
+      label: "Shortlisted sources",
+      objective: "Potential source candidates gathered for the current task.",
+      status: items.length >= 3 ? "narrowing" : "open",
+      items
+    });
+  }
+
+  if (context.state.leads.length > 0) {
+    const items: AgentCandidateEntry[] = context.state.leads.slice(0, 12).map((lead, index) => ({
+      id: `candidate-lead-${index + 1}`,
+      label: lead.companyName,
+      summary: lead.shortDesc,
+      status: lead.confidence >= 0.75 ? "supported" : "candidate",
+      metadata: makeMetadata([
+        ["confidence", Number(lead.confidence.toFixed(3))],
+        ["sourceUrl", lead.sourceUrl],
+        ["website", lead.website]
+      ])
+    }));
+    sets.push({
+      id: "candidate-set-leads",
+      label: "Lead candidates",
+      objective: "Current candidate entities assembled for lead generation.",
+      status: items.length > 0 ? "narrowing" : "open",
+      items
+    });
+  }
+
+  return sets;
+}
+
+function buildEvidenceRecordsFromState(context: LeadAgentToolContext): AgentEvidenceRecord[] {
+  const records: AgentEvidenceRecord[] = [];
+  const sourceCards = context.getResearchSourceCards?.() ?? [];
+  for (const [index, card] of sourceCards.slice(-12).entries()) {
+    records.push({
+      id: `evidence-source-card-${index + 1}`,
+      kind: "source_card",
+      summary: card.claim,
+      source: card.sourceTool === "search" ? "search" : "fetch",
+      toolName: card.sourceTool,
+      url: card.url,
+      confidence: card.quote ? "high" : "medium",
+      metadata: makeMetadata([
+        ["title", card.title],
+        ["date", card.date],
+        ["quote", card.quote]
+      ])
+    });
+  }
+
+  for (const [index, page] of (context.getFetchedPages?.() ?? []).slice(-8).entries()) {
+    const summary =
+      toSourceClaim(page.text, 180)
+      || toSourceClaim(page.listItems?.[0] ?? "", 180)
+      || toSourceClaim(page.tableRows?.[0] ?? "", 180)
+      || "Fetched page available for the current task.";
+    records.push({
+      id: `evidence-fetched-page-${index + 1}`,
+      kind: "fetched_page",
+      summary,
+      source: "fetch",
+      toolName: "web_fetch",
+      url: page.url,
+      confidence: page.text.length >= 220 ? "medium" : "low",
+      metadata: makeMetadata([
+        ["title", page.title],
+        ["textChars", page.text.length]
+      ])
+    });
+  }
+
+  for (const [index, artifactPath] of context.state.artifacts.slice(-6).entries()) {
+    records.push({
+      id: `evidence-artifact-${index + 1}`,
+      kind: "artifact",
+      summary: `Artifact produced at ${artifactPath}.`,
+      source: "runtime",
+      artifactPath,
+      confidence: "high"
+    });
+  }
+
+  return records;
+}
+
+function buildSynthesisState(args: {
+  contract: AgentTaskContract;
+  requestedOutputPath: string | null;
+  progress: SpecialistProgressState;
+  thresholds: EvidenceThresholds;
+  sourceCardCount: number;
+  artifactCount: number;
+}): AgentSynthesisState {
+  const missingEvidence: string[] = [];
+  if (args.contract.requiresDraft && args.progress.draftWordCount === 0) {
+    missingEvidence.push("A synthesized draft body has not been produced yet.");
+  }
+  if (args.progress.fetchedPageCount < args.thresholds.minFetchedPagesForDraft) {
+    missingEvidence.push(
+      `Fetched evidence is below the current threshold (${args.progress.fetchedPageCount}/${args.thresholds.minFetchedPagesForDraft} pages).`
+    );
+  }
+  if (args.sourceCardCount < args.thresholds.minSourceCardsForDraft) {
+    missingEvidence.push(
+      `Structured evidence coverage is below the current threshold (${args.sourceCardCount}/${args.thresholds.minSourceCardsForDraft} source cards).`
+    );
+  }
+  if (args.contract.requiresCitations && args.progress.citationCount < args.contract.minimumCitationCount) {
+    missingEvidence.push(
+      `Citation coverage is below the task minimum (${args.progress.citationCount}/${args.contract.minimumCitationCount}).`
+    );
+  }
+  if (args.requestedOutputPath && args.artifactCount === 0) {
+    missingEvidence.push("The requested persisted artifact has not been written yet.");
+  }
+
+  const readyForSynthesis =
+    missingEvidence.length === 0
+    || (
+      args.contract.requiresDraft
+      && args.progress.fetchedPageCount >= args.thresholds.minFetchedPagesForDraft
+      && args.sourceCardCount >= args.thresholds.minSourceCardsForRevise
+    );
+
+  let status: AgentSynthesisState["status"] = "not_ready";
+  if (args.progress.draftWordCount > 0 && missingEvidence.length === 0) {
+    status = args.artifactCount > 0 || !args.requestedOutputPath ? "complete" : "partial";
+  } else if (readyForSynthesis) {
+    status = "ready";
+  } else if (args.progress.sourceUrls.size > 0 || args.progress.fetchedPageCount > 0 || args.sourceCardCount > 0) {
+    status = "emerging";
+  }
+
+  const summary =
+    status === "complete"
+      ? "Runtime evidence indicates the task output has been synthesized and persisted."
+      : status === "ready"
+        ? "Runtime evidence indicates a synthesis pass can proceed without reopening discovery."
+        : status === "emerging"
+          ? "Evidence is accumulating, but synthesis is still gated by missing support."
+          : "The current task does not yet have enough supporting work to synthesize confidently.";
+
+  return {
+    status,
+    summary,
+    missingEvidence,
+    readyForSynthesis,
+    metadata: makeMetadata([
+      ["sourceUrlCount", args.progress.sourceUrls.size],
+      ["fetchedPageCount", args.progress.fetchedPageCount],
+      ["sourceCardCount", args.sourceCardCount],
+      ["draftWordCount", args.progress.draftWordCount],
+      ["artifactCount", args.artifactCount]
+    ])
+  };
+}
+
+function deriveActiveWorkState(args: {
+  objective: string;
+  contract: AgentTaskContract;
+  requestedOutputPath: string | null;
+  currentPhase: SpecialistPhase;
+  progress: SpecialistProgressState;
+  context: LeadAgentToolContext;
+  thresholds: EvidenceThresholds;
+}): ActiveWorkStateSnapshot {
+  const assumptions = buildProgressAssumptions(args.contract, args.requestedOutputPath);
+  const candidateSets = buildCandidateSetsFromState(args.context, args.progress);
+  const evidenceRecords = buildEvidenceRecordsFromState(args.context);
+  const sourceCardCount = args.context.getResearchSourceCards?.().length ?? 0;
+  const synthesisState = buildSynthesisState({
+    contract: args.contract,
+    requestedOutputPath: args.requestedOutputPath,
+    progress: args.progress,
+    thresholds: args.thresholds,
+    sourceCardCount,
+    artifactCount: args.context.state.artifacts.length
+  });
+  const unresolvedItems = synthesisState.missingEvidence.slice(0, 8);
+  const mainTaskId = `task-${slugifyId(args.objective, "current-objective")}`;
+  const activeWorkItems: AgentActiveWorkItem[] = [
+    {
+      id: mainTaskId,
+      kind: "task",
+      label: "Current delegated objective",
+      summary: args.contract.requiredDeliverable,
+      status:
+        synthesisState.status === "complete"
+          ? "completed"
+          : synthesisState.readyForSynthesis
+            ? "ready"
+            : "active",
+      candidateSetIds: candidateSets.map((set) => set.id),
+      evidenceRecordIds: evidenceRecords.slice(-8).map((record) => record.id),
+      metadata: makeMetadata([
+        ["phase", args.currentPhase],
+        ["requiresDraft", args.contract.requiresDraft],
+        ["requiresCitations", args.contract.requiresCitations],
+        ["requestedOutputPath", args.requestedOutputPath]
+      ])
+    }
+  ];
+
+  if (evidenceRecords.length > 0) {
+    activeWorkItems.push({
+      id: "evidence-assembly",
+      kind: "evidence",
+      label: "Evidence assembly",
+      summary: "Collected evidence supporting the current task.",
+      status: synthesisState.readyForSynthesis ? "ready" : "active",
+      evidenceRecordIds: evidenceRecords.slice(-12).map((record) => record.id),
+      metadata: makeMetadata([
+        ["recordCount", evidenceRecords.length],
+        ["sourceCardCount", sourceCardCount]
+      ])
+    });
+  }
+
+  if (args.contract.requiresDraft) {
+    activeWorkItems.push({
+      id: "draft-synthesis",
+      kind: "draft",
+      label: "Draft synthesis",
+      summary: synthesisState.summary,
+      status:
+        synthesisState.status === "complete"
+          ? "completed"
+          : synthesisState.readyForSynthesis
+            ? "ready"
+            : "blocked",
+      evidenceRecordIds: evidenceRecords.slice(-8).map((record) => record.id),
+      metadata: makeMetadata([
+        ["draftWordCount", args.progress.draftWordCount],
+        ["citationCount", args.progress.citationCount]
+      ])
+    });
+  }
+
+  return {
+    assumptions,
+    unresolvedItems,
+    activeWorkItems,
+    candidateSets,
+    evidenceRecords,
+    synthesisState
+  };
+}
+
+function hydrateToolContextWorkState(context: LeadAgentToolContext, snapshot: ActiveWorkStateSnapshot): void {
+  context.setAssumptions?.(snapshot.assumptions);
+  context.setUnresolvedItems?.(snapshot.unresolvedItems);
+  context.setActiveWorkItems?.(snapshot.activeWorkItems);
+  context.setCandidateSets?.(snapshot.candidateSets);
+  context.setEvidenceRecords?.(snapshot.evidenceRecords);
+  context.setSynthesisState?.(snapshot.synthesisState);
+}
+
 function extractArtifactPaths(tool: string, output: Record<string, unknown>): string[] {
   const paths: string[] = [];
   if (tool === "write_csv") {
@@ -1475,6 +1839,16 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     const expectedToolFamily = expectedPhaseToolFamily(currentPhase, options.skillName);
     const sourceCardCount = toolContext.getResearchSourceCards?.().length ?? 0;
     const evidenceThresholds = deriveEvidenceThresholds(taskContract);
+    const activeWorkState = deriveActiveWorkState({
+      objective: options.message,
+      contract: taskContract,
+      requestedOutputPath,
+      currentPhase,
+      progress,
+      context: toolContext,
+      thresholds: evidenceThresholds
+    });
+    hydrateToolContextWorkState(toolContext, activeWorkState);
     const currentEvidenceSnapshot: EvidenceSnapshot = {
       sourceUrlCount: progress.sourceUrls.size,
       fetchedPageCount: progress.fetchedPageCount,
@@ -1545,6 +1919,21 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
                     date: card.date,
                     claim: card.claim
                   }))
+              },
+              activeWorkState: {
+                assumptions: activeWorkState.assumptions,
+                unresolvedItems: activeWorkState.unresolvedItems,
+                activeWorkItems: activeWorkState.activeWorkItems,
+                candidateSets: activeWorkState.candidateSets.map((set) => ({
+                  id: set.id,
+                  label: set.label,
+                  status: set.status,
+                  objective: set.objective,
+                  itemCount: set.items.length,
+                  sampleItems: set.items.slice(0, 5)
+                })),
+                evidenceRecords: activeWorkState.evidenceRecords.slice(-8),
+                synthesisState: activeWorkState.synthesisState
               },
               loopShape: {
                 consecutiveSearchOnlyIterations
@@ -2096,6 +2485,16 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       }
     }
     const afterSnapshot = captureProgressSnapshot(progress, toolContext.state.artifacts.length);
+    const postActionActiveWorkState = deriveActiveWorkState({
+      objective: options.message,
+      contract: taskContract,
+      requestedOutputPath,
+      currentPhase: deriveSpecialistPhase(taskContract, progress, toolContext.state.artifacts.length),
+      progress,
+      context: toolContext,
+      thresholds: evidenceThresholds
+    });
+    hydrateToolContextWorkState(toolContext, postActionActiveWorkState);
     const valueDelta = computeIterationValueDelta(beforeSnapshot, afterSnapshot);
     const costScore = executions.reduce((sum, execution) => sum + execution.durationMs, 0) / 1000 + executions.length * 0.35;
     const efficiency = valueDelta / Math.max(1, costScore);
@@ -2154,14 +2553,22 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       sessionId: options.sessionId,
       phase: "observe",
       eventType: "specialist_action_result",
-      payload: {
-        skillName: options.skillName,
-        iteration,
-        summary,
-        actionEconomy: {
-          valueDelta: Number(valueDelta.toFixed(4)),
-          costScore: Number(costScore.toFixed(4)),
-          efficiency: Number(efficiency.toFixed(4)),
+        payload: {
+          skillName: options.skillName,
+          iteration,
+          summary,
+          activeWorkState: {
+            assumptions: postActionActiveWorkState.assumptions,
+            unresolvedItems: postActionActiveWorkState.unresolvedItems,
+            activeWorkItems: postActionActiveWorkState.activeWorkItems,
+            candidateSetCount: postActionActiveWorkState.candidateSets.length,
+            evidenceRecordCount: postActionActiveWorkState.evidenceRecords.length,
+            synthesisState: postActionActiveWorkState.synthesisState
+          },
+          actionEconomy: {
+            valueDelta: Number(valueDelta.toFixed(4)),
+            costScore: Number(costScore.toFixed(4)),
+            efficiency: Number(efficiency.toFixed(4)),
           lowValueIterationStreak
         },
         results: executions.map((item) => ({

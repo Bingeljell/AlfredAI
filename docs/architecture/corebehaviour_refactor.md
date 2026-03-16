@@ -207,6 +207,7 @@ Implementation status:
 - Synthesis readiness now distinguishes evidence readiness from final completion gaps (for example missing citations or not-yet-written artifacts), which lets the model assemble from evidence before polishing the final deliverable.
 - Forced fetch-to-synthesis phase jumps have been removed, so specialist progression is no longer hard-switched into writing just because a fetch threshold was crossed.
 - Assembly and low-budget fallback guards now require both evidence readiness and a viable writer time window, which keeps the runtime from routing into doomed write passes when there is not enough budget left for a real synthesis attempt.
+- Search-only replans are now mechanically corrected when runtime state already says `fetch` is the next unresolved step, and planner timeouts during `discovery_complete_fetch_pending` can recover directly into a fetch/evidence action instead of burning another iteration on shortlist churn.
 
 ### Phase 5: Writer Readiness Contract
 

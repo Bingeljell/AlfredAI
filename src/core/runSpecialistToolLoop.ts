@@ -164,7 +164,6 @@ function nowIso(): string {
 
 const SEARCH_FAMILY_TOOLS = new Set(["search", "lead_search_shortlist", "search_status"]);
 const DOWNSTREAM_PROGRESS_TOOLS = new Set(["web_fetch", "lead_extract", "writer_agent", "article_writer", "file_write", "write_csv"]);
-const DISCOVERY_PHASE_LOCK_MIN_SOURCE_URLS = 20;
 const DIAGNOSTIC_TOOLS = new Set(["search_status", "run_diagnostics"]);
 const DRAFT_TOOL_NAMES = new Set(["writer_agent", "article_writer"]);
 const MIN_FETCHED_PAGES_FOR_DRAFT = 2;
@@ -331,6 +330,8 @@ export function shouldForcePhaseTransition(args: {
   actions: Array<{ tool: string; inputJson: string }>;
   availableToolNames: Set<string>;
   objective: string;
+  currentPhase: SpecialistPhase;
+  phaseTransitionHint: SpecialistPhaseTransitionHint;
 }): { forced: Array<{ tool: string; inputJson: string }> | null; reason: string | null } {
   const isSearchOnly = args.actions.length > 0 && args.actions.every((item) => SEARCH_FAMILY_TOOLS.has(item.tool));
   if (!isSearchOnly) {
@@ -338,8 +339,9 @@ export function shouldForcePhaseTransition(args: {
   }
 
   if (
-    (args.contract.requiresDraft || args.contract.requiresCitations) &&
-    args.progress.sourceUrls.size >= DISCOVERY_PHASE_LOCK_MIN_SOURCE_URLS &&
+    (args.contract.requiresAssembly === true || args.contract.requiresDraft || args.contract.requiresCitations) &&
+    (args.currentPhase === "fetch" || args.phaseTransitionHint === "discovery_complete_fetch_pending") &&
+    args.progress.sourceUrls.size > 0 &&
     args.progress.fetchedPageCount === 0 &&
     args.availableToolNames.has("web_fetch")
   ) {
@@ -1906,6 +1908,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
   const schemaRecoveryTools = new Set<string>();
   let draftFailureStreak = 0;
   let lastDraftAttemptEvidence: EvidenceSnapshot | null = null;
+  let pendingMechanicalRecoveryActions: Array<{ tool: string; inputJson: string }> | null = null;
+  let pendingMechanicalRecoveryReason: string | null = null;
 
   await options.runStore.appendEvent({
     runId: options.runId,
@@ -1989,7 +1993,9 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       });
     }
 
-    const plannerDiagnostic = await structuredChatRunner(
+    const plannerDiagnostic = pendingMechanicalRecoveryActions
+      ? null
+      : await structuredChatRunner(
       {
         apiKey: options.openAiApiKey,
         schemaName: `${options.skillName}_planner`,
@@ -2087,87 +2093,116 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       SpecialistPlannerOutputSchema
     );
 
-    plannerCallsUsed += 1;
-    if (plannerDiagnostic.usage) {
+    let plan: SpecialistPlannerOutput | null = null;
+    if (plannerDiagnostic) {
+      plannerCallsUsed += 1;
+    }
+    if (plannerDiagnostic?.usage) {
       await options.runStore.addLlmUsage(options.runId, plannerDiagnostic.usage, 1);
     }
-    if (!plannerDiagnostic.result) {
-      consecutivePlannerFailures += 1;
-      const failureClass = plannerDiagnostic.failureClass ?? classifyStructuredFailure(plannerDiagnostic);
-      const failureMessage = plannerDiagnostic.failureMessage?.slice(0, 220) ?? "planner_failed";
+    if (!plannerDiagnostic?.result) {
+      if (pendingMechanicalRecoveryActions) {
+        await options.runStore.appendEvent({
+          runId: options.runId,
+          sessionId: options.sessionId,
+          phase: "thought",
+          eventType: "specialist_plan_adjusted",
+          payload: {
+            skillName: options.skillName,
+            iteration,
+            reason: pendingMechanicalRecoveryReason ?? "planner_failure_recovery",
+            phaseTransitionHint,
+            adjustedActionCount: pendingMechanicalRecoveryActions.length
+          },
+          timestamp: nowIso()
+        });
+      } else {
+        consecutivePlannerFailures += 1;
+        const failureClass = plannerDiagnostic?.failureClass ?? classifyStructuredFailure(plannerDiagnostic ?? {});
+        const failureMessage = plannerDiagnostic?.failureMessage?.slice(0, 220) ?? "planner_failed";
+        await options.runStore.appendEvent({
+          runId: options.runId,
+          sessionId: options.sessionId,
+          phase: "observe",
+          eventType: "specialist_planner_failed",
+          payload: {
+            skillName: options.skillName,
+            iteration,
+            failureClass,
+            failureCode: plannerDiagnostic?.failureCode ?? "unknown",
+            attempts: plannerDiagnostic?.attempts ?? 1,
+            message: failureMessage
+          },
+          timestamp: nowIso()
+        });
+        observations.push({
+          iteration,
+          summary: `planner_failed:${failureClass}`,
+          outcome: failureMessage
+        });
+        if (failureClass === "policy_block") {
+          return {
+            status: "failed",
+            assistantText: `${options.skillName} blocked by policy/auth: ${failureMessage}`,
+            artifactPaths: toolContext.state.artifacts.length > 0 ? [...toolContext.state.artifacts] : undefined
+          };
+        }
+        if (failureClass === "network" || failureClass === "timeout") {
+          const recoveryActions = phaseTransitionHint === "discovery_complete_fetch_pending"
+            ? buildEvidenceRecoveryAction(new Set(Array.from(availableTools.keys())), options.message, progress.sourceUrls)
+            : null;
+          if (recoveryActions && recoveryActions.length > 0) {
+            pendingMechanicalRecoveryActions = recoveryActions;
+            pendingMechanicalRecoveryReason = "planner_failure_fetch_recovery";
+            consecutivePlannerFailures = 0;
+            continue;
+          }
+          const delayMs = computeRetryDelayMs(
+            consecutivePlannerFailures,
+            {
+              maxAttempts: 4,
+              baseDelayMs: 200,
+              maxDelayMs: 1500,
+              jitterRatio: 0.15
+            },
+            undefined
+          );
+          await sleep(delayMs);
+        }
+        if (consecutivePlannerFailures >= 3) {
+          break;
+        }
+        continue;
+      }
+    } else {
+      consecutivePlannerFailures = 0;
+      plan = plannerDiagnostic.result;
       await options.runStore.appendEvent({
         runId: options.runId,
         sessionId: options.sessionId,
-        phase: "observe",
-        eventType: "specialist_planner_failed",
+        phase: "thought",
+        eventType: "specialist_plan_created",
         payload: {
           skillName: options.skillName,
           iteration,
-          failureClass,
-          failureCode: plannerDiagnostic.failureCode ?? "unknown",
-          attempts: plannerDiagnostic.attempts ?? 1,
-          message: failureMessage
+          thought: plan.thought,
+          actionType: plan.actionType,
+          responseKind: plan.responseKind ?? null,
+          singleTool: plan.singleTool,
+          parallelActions: plan.parallelActions,
+          phaseState: {
+            current: currentPhase,
+            expectedToolFamily
+          },
+          phaseTransitionHint,
+          retryProfile
         },
         timestamp: nowIso()
       });
-      observations.push({
-        iteration,
-        summary: `planner_failed:${failureClass}`,
-        outcome: failureMessage
-      });
-      if (failureClass === "policy_block") {
-        return {
-          status: "failed",
-          assistantText: `${options.skillName} blocked by policy/auth: ${failureMessage}`,
-          artifactPaths: toolContext.state.artifacts.length > 0 ? [...toolContext.state.artifacts] : undefined
-        };
-      }
-      if (failureClass === "network" || failureClass === "timeout") {
-        const delayMs = computeRetryDelayMs(
-          consecutivePlannerFailures,
-          {
-            maxAttempts: 4,
-            baseDelayMs: 200,
-            maxDelayMs: 1500,
-            jitterRatio: 0.15
-          },
-          undefined
-        );
-        await sleep(delayMs);
-      }
-      if (consecutivePlannerFailures >= 3) {
-        break;
-      }
-      continue;
     }
-    consecutivePlannerFailures = 0;
-
-    const plan = plannerDiagnostic.result;
-    await options.runStore.appendEvent({
-      runId: options.runId,
-      sessionId: options.sessionId,
-      phase: "thought",
-      eventType: "specialist_plan_created",
-      payload: {
-        skillName: options.skillName,
-        iteration,
-        thought: plan.thought,
-        actionType: plan.actionType,
-        responseKind: plan.responseKind ?? null,
-        singleTool: plan.singleTool,
-        parallelActions: plan.parallelActions,
-        phaseState: {
-          current: currentPhase,
-          expectedToolFamily
-        },
-        phaseTransitionHint,
-        retryProfile
-      },
-      timestamp: nowIso()
-    });
 
     let forcedActionsFromRespond: Array<{ tool: string; inputJson: string }> | null = null;
-    if (plan.actionType === "respond") {
+    if (plan?.actionType === "respond") {
       if (plan.responseKind === "clarification" && taskContract.clarificationAllowed !== true) {
         const assemblyActions = buildAssemblyAction({
           availableToolNames: new Set(Array.from(availableTools.keys())),
@@ -2201,7 +2236,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       }
     }
 
-    if (plan.actionType === "respond" && !forcedActionsFromRespond) {
+    if (plan?.actionType === "respond" && !forcedActionsFromRespond) {
       const contractGate = evaluateSpecialistContractGate({
         contract: taskContract,
         progress,
@@ -2246,11 +2281,11 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     }
 
     const singleActionDefaultInput =
-      plan.actionType === "single" && plan.singleTool
+      plan?.actionType === "single" && plan.singleTool
         ? defaultToolInputJson(plan.singleTool, options.message)
         : null;
     const shouldDefaultSingleInput =
-      plan.actionType === "single" &&
+      plan?.actionType === "single" &&
       Boolean(plan.singleTool) &&
       (
         !plan.singleInputJson ||
@@ -2258,10 +2293,12 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       ) &&
       Boolean(singleActionDefaultInput);
 
-    const requestedActions = forcedActionsFromRespond
+    const requestedActions = pendingMechanicalRecoveryActions
+      ? pendingMechanicalRecoveryActions
+      : forcedActionsFromRespond
       ? forcedActionsFromRespond
       : (
-      plan.actionType === "single"
+      plan?.actionType === "single"
         ? plan.singleTool
           ? [
               {
@@ -2272,7 +2309,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
               }
             ]
           : []
-        : (plan.parallelActions ?? [])
+        : (plan?.parallelActions ?? [])
       );
 
     let actions = requestedActions
@@ -2284,7 +2321,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       .slice(0, Math.max(1, options.maxParallelTools));
 
     if (
-      plan.actionType === "single" &&
+      plan?.actionType === "single" &&
       plan.singleTool &&
       shouldDefaultSingleInput &&
       actions.length > 0
@@ -2502,7 +2539,9 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         progress,
         actions,
         availableToolNames: new Set(Array.from(availableTools.keys())),
-        objective: options.message
+        objective: options.message,
+        currentPhase,
+        phaseTransitionHint
       });
       if (phaseLock.forced && phaseLock.forced.length > 0) {
         await options.runStore.appendEvent({
@@ -2593,6 +2632,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         iteration,
         summary: "planner_returned_no_action"
       });
+      pendingMechanicalRecoveryActions = null;
+      pendingMechanicalRecoveryReason = null;
       continue;
     }
 
@@ -2742,6 +2783,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       iteration,
       summary
     });
+    pendingMechanicalRecoveryActions = null;
+    pendingMechanicalRecoveryReason = null;
 
     await options.runStore.appendEvent({
       runId: options.runId,

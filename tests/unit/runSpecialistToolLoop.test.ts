@@ -1330,7 +1330,7 @@ test("runSpecialistToolLoop does not force writer when remaining budget is below
 });
 
 test("phase lock uses discovered URLs for discovery->fetch handoff when available", () => {
-  const urls = Array.from({ length: 24 }, (_, index) => `https://example.com/news/${index + 1}`);
+  const urls = Array.from({ length: 6 }, (_, index) => `https://example.com/news/${index + 1}`);
   const progress = {
     successfulToolCalls: 0,
     sourceUrls: new Set<string>([...urls, "not-a-url"]),
@@ -1355,7 +1355,9 @@ test("phase lock uses discovered URLs for discovery->fetch handoff when availabl
       { tool: "search_status", inputJson: "{}" }
     ],
     availableToolNames: new Set(["search", "web_fetch"]),
-    objective: "Research top AI news and draft a blog post"
+    objective: "Research top AI news and draft a blog post",
+    currentPhase: "fetch",
+    phaseTransitionHint: "discovery_complete_fetch_pending"
   });
 
   assert.equal(decision.reason, "phase_lock_forced_transition_discovery_to_fetch");

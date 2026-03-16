@@ -1601,25 +1601,44 @@ function evaluateSpecialistContractGate(args: {
   contract: AgentTaskContract;
   progress: SpecialistProgressState;
   responseText: string | null;
+  activeWorkState: ActiveWorkStateSnapshot;
 }): { satisfied: boolean; unmet: string[] } {
   const unmet: string[] = [];
+  const responseWords = countWords(args.responseText ?? "");
+  const responseCitationCount = extractUrls(args.responseText ?? "").length;
+  const hasAnyEvidence =
+    args.activeWorkState.evidenceRecords.length > 0
+    || args.progress.sourceUrls.size > 0
+    || args.progress.fetchedPageCount > 0;
+
+  if ((args.contract.requiresDraft || args.contract.requiresCitations) && !hasAnyEvidence) {
+    unmet.push("supporting_evidence_missing");
+  }
   if (args.contract.requiresDraft) {
-    const responseWords = countWords(args.responseText ?? "");
     const hasDraft = args.progress.draftWordCount >= 120 || responseWords >= 180;
     if (!hasDraft) {
       unmet.push("draft_text_missing");
     }
+    if (
+      responseWords >= 180 &&
+      args.progress.draftWordCount === 0 &&
+      !args.activeWorkState.synthesisState.readyForSynthesis
+    ) {
+      unmet.push("synthesis_not_ready");
+    }
   }
   if (args.contract.requiresCitations) {
-    const responseCitationCount = extractUrls(args.responseText ?? "").length;
     const citationCount = Math.max(args.progress.citationCount, responseCitationCount);
     if (citationCount < args.contract.minimumCitationCount) {
       unmet.push("citation_evidence_missing");
     }
   }
+  if ((args.contract.requiresDraft || args.contract.requiresCitations) && responseWords < 180 && args.activeWorkState.unresolvedItems.length > 0) {
+    unmet.push("active_work_unresolved");
+  }
   return {
-    satisfied: unmet.length === 0,
-    unmet
+    satisfied: Array.from(new Set(unmet)).length === 0,
+    unmet: Array.from(new Set(unmet))
   };
 }
 
@@ -1628,17 +1647,21 @@ function buildResearchFailureSummary(args: {
   observations: Array<{ iteration: number; summary: string }>;
   artifactCount: number;
   partialResultReturned: boolean;
+  activeWorkState: ActiveWorkStateSnapshot;
 }): string {
   const progress = args.progress;
   const observations = args.observations;
   const recent = observations.slice(-4).map((item) => `iter ${item.iteration}: ${item.summary}`).join(" | ");
   const errors = progress.errorSamples.length > 0 ? progress.errorSamples.join(" | ") : "none";
+  const unresolved = args.activeWorkState.unresolvedItems.slice(0, 4).join(" | ") || "none";
   return [
     args.partialResultReturned
       ? "I reached guardrails, so I am returning the best partial draft/evidence collected so far."
       : "I couldn't finish a publish-ready draft within this run budget.",
     `Progress so far: ${progress.sourceUrls.size} sources discovered, ${progress.fetchedPageCount} pages fetched, ${progress.draftWordCount} draft words, ${progress.citationCount} citations.`,
+    `Synthesis state: ${args.activeWorkState.synthesisState.status}. ${args.activeWorkState.synthesisState.summary}`,
     args.artifactCount > 0 ? `Artifacts currently available: ${args.artifactCount}.` : "No artifacts were produced yet.",
+    `Unresolved work: ${unresolved}.`,
     `Most recent blockers: ${errors}.`,
     `Recent loop notes: ${recent || "none"}.`
   ].join(" ");
@@ -2047,7 +2070,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       const contractGate = evaluateSpecialistContractGate({
         contract: taskContract,
         progress,
-        responseText: plan.responseText
+        responseText: plan.responseText,
+        activeWorkState
       });
       if (!contractGate.satisfied) {
         await options.runStore.appendEvent({
@@ -2064,6 +2088,11 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
               fetchedPageCount: progress.fetchedPageCount,
               draftWordCount: progress.draftWordCount,
               citationCount: progress.citationCount
+            },
+            activeWorkState: {
+              unresolvedItems: activeWorkState.unresolvedItems,
+              evidenceRecordCount: activeWorkState.evidenceRecords.length,
+              synthesisState: activeWorkState.synthesisState
             }
           },
           timestamp: nowIso()
@@ -2681,10 +2710,21 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     }
   }
 
+  const finalThresholds = deriveEvidenceThresholds(taskContract);
+  const finalActiveWorkState = deriveActiveWorkState({
+    objective: options.message,
+    contract: taskContract,
+    requestedOutputPath,
+    currentPhase: deriveSpecialistPhase(taskContract, progress, toolContext.state.artifacts.length),
+    progress,
+    context: toolContext,
+    thresholds: finalThresholds
+  });
   const unmetContract = evaluateSpecialistContractGate({
     contract: taskContract,
     progress,
-    responseText: null
+    responseText: null,
+    activeWorkState: finalActiveWorkState
   });
   const partialResultReturned =
     options.skillName === "research_agent"
@@ -2699,7 +2739,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
           progress,
           observations,
           artifactCount: toolContext.state.artifacts.length,
-          partialResultReturned
+          partialResultReturned,
+          activeWorkState: finalActiveWorkState
         })
       : lastSuccessfulExecution
         ? buildSpecialistResultAssistantText(options.skillName, lastSuccessfulExecution)
@@ -2718,7 +2759,12 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       searchTimeoutCount: progress.searchTimeoutCount,
       sourceUrlCount: progress.sourceUrls.size,
       fetchedPageCount: progress.fetchedPageCount,
-      unmetContract: unmetContract.unmet
+      unmetContract: unmetContract.unmet,
+      activeWorkState: {
+        unresolvedItems: finalActiveWorkState.unresolvedItems,
+        evidenceRecordCount: finalActiveWorkState.evidenceRecords.length,
+        synthesisState: finalActiveWorkState.synthesisState
+      }
     },
     timestamp: nowIso()
   });

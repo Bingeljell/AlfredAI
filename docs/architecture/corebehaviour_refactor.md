@@ -198,6 +198,12 @@ Acceptance:
 
 - specialist loop stops thrashing between discovery, clarification, and synthesis
 
+Implementation status:
+
+- Specialist response blocking now consults generic active-work evidence state, not just draft-word or citation counters.
+- Unsupported long-form `respond` attempts are blocked when the runtime has no evidence backbone or synthesis is still unresolved.
+- Failure telemetry and fallback summaries now carry unresolved-work and synthesis-state detail so debugging can see where convergence failed.
+
 ### Phase 5: Writer Readiness Contract
 
 Files:

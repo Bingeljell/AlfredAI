@@ -184,6 +184,73 @@ test("runSpecialistToolLoop enforces research contract before allowing respond",
   assert.ok(events.some((event) => event.eventType === "specialist_contract_blocked"));
 });
 
+test("runSpecialistToolLoop blocks unsupported long-form respond attempts without evidence backing", async () => {
+  const workspace = await createTempWorkspace("specialist-unsupported-respond");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun(
+    "session-1",
+    "Research AI news and draft a cited blog post",
+    "running"
+  );
+
+  const longUnsupportedDraft = Array.from({ length: 210 }, () => "analysis").join(" ");
+  const outcome = await runSpecialistToolLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as never,
+    workspaceDir: workspace,
+    message: "Research AI news and draft a cited blog post",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in this test");
+    },
+    maxIterations: 1,
+    maxDurationMs: 60_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    skillName: "research_agent",
+    skillDescription: "Research skill",
+    skillSystemPrompt: "Do research",
+    toolAllowlist: ["search"],
+    structuredChatRunner: async <T>() =>
+      ({
+        result: {
+          thought: "I can answer now.",
+          actionType: "respond",
+          singleTool: null,
+          singleInputJson: null,
+          parallelActions: null,
+          responseText: longUnsupportedDraft
+        }
+      }) as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.match(outcome.assistantText ?? "", /couldn't finish a publish-ready draft/i);
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  const blockedEvent = events.find((event) => event.eventType === "specialist_contract_blocked");
+  assert.ok(blockedEvent);
+  const unmet = (blockedEvent?.payload as { unmet?: string[] } | undefined)?.unmet ?? [];
+  assert.ok(unmet.includes("supporting_evidence_missing"));
+  assert.ok(unmet.includes("synthesis_not_ready"));
+});
+
 test("runSpecialistToolLoop triggers loop-shape guard after repeated search-only iterations", async () => {
   const workspace = await createTempWorkspace("specialist-loop-shape-guard");
   const runStore = new RunStore(workspace);

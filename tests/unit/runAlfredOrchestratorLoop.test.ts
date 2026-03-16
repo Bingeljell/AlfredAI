@@ -1182,9 +1182,16 @@ test("runAlfredOrchestratorLoop can ground a follow-up turn against recent sessi
     if (options.schemaName === "alfred_orchestrator_plan") {
       const plannerInput = JSON.parse(options.messages?.[1]?.content ?? "{}") as {
         turnObjective?: string;
+        resolvedSessionOutput?: { artifactPath?: string; availability?: string; title?: string };
       };
       assert.match(plannerInput.turnObjective ?? "", /Iran conflict analysis/i);
       assert.match(plannerInput.turnObjective ?? "", /paste it here/i);
+      assert.equal(
+        plannerInput.resolvedSessionOutput?.artifactPath,
+        "workspace/alfred/sessions/session-1/outputs/run-prev-article.md"
+      );
+      assert.equal(plannerInput.resolvedSessionOutput?.availability, "body_available");
+      assert.equal(plannerInput.resolvedSessionOutput?.title, "Iran conflict analysis");
       return {
         result: {
           thought: "Grounded objective is clear from session output memory.",

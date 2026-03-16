@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { PolicyMode, RunEvent, RunOutcome, RunRecord, SessionPromptContext } from "../types.js";
+import type { PolicyMode, RunEvent, RunOutcome, RunRecord, SessionOutputRecord, SessionPromptContext } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import * as openAiClient from "../services/openAiClient.js";
@@ -707,6 +707,17 @@ function formatRecentTurnsBlock(sessionContext?: SessionPromptContext): string {
     .join("\n");
 }
 
+function findSessionOutputById(
+  sessionContext: SessionPromptContext | undefined,
+  outputId: string | null | undefined
+): SessionOutputRecord | null {
+  if (!outputId) {
+    return null;
+  }
+  const outputs = sessionContext?.recentOutputs ?? [];
+  return outputs.find((output) => output.id === outputId) ?? null;
+}
+
 function buildAlfredPlannerSystemPrompt(sessionContext?: SessionPromptContext): string {
   return composeSystemPrompt([
     {
@@ -721,7 +732,7 @@ function buildAlfredPlannerSystemPrompt(sessionContext?: SessionPromptContext): 
     {
       label: "Directives",
       content:
-        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. You have two capability catalogs at runtime: `availableTools` and `availableAgents`. Each tool includes `inputContract` with required fields, bounds, and an example payload: obey these strictly when choosing `toolInputJson` (for example, if `maxResults <= 15`, never exceed it). Choose strategy dynamically from the user ask and current evidence. You may execute directly with tools, delegate to a specialist agent, or respond if complete. Prefer direct execution when a small number of tool actions can likely complete the task; delegate when specialist iterative loops are likely higher-yield. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. Respect execution permission: if `executionPermission` is `plan_only`, return `actionType=respond` with plan guidance and no execution. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
+        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. You have two capability catalogs at runtime: `availableTools` and `availableAgents`. Each tool includes `inputContract` with required fields, bounds, and an example payload: obey these strictly when choosing `toolInputJson` (for example, if `maxResults <= 15`, never exceed it). Choose strategy dynamically from the user ask and current evidence. You may execute directly with tools, delegate to a specialist agent, or respond if complete. Prefer direct execution when a small number of tool actions can likely complete the task; delegate when specialist iterative loops are likely higher-yield. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. If `resolvedSessionOutput` is present and has an `artifactPath`, treat it as a reusable session asset: use `file_read` if you need the exact stored body before responding or revising. Respect execution permission: if `executionPermission` is `plan_only`, return `actionType=respond` with plan guidance and no execution. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
     },
     {
       label: "Session Context",
@@ -1760,6 +1771,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       }
     : turnGrounding.fallback;
   const turnObjective = resolvedTurnObjective.objective;
+  const resolvedSessionOutput = findSessionOutputById(options.sessionContext, turnGrounding.result?.referencedOutputId);
   const discoveredTools = await discoverLeadAgentTools();
   const availableTools = discoveredTools;
   const availableToolSpecs = Array.from(availableTools.values()).map((tool) => ({
@@ -2058,6 +2070,18 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
               remainingMs: Math.max(0, deadlineAtMs - Date.now()),
               availableAgents,
               availableTools: availableToolSpecs,
+              resolvedSessionOutput: resolvedSessionOutput
+                ? {
+                    id: resolvedSessionOutput.id,
+                    kind: resolvedSessionOutput.kind,
+                    title: resolvedSessionOutput.title,
+                    summary: resolvedSessionOutput.summary,
+                    availability: resolvedSessionOutput.availability,
+                    artifactPath: resolvedSessionOutput.artifactPath ?? null,
+                    contentPreview: resolvedSessionOutput.contentPreview ?? null,
+                    metadata: resolvedSessionOutput.metadata ?? null
+                  }
+                : null,
               recentObservations: observations.slice(-5),
               lastDelegationSummary,
               lastCompletionNote

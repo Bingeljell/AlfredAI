@@ -187,6 +187,7 @@ Delivered:
 - no forced low-budget writer sink
 - no placeholder draft persistence as fresh output by default
 - finalization logic distinguishes reusable body vs metadata-only vs missing
+- writer core no longer defaults to `section plan -> section passes -> polish`; it now interprets deliverable shape, drafts directly in that shape, runs semantic review, and repairs process-commentary drafts into the requested final form when possible
 
 Remaining:
 

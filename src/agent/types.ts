@@ -5,6 +5,7 @@ import type { SearchManager } from "../tools/search/searchManager.js";
 import type { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
 import type { PagePayload } from "../tools/lead/browserPool.js";
 import type { LeadExecutionBrief } from "../tools/lead/schemas.js";
+import type { LlmProvider } from "../services/llm/types.js";
 
 export interface ResearchSourceCard {
   url: string;
@@ -112,6 +113,7 @@ export interface LeadAgentToolContext {
   searchManager: SearchManager;
   workspaceDir: string;
   openAiApiKey?: string;
+  llmProviders?: LlmProvider[];
   defaults: LeadAgentDefaults;
   leadPipelineExecutor: typeof executeLeadSubReactPipeline;
   state: LeadAgentState;

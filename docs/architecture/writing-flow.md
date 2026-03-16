@@ -41,8 +41,13 @@ Meaning:
    - other task-relevant tools
 8. Specialist loop decides whether it is ready to assemble/synthesize from current evidence.
 9. `writer_agent` only runs if `writerReadiness` says the write pass is mechanically viable.
-10. If writer succeeds with a meaningful draft, the output is persisted to a session artifact path when appropriate and registered in session memory as a recent output.
-11. Alfred returns either:
+10. Writer now follows a shape-aware path:
+   - interpret the requested deliverable shape
+   - draft directly in that final shape
+   - semantically review whether the draft matches the requested deliverable
+   - repair if the draft drifted into process commentary or missed key requirements
+11. If writer succeeds with a meaningful draft, the output is persisted to a session artifact path when appropriate and registered in session memory as a recent output.
+12. Alfred returns either:
    - a completed output
    - a reusable partial
    - metadata-only recovery state
@@ -85,6 +90,13 @@ If those conditions are not met, Alfred should:
 - or return an honest partial state
 
 The goal is to avoid burning the last budget window on doomed placeholder drafting.
+
+Once invoked, writer should now behave more like a direct agentic assistant:
+
+- infer the deliverable shape first
+- write the final deliverable directly
+- avoid process memos unless explicitly requested
+- use semantic review to decide whether the draft is actually reusable
 
 ## Output availability states
 
@@ -138,6 +150,7 @@ Useful current telemetry includes:
 - specialist phase transitions
 - active-work synthesis state
 - writer readiness
+- writer intent / draft / review / repair stages
 - output availability
 - guard-trigger events
 - planner timeout/failure events

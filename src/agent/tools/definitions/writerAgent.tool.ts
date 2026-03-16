@@ -2,9 +2,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { LlmUsage } from "../../../types.js";
-import type { LeadAgentToolDefinition } from "../../types.js";
+import type { LeadAgentToolDefinition, ResearchSourceCard } from "../../types.js";
 import { resolvePathInProject, toProjectRelative } from "../helpers/pathSafety.js";
-import type { ResearchSourceCard } from "../../types.js";
 import { OpenAiLlmProvider } from "../../../services/llm/openAiProvider.js";
 import { runStructuredWithFallback, runTextWithFallback } from "../../../services/llm/router.js";
 import type { LlmProvider } from "../../../services/llm/types.js";
@@ -43,42 +42,45 @@ const WriterResponseSchema = z.object({
   nextSteps: z.array(z.string().min(1).max(200)).max(6)
 });
 
-const WriterPlanSchema = z.object({
-  headline: z.string().min(3).max(180),
-  referencesHeading: z.string().min(3).max(40).default("References"),
-  sections: z.array(z.object({
-    heading: z.string().min(2).max(120),
-    objective: z.string().min(10).max(260),
-    targetWords: z.number().int().min(60).max(260)
-  })).min(3).max(7)
+const WriterIntentSchema = z.object({
+  outputShape: z.enum(["article", "ranked_list", "comparison", "brief", "memo", "email", "outline", "social_post", "notes", "rewrite", "generic"]),
+  titleHint: z.string().min(3).max(180),
+  deliverableSummary: z.string().min(10).max(260),
+  targetItemCount: z.number().int().min(1).max(50).nullable().optional(),
+  requiredElements: z.array(z.string().min(2).max(180)).max(8),
+  formattingDirectives: z.array(z.string().min(2).max(180)).max(8),
+  shouldIncludeReferences: z.boolean().default(true),
+  shouldUseHeadings: z.boolean().default(true),
+  shouldPreserveExistingStructure: z.boolean().default(false)
 });
 
-const WriterSectionSchema = z.object({
-  content: z.string().min(60).max(2800),
-  sourceIdsUsed: z.array(z.number().int().min(1).max(30)).max(12)
-});
-
-const WriterQualityReviewSchema = z.object({
-  revisedContent: z.string().min(120).max(12000),
-  summary: z.string().min(1).max(800),
-  nextSteps: z.array(z.string().min(1).max(200)).max(6),
-  isComplete: z.boolean(),
-  missingRequirements: z.array(z.string().min(1).max(160)).max(8)
+const WriterReviewSchema = z.object({
+  deliverableStatus: z.enum(["complete", "partial", "insufficient"]),
+  matchesRequestedShape: z.boolean(),
+  processCommentaryDetected: z.boolean(),
+  shouldPersist: z.boolean(),
+  missingRequirements: z.array(z.string().min(1).max(180)).max(8),
+  repairFocus: z.array(z.string().min(1).max(180)).max(6),
+  summary: z.string().min(1).max(400)
 });
 
 const MAX_SOURCE_CARDS_FOR_PROMPT = 14;
-const MAX_SECTION_COUNT = 6;
 const WRITER_RESERVED_TIME_MS = 10_000;
-const PLAN_PASS_MAX_TIMEOUT_MS = 35_000;
-const SECTION_PASS_MAX_TIMEOUT_MS = 45_000;
-const POLISH_PASS_MAX_TIMEOUT_MS = 60_000;
+const INTENT_PASS_MAX_TIMEOUT_MS = 25_000;
+const DRAFT_PASS_MAX_TIMEOUT_MS = 55_000;
+const REVIEW_PASS_MAX_TIMEOUT_MS = 25_000;
 const REPAIR_PASS_MAX_TIMEOUT_MS = 45_000;
-const COMPACT_RETRY_MAX_TIMEOUT_MS = 35_000;
-const PLAN_PASS_MAX_ATTEMPTS = 2;
-const SECTION_PASS_MAX_ATTEMPTS = 2;
-const POLISH_PASS_MAX_ATTEMPTS = 2;
+const DIRECT_RETRY_MAX_TIMEOUT_MS = 35_000;
+const INTENT_PASS_MAX_ATTEMPTS = 2;
+const DRAFT_PASS_MAX_ATTEMPTS = 2;
+const REVIEW_PASS_MAX_ATTEMPTS = 2;
 const REPAIR_PASS_MAX_ATTEMPTS = 2;
-const COMPACT_RETRY_MAX_ATTEMPTS = 2;
+const DIRECT_RETRY_MAX_ATTEMPTS = 2;
+
+type WriterFormat = "blog_post" | "email" | "memo" | "outline" | "social_post" | "notes";
+type WriterIntent = z.infer<typeof WriterIntentSchema>;
+type WriterReview = z.infer<typeof WriterReviewSchema>;
+type WriterDeliverableStatus = WriterReview["deliverableStatus"];
 
 interface WriterCallBudget {
   enabled: boolean;
@@ -96,11 +98,7 @@ interface SourceIndexEntry {
 }
 
 function countWords(text: string): number {
-  const words = text
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  return words.length;
+  return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
 function clipWords(text: string, maxWords: number): string {
@@ -174,13 +172,13 @@ function deriveTitle(instruction: string): string {
 function buildDefaultSessionOutputPath(args: {
   sessionId: string;
   runId: string;
-  format: ReturnType<typeof normalizeWriterFormat>;
+  format: WriterFormat;
 }): string {
   const suffix = args.format === "blog_post" ? "article" : args.format;
   return path.posix.join("workspace", "alfred", "sessions", args.sessionId, "outputs", `${args.runId}-${suffix}.md`);
 }
 
-function normalizeWriterFormat(value: unknown): "blog_post" | "email" | "memo" | "outline" | "social_post" | "notes" {
+function normalizeWriterFormat(value: unknown): WriterFormat {
   if (typeof value !== "string") {
     return "blog_post";
   }
@@ -208,6 +206,23 @@ function normalizeWriterFormat(value: unknown): "blog_post" | "email" | "memo" |
       return "notes";
     default:
       return "blog_post";
+  }
+}
+
+function defaultShapeForFormat(format: WriterFormat): WriterIntent["outputShape"] {
+  switch (format) {
+    case "email":
+      return "email";
+    case "memo":
+      return "memo";
+    case "outline":
+      return "outline";
+    case "social_post":
+      return "social_post";
+    case "notes":
+      return "notes";
+    default:
+      return "article";
   }
 }
 
@@ -320,36 +335,6 @@ function computePassBudget(args: {
   };
 }
 
-function pickSectionCount(maxWords: number): number {
-  if (maxWords >= 1000) {
-    return 6;
-  }
-  if (maxWords >= 760) {
-    return 5;
-  }
-  if (maxWords >= 520) {
-    return 4;
-  }
-  return 3;
-}
-
-function normalizeSectionTargets(sections: Array<{ heading: string; objective: string; targetWords: number }>, maxWords: number) {
-  const capped = sections.slice(0, MAX_SECTION_COUNT);
-  if (capped.length === 0) {
-    return [];
-  }
-  const total = capped.reduce((sum, section) => sum + section.targetWords, 0);
-  if (total <= 0) {
-    const defaultTarget = clampInt(Math.round(maxWords / capped.length), 70, 240);
-    return capped.map((section) => ({ ...section, targetWords: defaultTarget }));
-  }
-  const scale = maxWords / total;
-  return capped.map((section) => ({
-    ...section,
-    targetWords: clampInt(Math.round(section.targetWords * scale), 70, 240)
-  }));
-}
-
 function extractSourceIdsFromContent(content: string, maxId: number): number[] {
   const ids = new Set<number>();
   const regex = /\[S(\d{1,2})\]/gi;
@@ -382,72 +367,91 @@ function ensureReferencesSection(content: string, sourceIndex: SourceIndexEntry[
   if (!normalized) {
     return normalized;
   }
-  const markerRegex = /\breferences\b/i;
-  if (markerRegex.test(normalized)) {
+  if (/\breferences\b/i.test(normalized)) {
     return normalized;
   }
   const sourceIds = extractSourceIdsFromContent(normalized, sourceIndex.length);
   const references = buildReferencesBlock(sourceIndex, sourceIds, heading);
-  return `${normalized}${references}`.trim();
+  return references ? `${normalized}${references}`.trim() : normalized;
 }
 
-function evaluateDraftCompleteness(content: string, maxWords: number): {
-  wordCount: number;
-  citationCount: number;
-  isComplete: boolean;
-  missing: string[];
-} {
-  const wordCount = countWords(content);
-  const citationCount = (content.match(/\[S\d+\]/g) ?? []).length;
-  const minWords = Math.max(320, Math.round(maxWords * 0.7));
+function evaluateMechanicalQuality(args: {
+  content: string;
+  maxWords: number;
+  outputShape: WriterIntent["outputShape"];
+  targetItemCount?: number | null;
+  shouldIncludeReferences: boolean;
+  sourceIndex: SourceIndexEntry[];
+}): { wordCount: number; citationCount: number; missing: string[] } {
+  const wordCount = countWords(args.content);
+  const citationCount = (args.content.match(/\[S\d+\]/g) ?? []).length;
   const missing: string[] = [];
+  const minWords = (() => {
+    switch (args.outputShape) {
+      case "social_post":
+        return Math.max(60, Math.round(args.maxWords * 0.4));
+      case "outline":
+      case "notes":
+      case "brief":
+      case "ranked_list":
+      case "comparison":
+        return Math.max(
+          60,
+          args.targetItemCount
+            ? Math.round(args.targetItemCount * 28)
+            : Math.round(args.maxWords * 0.28)
+        );
+      default:
+        return Math.max(120, Math.round(args.maxWords * 0.45));
+    }
+  })();
   if (wordCount < minWords) {
     missing.push(`Word count below target (${wordCount}/${minWords}+).`);
   }
-  if (citationCount < 4) {
-    missing.push(`Too few citation markers (${citationCount}/4+).`);
-  }
-  if (!/\breferences\b/i.test(content)) {
-    missing.push("References section missing.");
+  if (args.shouldIncludeReferences && args.sourceIndex.length > 0) {
+    const minCitations = Math.min(3, Math.max(1, args.sourceIndex.length));
+    if (citationCount < minCitations) {
+      missing.push(`Too few citation markers (${citationCount}/${minCitations}+).`);
+    }
+    if (!/\breferences\b/i.test(args.content)) {
+      missing.push("References section missing.");
+    }
   }
   return {
     wordCount,
     citationCount,
-    isComplete: missing.length === 0,
     missing
   };
 }
 
-function shouldPersistPlaceholderDraft(args: {
-  providersConfigured: boolean;
+function shouldPersistGeneratedDraft(args: {
+  explicitOutputPath: boolean;
   draftQuality: "complete" | "placeholder";
-  fallbackWordCount: number;
-  sourceCardCount: number;
-  contextSnippetCount: number;
+  deliverableStatus: WriterDeliverableStatus;
+  processCommentaryDetected: boolean;
+  wordCount: number;
   fallbackReason: string;
   failureMessage: string | null;
 }): boolean {
   if (args.draftQuality === "complete") {
     return true;
   }
-  const blockedReasons = new Set([
-    "multi_pass_no_output",
-    "compact_retry_skipped",
-    "plan_pass_skipped",
-    "writer_not_completed"
-  ]);
+  if (args.deliverableStatus !== "partial") {
+    return false;
+  }
+  if (args.processCommentaryDetected) {
+    return false;
+  }
   const normalizedFailure = (args.failureMessage ?? "").toLowerCase();
   if (
-    blockedReasons.has(args.fallbackReason)
-    || normalizedFailure.includes("insufficient_deadline_budget")
-    || normalizedFailure.includes("low remaining budget")
+    args.fallbackReason === "missing_api_key"
+    || normalizedFailure.includes("aborted due to timeout")
+    || normalizedFailure.includes("network")
+    || normalizedFailure.includes("structured")
   ) {
     return false;
   }
-  if (!args.providersConfigured) {
-    return args.fallbackWordCount >= 140 || ((args.sourceCardCount > 0 || args.contextSnippetCount > 0) && args.fallbackWordCount >= 90);
-  }
-  return args.fallbackWordCount >= 140 || ((args.sourceCardCount > 0 || args.contextSnippetCount > 0) && args.fallbackWordCount >= 90);
+  return args.explicitOutputPath && args.wordCount >= 140;
 }
 
 function deriveTitleFromContent(content: string): string {
@@ -462,32 +466,171 @@ function deriveTitleFromContent(content: string): string {
   return clipText(normalized || firstNonEmpty, 160);
 }
 
-function buildSectionPrompt(args: {
+function formatSourceIndexForPrompt(sourceIndex: SourceIndexEntry[]): string {
+  if (sourceIndex.length === 0) {
+    return "Available sources: none";
+  }
+  return `Available sources:\n${sourceIndex.map((item) => `- [S${item.id}] ${item.title} | ${item.url} | key point: ${item.claim}`).join("\n")}`;
+}
+
+function formatContextSnippets(contextSnippets: string[]): string {
+  if (contextSnippets.length === 0) {
+    return "Context snippets: none";
+  }
+  return `Context snippets:\n${contextSnippets.slice(0, 4).map((item) => `- ${clipText(item, 220)}`).join("\n")}`;
+}
+
+function buildWriterIntentPrompt(args: {
   instruction: string;
+  format: WriterFormat;
   tone: string;
   audience: string;
-  section: { heading: string; objective: string; targetWords: number };
+  maxWords: number;
   sourceIndex: SourceIndexEntry[];
   contextSnippets: string[];
 }): string {
-  const sourceLines = args.sourceIndex
-    .map((source) => `- [S${source.id}] ${source.title} | ${source.url} | key point: ${source.claim}`)
-    .join("\n");
-  const contextLines = args.contextSnippets.length > 0
-    ? args.contextSnippets.slice(0, 3).map((snippet) => `- ${clipText(snippet, 220)}`).join("\n")
-    : "- none";
-
   return [
-    `Article objective: ${args.instruction}`,
+    `Instruction: ${args.instruction}`,
+    `Format hint: ${args.format}`,
     `Tone: ${args.tone}`,
     `Audience: ${args.audience}`,
-    `Section heading: ${args.section.heading}`,
-    `Section objective: ${args.section.objective}`,
-    `Target words for this section: ${args.section.targetWords}`,
-    "Use only the sources listed below. Cite factual statements with markers like [S3].",
-    "Do not invent sources or facts. If evidence is thin, say so briefly.",
-    `Sources:\n${sourceLines}`,
-    `Extra context:\n${contextLines}`
+    `Max words: ${args.maxWords}`,
+    "Infer the final deliverable shape the user actually wants. Treat the format hint as secondary when the instruction clearly asks for another deliverable shape such as a ranked list, comparison, rewrite, or brief.",
+    "Do not choose a process memo, evidence inventory, section plan, or research log unless the user explicitly asked for that. Prefer the final user-facing deliverable.",
+    "Choose required elements that belong in the final answer, not research steps.",
+    formatSourceIndexForPrompt(args.sourceIndex),
+    formatContextSnippets(args.contextSnippets)
+  ].join("\n\n");
+}
+
+function buildWriterDraftPrompt(args: {
+  instruction: string;
+  intent: WriterIntent;
+  format: WriterFormat;
+  tone: string;
+  audience: string;
+  maxWords: number;
+  sourceIndex: SourceIndexEntry[];
+  contextSnippets: string[];
+}): string {
+  const itemCountText = args.intent.targetItemCount ? `${args.intent.targetItemCount}` : "not specified";
+  const requiredElements = args.intent.requiredElements.length > 0
+    ? args.intent.requiredElements.map((item) => `- ${item}`).join("\n")
+    : "- none specified";
+  const formattingDirectives = args.intent.formattingDirectives.length > 0
+    ? args.intent.formattingDirectives.map((item) => `- ${item}`).join("\n")
+    : "- none specified";
+  return [
+    `Instruction: ${args.instruction}`,
+    `Interpreted deliverable: ${args.intent.deliverableSummary}`,
+    `Output shape: ${args.intent.outputShape}`,
+    `Title hint: ${args.intent.titleHint}`,
+    `Format hint: ${args.format}`,
+    `Tone: ${args.tone}`,
+    `Audience: ${args.audience}`,
+    `Max words: ${args.maxWords}`,
+    `Target item count: ${itemCountText}`,
+    `Required elements:\n${requiredElements}`,
+    `Formatting directives:\n${formattingDirectives}`,
+    args.intent.shouldIncludeReferences && args.sourceIndex.length > 0
+      ? "Use [S#] citation markers for factual claims and include a References section mapping markers to URLs."
+      : "Use the provided sources for factual grounding. Cite with [S#] markers when helpful.",
+    "Write the final deliverable directly. Do not output planning commentary, evidence inventory, selection criteria, process notes, or what you would do next unless the user explicitly asked for that.",
+    "If evidence is incomplete, keep uncertainty brief and inline inside the actual deliverable instead of replacing the deliverable with a meta memo.",
+    formatSourceIndexForPrompt(args.sourceIndex),
+    formatContextSnippets(args.contextSnippets)
+  ].join("\n\n");
+}
+
+function buildWriterReviewPrompt(args: {
+  instruction: string;
+  intent: WriterIntent;
+  draft: { title: string; content: string; summary: string; nextSteps: string[] };
+  maxWords: number;
+  sourceIndex: SourceIndexEntry[];
+}): string {
+  const requiredElements = args.intent.requiredElements.length > 0
+    ? args.intent.requiredElements.map((item) => `- ${item}`).join("\n")
+    : "- none specified";
+  return [
+    `Instruction: ${args.instruction}`,
+    `Expected deliverable: ${args.intent.deliverableSummary}`,
+    `Expected output shape: ${args.intent.outputShape}`,
+    `Expected title hint: ${args.intent.titleHint}`,
+    `Expected item count: ${args.intent.targetItemCount ?? "not specified"}`,
+    `Required elements:\n${requiredElements}`,
+    `Word budget: ${args.maxWords}`,
+    args.intent.shouldIncludeReferences && args.sourceIndex.length > 0
+      ? "A complete response should preserve [S#] citation markers and include a References section."
+      : "A complete response should stay grounded in the provided evidence.",
+    "A reusable body can be complete or partial, but it must already be in the requested deliverable shape.",
+    "A planning memo, evidence inventory, section plan, research log, or 'I need more research' note is not a reusable body for the requested deliverable.",
+    `Draft title: ${args.draft.title}`,
+    `Draft summary: ${args.draft.summary}`,
+    `Draft content:\n${args.draft.content}`
+  ].join("\n\n");
+}
+
+function buildWriterRepairPrompt(args: {
+  instruction: string;
+  intent: WriterIntent;
+  draft: { title: string; content: string; summary: string; nextSteps: string[] };
+  review: WriterReview;
+  format: WriterFormat;
+  tone: string;
+  audience: string;
+  maxWords: number;
+  sourceIndex: SourceIndexEntry[];
+  contextSnippets: string[];
+}): string {
+  const missing = args.review.missingRequirements.length > 0
+    ? args.review.missingRequirements.map((item) => `- ${item}`).join("\n")
+    : "- none listed";
+  const focus = args.review.repairFocus.length > 0
+    ? args.review.repairFocus.map((item) => `- ${item}`).join("\n")
+    : "- none listed";
+  return [
+    `Instruction: ${args.instruction}`,
+    `Expected deliverable: ${args.intent.deliverableSummary}`,
+    `Output shape: ${args.intent.outputShape}`,
+    `Format hint: ${args.format}`,
+    `Tone: ${args.tone}`,
+    `Audience: ${args.audience}`,
+    `Max words: ${args.maxWords}`,
+    `Missing requirements:\n${missing}`,
+    `Repair focus:\n${focus}`,
+    "Transform the current draft into the requested final deliverable. Remove process commentary, evidence inventory, and future-work notes unless explicitly requested.",
+    "Keep uncertainty concise and inline inside the deliverable where needed. Preserve factual grounding and [S#] markers.",
+    formatSourceIndexForPrompt(args.sourceIndex),
+    formatContextSnippets(args.contextSnippets),
+    `Current draft:\n${args.draft.content}`
+  ].join("\n\n");
+}
+
+function buildDirectRetryPrompt(args: {
+  instruction: string;
+  intent: WriterIntent | null;
+  format: WriterFormat;
+  tone: string;
+  audience: string;
+  maxWords: number;
+  sourceIndex: SourceIndexEntry[];
+  contextSnippets: string[];
+}): string {
+  return [
+    `Instruction: ${args.instruction}`,
+    `Output shape: ${args.intent?.outputShape ?? defaultShapeForFormat(args.format)}`,
+    `Deliverable summary: ${args.intent?.deliverableSummary ?? deriveTitle(args.instruction)}`,
+    `Target item count: ${args.intent?.targetItemCount ?? "not specified"}`,
+    `Tone: ${args.tone}`,
+    `Audience: ${args.audience}`,
+    `Word limit: ${args.maxWords}`,
+    args.intent?.shouldIncludeReferences && args.sourceIndex.length > 0
+      ? "Use [S#] citations for factual claims and end with a References section."
+      : "Stay grounded in the provided sources and note uncertainty honestly.",
+    "Produce only the final deliverable body. Do not explain your process or output a planning memo.",
+    formatSourceIndexForPrompt(args.sourceIndex),
+    formatContextSnippets(args.contextSnippets)
   ].join("\n\n");
 }
 
@@ -520,6 +663,9 @@ async function loadContextSnippets(projectRoot: string, contextPaths: string[] |
 }
 
 function resolveWriterProviders(context: Parameters<LeadAgentToolDefinition["execute"]>[1]): LlmProvider[] {
+  if (Array.isArray(context.llmProviders) && context.llmProviders.length > 0) {
+    return context.llmProviders;
+  }
   const providers: LlmProvider[] = [];
   if (context.openAiApiKey) {
     providers.push(new OpenAiLlmProvider({
@@ -555,11 +701,15 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
       contextSnippets,
       sourceCards
     });
+    let intent: WriterIntent | null = null;
+    let review: WriterReview | null = null;
     let fallbackUsed = true;
     let fallbackReason = "writer_not_completed";
     let failureMessage: string | null = null;
     let draftQuality: "complete" | "placeholder" = "placeholder";
-    let compactRetryUsed = false;
+    let deliverableStatus: WriterDeliverableStatus = "insufficient";
+    let outputShape: WriterIntent["outputShape"] = defaultShapeForFormat(format);
+    let processCommentaryDetected = false;
     let providerUsed: string | null = null;
     let passCount = 0;
 
@@ -576,7 +726,6 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
         contextSnippets,
         sourceCards
       });
-      draftQuality = "placeholder";
       await emitWriterStageEvent({
         context,
         stage: "structured_attempt",
@@ -602,454 +751,394 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
         }
       });
 
-      const planningBudget = computePassBudget({
+      const intentBudget = computePassBudget({
         deadlineAtMs: context.deadlineAtMs,
         reserveMs: WRITER_RESERVED_TIME_MS,
-        maxTimeoutMs: PLAN_PASS_MAX_TIMEOUT_MS,
-        minTimeoutMs: 8_000,
-        maxAttempts: PLAN_PASS_MAX_ATTEMPTS
+        maxTimeoutMs: INTENT_PASS_MAX_TIMEOUT_MS,
+        minTimeoutMs: 7_000,
+        maxAttempts: INTENT_PASS_MAX_ATTEMPTS
       });
 
-      let plan: z.infer<typeof WriterPlanSchema> | null = null;
-      if (planningBudget.enabled) {
-        const sectionTarget = pickSectionCount(maxWords);
-        const planPrompt = [
-          `Instruction: ${input.instruction}`,
-          `Format: ${format}`,
-          `Tone: ${tone}`,
-          `Audience: ${audience}`,
-          `Target words: ${maxWords}`,
-          `Desired section count: ${sectionTarget}`,
-          "Design a section plan that works for any topic. Keep headings specific and objectives factual.",
-          "Prefer sections that can be grounded in provided sources and support citations.",
-          sourceIndex.length > 0
-            ? `Available sources:\n${sourceIndex.map((item) => `- [S${item.id}] ${item.title} | ${item.url} | key point: ${item.claim}`).join("\n")}`
-            : "Available sources: none",
-          contextSnippets.length > 0
-            ? `Context snippets:\n${contextSnippets.slice(0, 3).map((item) => `- ${clipText(item, 220)}`).join("\n")}`
-            : "Context snippets: none"
-        ].join("\n\n");
-        const planMessages = [
+      if (intentBudget.enabled) {
+        const intentPrompt = buildWriterIntentPrompt({
+          instruction: input.instruction,
+          format,
+          tone,
+          audience,
+          maxWords,
+          sourceIndex,
+          contextSnippets
+        });
+        const intentMessages = [
           {
             role: "system" as const,
-            content: "You are an editorial planner. Produce only valid JSON matching the schema."
+            content: "You are a deliverable strategist. Infer the final user-facing output shape and constraints. Return strict JSON only."
           },
           {
             role: "user" as const,
-            content: planPrompt
+            content: intentPrompt
           }
         ];
-        const planPromptChars = countMessageChars(planMessages);
+        const intentPromptChars = countMessageChars(intentMessages);
         await emitWriterStageEvent({
           context,
-          stage: "plan_pass",
+          stage: "intent_pass",
           status: "started",
           payload: {
-            timeoutMs: planningBudget.timeoutMs,
-            maxAttempts: planningBudget.maxAttempts,
-            remainingMs: planningBudget.remainingMs,
-            promptChars: planPromptChars
+            timeoutMs: intentBudget.timeoutMs,
+            maxAttempts: intentBudget.maxAttempts,
+            remainingMs: intentBudget.remainingMs,
+            promptChars: intentPromptChars
           }
         });
 
-        const planResult = await runStructuredWithFallback({
+        const intentResult = await runStructuredWithFallback({
           providers,
           request: {
-            schemaName: "writer_plan_v1",
+            schemaName: "writer_intent_v1",
             jsonSchema: {
               type: "object",
               additionalProperties: false,
               properties: {
-                headline: { type: "string", minLength: 3, maxLength: 180 },
-                referencesHeading: { type: "string", minLength: 3, maxLength: 40 },
-                sections: {
+                outputShape: { type: "string", enum: ["article", "ranked_list", "comparison", "brief", "memo", "email", "outline", "social_post", "notes", "rewrite", "generic"] },
+                titleHint: { type: "string", minLength: 3, maxLength: 180 },
+                deliverableSummary: { type: "string", minLength: 10, maxLength: 260 },
+                targetItemCount: { anyOf: [{ type: "integer", minimum: 1, maximum: 50 }, { type: "null" }] },
+                requiredElements: {
                   type: "array",
-                  minItems: 3,
-                  maxItems: 7,
-                  items: {
-                    type: "object",
-                    additionalProperties: false,
-                    properties: {
-                      heading: { type: "string", minLength: 2, maxLength: 120 },
-                      objective: { type: "string", minLength: 10, maxLength: 260 },
-                      targetWords: { type: "integer", minimum: 60, maximum: 260 }
-                    },
-                    required: ["heading", "objective", "targetWords"]
-                  }
-                }
+                  maxItems: 8,
+                  items: { type: "string", minLength: 2, maxLength: 180 }
+                },
+                formattingDirectives: {
+                  type: "array",
+                  maxItems: 8,
+                  items: { type: "string", minLength: 2, maxLength: 180 }
+                },
+                shouldIncludeReferences: { type: "boolean" },
+                shouldUseHeadings: { type: "boolean" },
+                shouldPreserveExistingStructure: { type: "boolean" }
               },
-              required: ["headline", "referencesHeading", "sections"]
+              required: [
+                "outputShape",
+                "titleHint",
+                "deliverableSummary",
+                "targetItemCount",
+                "requiredElements",
+                "formattingDirectives",
+                "shouldIncludeReferences",
+                "shouldUseHeadings",
+                "shouldPreserveExistingStructure"
+              ]
             },
-            timeoutMs: planningBudget.timeoutMs,
-            maxAttempts: planningBudget.maxAttempts,
-            messages: planMessages
+            timeoutMs: intentBudget.timeoutMs,
+            maxAttempts: intentBudget.maxAttempts,
+            messages: intentMessages
           },
-          validator: WriterPlanSchema
+          validator: WriterIntentSchema
         });
-        await maybeRecordUsage(context, planResult.usage);
+        await maybeRecordUsage(context, intentResult.usage);
         passCount += 1;
-        if (planResult.result) {
-          providerUsed = planResult.providerUsed ?? planResult.provider;
-          plan = planResult.result;
+
+        if (intentResult.result) {
+          intent = intentResult.result;
+          outputShape = intent.outputShape;
+          providerUsed = intentResult.providerUsed ?? intentResult.provider;
           await emitWriterStageEvent({
             context,
-            stage: "plan_pass",
+            stage: "intent_pass",
             status: "completed",
             payload: {
               provider: providerUsed,
-              sectionCount: plan.sections.length,
-              providerAttempts: planResult.providerAttempts,
-              timeoutMs: planningBudget.timeoutMs,
-              promptChars: planPromptChars,
-              ...llmTimingPayload(planResult)
+              outputShape: intent.outputShape,
+              targetItemCount: intent.targetItemCount ?? null,
+              providerAttempts: intentResult.providerAttempts,
+              timeoutMs: intentBudget.timeoutMs,
+              promptChars: intentPromptChars,
+              ...llmTimingPayload(intentResult)
             }
           });
         } else {
-          fallbackReason = planResult.failureCode ?? "plan_pass_failed";
-          failureMessage = planResult.failureMessage ?? "Plan pass failed";
+          fallbackReason = intentResult.failureCode ?? "intent_pass_failed";
+          failureMessage = intentResult.failureMessage ?? "Intent pass failed";
           await emitWriterStageEvent({
             context,
-            stage: "plan_pass",
+            stage: "intent_pass",
             status: "failed",
             payload: {
-              failureCode: planResult.failureCode ?? "unknown",
-              failureClass: planResult.failureClass ?? "unknown",
-              failureMessage: planResult.failureMessage ?? null,
-              providerAttempts: planResult.providerAttempts,
-              timeoutMs: planningBudget.timeoutMs,
-              promptChars: planPromptChars,
-              ...llmTimingPayload(planResult)
+              failureCode: intentResult.failureCode ?? "unknown",
+              failureClass: intentResult.failureClass ?? "unknown",
+              failureMessage: intentResult.failureMessage ?? null,
+              providerAttempts: intentResult.providerAttempts,
+              timeoutMs: intentBudget.timeoutMs,
+              promptChars: intentPromptChars,
+              ...llmTimingPayload(intentResult)
             }
           });
         }
       } else {
-        fallbackReason = "plan_pass_skipped";
-        failureMessage = `Planning skipped due to low remaining budget (${planningBudget.remainingMs}ms)`;
+        fallbackReason = "intent_pass_skipped";
+        failureMessage = `Intent pass skipped due to low remaining budget (${intentBudget.remainingMs}ms)`;
         await emitWriterStageEvent({
           context,
-          stage: "plan_pass",
+          stage: "intent_pass",
           status: "skipped",
           payload: {
-            reason: planningBudget.skipReason ?? "insufficient_deadline_budget",
-            remainingMs: planningBudget.remainingMs
+            reason: intentBudget.skipReason ?? "insufficient_deadline_budget",
+            remainingMs: intentBudget.remainingMs
           }
         });
       }
 
-      let assembledSections = "";
-      let referencesHeading = "References";
-      let usedSourceIds = new Set<number>();
-      if (plan) {
-        referencesHeading = plan.referencesHeading || "References";
-        const normalizedSections = normalizeSectionTargets(plan.sections, maxWords).slice(0, MAX_SECTION_COUNT);
-        const sectionResults: string[] = [];
-        for (let index = 0; index < normalizedSections.length; index += 1) {
-          const section = normalizedSections[index];
-          const sectionBudget = computePassBudget({
-            deadlineAtMs: context.deadlineAtMs,
-            reserveMs: WRITER_RESERVED_TIME_MS,
-            maxTimeoutMs: SECTION_PASS_MAX_TIMEOUT_MS,
-            minTimeoutMs: 7_000,
-            maxAttempts: SECTION_PASS_MAX_ATTEMPTS
-          });
-          if (!sectionBudget.enabled) {
-            await emitWriterStageEvent({
-              context,
-              stage: "section_pass",
-              status: "skipped",
-              payload: {
-                sectionIndex: index + 1,
-                heading: section.heading,
-                reason: sectionBudget.skipReason ?? "insufficient_deadline_budget",
-                remainingMs: sectionBudget.remainingMs
-              }
-            });
-            break;
-          }
+      if (intent) {
+        const draftBudget = computePassBudget({
+          deadlineAtMs: context.deadlineAtMs,
+          reserveMs: WRITER_RESERVED_TIME_MS,
+          maxTimeoutMs: DRAFT_PASS_MAX_TIMEOUT_MS,
+          minTimeoutMs: 8_000,
+          maxAttempts: DRAFT_PASS_MAX_ATTEMPTS
+        });
 
-          const sectionPrompt = buildSectionPrompt({
+        if (draftBudget.enabled) {
+          const draftPrompt = buildWriterDraftPrompt({
             instruction: input.instruction,
+            intent,
+            format,
             tone,
             audience,
-            section,
+            maxWords,
             sourceIndex,
             contextSnippets
           });
-          const sectionMessages = [
+          const draftMessages = [
             {
               role: "system" as const,
-              content:
-                "You are a factual section writer. Use only provided evidence. Add citation markers like [S3] for factual claims. Return strict JSON."
+              content: "You are a grounded writer. Produce the final user-facing deliverable in the requested shape. Return strict JSON only."
             },
             {
               role: "user" as const,
-              content: sectionPrompt
+              content: draftPrompt
             }
           ];
-          const sectionPromptChars = countMessageChars(sectionMessages);
-
+          const draftPromptChars = countMessageChars(draftMessages);
           await emitWriterStageEvent({
             context,
-            stage: "section_pass",
+            stage: "draft_pass",
             status: "started",
             payload: {
-              sectionIndex: index + 1,
-              heading: section.heading,
-              timeoutMs: sectionBudget.timeoutMs,
-              maxAttempts: sectionBudget.maxAttempts,
-              remainingMs: sectionBudget.remainingMs,
-              promptChars: sectionPromptChars
+              timeoutMs: draftBudget.timeoutMs,
+              maxAttempts: draftBudget.maxAttempts,
+              remainingMs: draftBudget.remainingMs,
+              promptChars: draftPromptChars,
+              outputShape: intent.outputShape
             }
           });
 
-          const sectionResult = await runStructuredWithFallback({
+          const draftResult = await runStructuredWithFallback({
             providers,
             request: {
-              schemaName: "writer_section_v1",
+              schemaName: "writer_draft_v1",
+              jsonSchema: WRITER_RESPONSE_JSON_SCHEMA,
+              timeoutMs: draftBudget.timeoutMs,
+              maxAttempts: draftBudget.maxAttempts,
+              messages: draftMessages
+            },
+            validator: WriterResponseSchema
+          });
+          await maybeRecordUsage(context, draftResult.usage);
+          passCount += 1;
+
+          if (draftResult.result) {
+            providerUsed = providerUsed ?? draftResult.providerUsed ?? draftResult.provider;
+            draft = {
+              ...draftResult.result,
+              content: clipWords(draftResult.result.content, maxWords)
+            };
+            await emitWriterStageEvent({
+              context,
+              stage: "draft_pass",
+              status: "completed",
+              payload: {
+                provider: draftResult.providerUsed ?? draftResult.provider,
+                wordCount: countWords(draft.content),
+                providerAttempts: draftResult.providerAttempts,
+                timeoutMs: draftBudget.timeoutMs,
+                promptChars: draftPromptChars,
+                outputShape: intent.outputShape,
+                ...llmTimingPayload(draftResult)
+              }
+            });
+          } else {
+            fallbackReason = draftResult.failureCode ?? "draft_pass_failed";
+            failureMessage = draftResult.failureMessage ?? "Draft pass failed";
+            await emitWriterStageEvent({
+              context,
+              stage: "draft_pass",
+              status: "failed",
+              payload: {
+                failureCode: draftResult.failureCode ?? "unknown",
+                failureClass: draftResult.failureClass ?? "unknown",
+                failureMessage: draftResult.failureMessage ?? null,
+                providerAttempts: draftResult.providerAttempts,
+                timeoutMs: draftBudget.timeoutMs,
+                promptChars: draftPromptChars,
+                outputShape: intent.outputShape,
+                ...llmTimingPayload(draftResult)
+              }
+            });
+          }
+        } else {
+          fallbackReason = "draft_pass_skipped";
+          failureMessage = `Draft pass skipped due to low remaining budget (${draftBudget.remainingMs}ms)`;
+          await emitWriterStageEvent({
+            context,
+            stage: "draft_pass",
+            status: "skipped",
+            payload: {
+              reason: draftBudget.skipReason ?? "insufficient_deadline_budget",
+              remainingMs: draftBudget.remainingMs,
+              outputShape: intent.outputShape
+            }
+          });
+        }
+      }
+
+      if (intent && draft.content.trim().length > 0) {
+        const currentIntent = intent;
+        const reviewBudget = computePassBudget({
+          deadlineAtMs: context.deadlineAtMs,
+          reserveMs: WRITER_RESERVED_TIME_MS,
+          maxTimeoutMs: REVIEW_PASS_MAX_TIMEOUT_MS,
+          minTimeoutMs: 6_500,
+          maxAttempts: REVIEW_PASS_MAX_ATTEMPTS
+        });
+
+        const runReviewPass = async (stage: "review_pass" | "repair_review_pass", currentDraft: typeof draft): Promise<WriterReview | null> => {
+          if (!reviewBudget.enabled) {
+            await emitWriterStageEvent({
+              context,
+              stage,
+              status: "skipped",
+              payload: {
+                reason: reviewBudget.skipReason ?? "insufficient_deadline_budget",
+                remainingMs: reviewBudget.remainingMs,
+                outputShape: intent?.outputShape ?? outputShape
+              }
+            });
+            return null;
+          }
+          const reviewPrompt = buildWriterReviewPrompt({
+            instruction: input.instruction,
+            intent: currentIntent,
+            draft: currentDraft,
+            maxWords,
+            sourceIndex
+          });
+          const reviewMessages = [
+            {
+              role: "system" as const,
+              content: "You are a writing evaluator. Judge whether the draft is the requested deliverable or just process commentary. Return strict JSON only."
+            },
+            {
+              role: "user" as const,
+              content: reviewPrompt
+            }
+          ];
+          const reviewPromptChars = countMessageChars(reviewMessages);
+          await emitWriterStageEvent({
+            context,
+            stage,
+            status: "started",
+            payload: {
+              timeoutMs: reviewBudget.timeoutMs,
+              maxAttempts: reviewBudget.maxAttempts,
+              remainingMs: reviewBudget.remainingMs,
+              promptChars: reviewPromptChars,
+              outputShape: currentIntent.outputShape
+            }
+          });
+          const reviewResult = await runStructuredWithFallback({
+            providers,
+            request: {
+              schemaName: "writer_review_v1",
               jsonSchema: {
                 type: "object",
                 additionalProperties: false,
                 properties: {
-                  content: { type: "string", minLength: 60, maxLength: 2800 },
-                  sourceIdsUsed: {
+                  deliverableStatus: { type: "string", enum: ["complete", "partial", "insufficient"] },
+                  matchesRequestedShape: { type: "boolean" },
+                  processCommentaryDetected: { type: "boolean" },
+                  shouldPersist: { type: "boolean" },
+                  missingRequirements: {
                     type: "array",
-                    maxItems: 12,
-                    items: { type: "integer", minimum: 1, maximum: MAX_SOURCE_CARDS_FOR_PROMPT }
-                  }
+                    maxItems: 8,
+                    items: { type: "string", minLength: 1, maxLength: 180 }
+                  },
+                  repairFocus: {
+                    type: "array",
+                    maxItems: 6,
+                    items: { type: "string", minLength: 1, maxLength: 180 }
+                  },
+                  summary: { type: "string", minLength: 1, maxLength: 400 }
                 },
-                required: ["content", "sourceIdsUsed"]
+                required: [
+                  "deliverableStatus",
+                  "matchesRequestedShape",
+                  "processCommentaryDetected",
+                  "shouldPersist",
+                  "missingRequirements",
+                  "repairFocus",
+                  "summary"
+                ]
               },
-              timeoutMs: sectionBudget.timeoutMs,
-              maxAttempts: sectionBudget.maxAttempts,
-              messages: sectionMessages
+              timeoutMs: reviewBudget.timeoutMs,
+              maxAttempts: reviewBudget.maxAttempts,
+              messages: reviewMessages
             },
-            validator: WriterSectionSchema
+            validator: WriterReviewSchema
           });
-          await maybeRecordUsage(context, sectionResult.usage);
+          await maybeRecordUsage(context, reviewResult.usage);
           passCount += 1;
-
-          if (!sectionResult.result) {
+          if (reviewResult.result) {
+            providerUsed = providerUsed ?? reviewResult.providerUsed ?? reviewResult.provider;
             await emitWriterStageEvent({
               context,
-              stage: "section_pass",
-              status: "failed",
-              payload: {
-                sectionIndex: index + 1,
-                heading: section.heading,
-                failureCode: sectionResult.failureCode ?? "unknown",
-                failureClass: sectionResult.failureClass ?? "unknown",
-                failureMessage: sectionResult.failureMessage ?? null,
-                providerAttempts: sectionResult.providerAttempts,
-                timeoutMs: sectionBudget.timeoutMs,
-                promptChars: sectionPromptChars,
-                ...llmTimingPayload(sectionResult)
-              }
-            });
-            fallbackReason = sectionResult.failureCode ?? "section_pass_failed";
-            failureMessage = sectionResult.failureMessage ?? `Section ${index + 1} failed`;
-            break;
-          }
-
-          providerUsed = providerUsed ?? sectionResult.providerUsed ?? sectionResult.provider;
-          const sectionContent = clipWords(sectionResult.result.content, section.targetWords + 30);
-          if (countWords(sectionContent) < Math.max(55, Math.round(section.targetWords * 0.5))) {
-            await emitWriterStageEvent({
-              context,
-              stage: "section_pass",
-              status: "failed",
-              payload: {
-                sectionIndex: index + 1,
-                heading: section.heading,
-                failureCode: "section_too_short",
-                failureClass: "schema",
-                failureMessage: "Section output was too short",
-                timeoutMs: sectionBudget.timeoutMs,
-                promptChars: sectionPromptChars,
-                ...llmTimingPayload(sectionResult)
-              }
-            });
-            fallbackReason = "section_too_short";
-            failureMessage = `Section ${index + 1} output was too short`;
-            break;
-          }
-
-          for (const id of sectionResult.result.sourceIdsUsed) {
-            if (id >= 1 && id <= sourceIndex.length) {
-              usedSourceIds.add(id);
-            }
-          }
-          for (const id of extractSourceIdsFromContent(sectionContent, sourceIndex.length)) {
-            usedSourceIds.add(id);
-          }
-
-          sectionResults.push(`## ${section.heading}\n${sectionContent.trim()}`);
-          await emitWriterStageEvent({
-            context,
-            stage: "section_pass",
-            status: "completed",
-            payload: {
-              sectionIndex: index + 1,
-              heading: section.heading,
-              wordCount: countWords(sectionContent),
-              provider: sectionResult.providerUsed ?? sectionResult.provider,
-              sourceIdsUsed: Array.from(usedSourceIds).slice(0, 12),
-              timeoutMs: sectionBudget.timeoutMs,
-              promptChars: sectionPromptChars,
-              ...llmTimingPayload(sectionResult)
-            }
-          });
-        }
-
-        assembledSections = sectionResults.join("\n\n").trim();
-      }
-
-      if (assembledSections) {
-        const references = buildReferencesBlock(sourceIndex, Array.from(usedSourceIds), referencesHeading);
-        let assembledDraft = [
-          `# ${plan?.headline ?? deriveTitle(input.instruction)}`,
-          assembledSections,
-          references
-        ].filter(Boolean).join("\n\n");
-
-        assembledDraft = clipWords(assembledDraft, maxWords);
-
-        const polishBudget = computePassBudget({
-          deadlineAtMs: context.deadlineAtMs,
-          reserveMs: WRITER_RESERVED_TIME_MS,
-          maxTimeoutMs: POLISH_PASS_MAX_TIMEOUT_MS,
-          minTimeoutMs: 8_000,
-          maxAttempts: POLISH_PASS_MAX_ATTEMPTS
-        });
-
-        if (polishBudget.enabled) {
-          const polishPrompt = [
-            `Instruction: ${input.instruction}`,
-            `Format: ${format}`,
-            `Tone: ${tone}`,
-            `Audience: ${audience}`,
-            `Max words: ${maxWords}`,
-            "Keep [S#] markers and include a references section mapping markers to URLs.",
-            sourceIndex.length > 0
-              ? `Source index:\n${sourceIndex.map((item) => `- [S${item.id}] ${item.title} — ${item.url}`).join("\n")}`
-              : "Source index: none",
-            `Draft to polish:\n${assembledDraft}`
-          ].join("\n\n");
-          const polishMessages = [
-            {
-              role: "system" as const,
-              content:
-                "You are a senior editor. Improve coherence and flow while preserving factual grounding and [S#] citation markers. Return strict JSON."
-            },
-            {
-              role: "user" as const,
-              content: polishPrompt
-            }
-          ];
-          const polishPromptChars = countMessageChars(polishMessages);
-
-          await emitWriterStageEvent({
-            context,
-            stage: "polish_pass",
-            status: "started",
-            payload: {
-              timeoutMs: polishBudget.timeoutMs,
-              maxAttempts: polishBudget.maxAttempts,
-              remainingMs: polishBudget.remainingMs,
-              promptChars: polishPromptChars
-            }
-          });
-          const polishResult = await runStructuredWithFallback({
-            providers,
-            request: {
-              schemaName: "writer_polish_v1",
-              jsonSchema: WRITER_RESPONSE_JSON_SCHEMA,
-              timeoutMs: polishBudget.timeoutMs,
-              maxAttempts: polishBudget.maxAttempts,
-              messages: polishMessages
-            },
-            validator: WriterResponseSchema
-          });
-          await maybeRecordUsage(context, polishResult.usage);
-          passCount += 1;
-
-          if (polishResult.result) {
-            providerUsed = providerUsed ?? polishResult.providerUsed ?? polishResult.provider;
-            draft = {
-              ...polishResult.result,
-              content: clipWords(
-                ensureReferencesSection(polishResult.result.content, sourceIndex, referencesHeading),
-                maxWords
-              )
-            };
-            await emitWriterStageEvent({
-              context,
-              stage: "polish_pass",
+              stage,
               status: "completed",
               payload: {
-                provider: polishResult.providerUsed ?? polishResult.provider,
-                wordCount: countWords(draft.content),
-                providerAttempts: polishResult.providerAttempts,
-                timeoutMs: polishBudget.timeoutMs,
-                promptChars: polishPromptChars,
-                ...llmTimingPayload(polishResult)
+                provider: reviewResult.providerUsed ?? reviewResult.provider,
+                deliverableStatus: reviewResult.result.deliverableStatus,
+                matchesRequestedShape: reviewResult.result.matchesRequestedShape,
+                processCommentaryDetected: reviewResult.result.processCommentaryDetected,
+                shouldPersist: reviewResult.result.shouldPersist,
+                timeoutMs: reviewBudget.timeoutMs,
+                promptChars: reviewPromptChars,
+                outputShape: currentIntent.outputShape,
+                ...llmTimingPayload(reviewResult)
               }
             });
-          } else {
-            await emitWriterStageEvent({
-              context,
-              stage: "polish_pass",
-              status: "failed",
-              payload: {
-                failureCode: polishResult.failureCode ?? "unknown",
-                failureClass: polishResult.failureClass ?? "unknown",
-                failureMessage: polishResult.failureMessage ?? null,
-                providerAttempts: polishResult.providerAttempts,
-                timeoutMs: polishBudget.timeoutMs,
-                promptChars: polishPromptChars,
-                ...llmTimingPayload(polishResult)
-              }
-            });
-            draft = {
-              title: plan?.headline ?? deriveTitle(input.instruction),
-              content: ensureReferencesSection(assembledDraft, sourceIndex, referencesHeading),
-              summary: "Draft assembled from multi-pass section synthesis.",
-              nextSteps: [
-                "Verify factual claims against cited sources",
-                "Adjust style and voice for final publication",
-                "Publish or share"
-              ]
-            };
-            fallbackUsed = true;
-            fallbackReason = polishResult.failureCode ?? "polish_pass_failed";
-            failureMessage = polishResult.failureMessage ?? failureMessage;
+            return reviewResult.result;
           }
-        } else {
           await emitWriterStageEvent({
             context,
-            stage: "polish_pass",
-            status: "skipped",
+            stage,
+            status: "failed",
             payload: {
-              reason: polishBudget.skipReason ?? "insufficient_deadline_budget",
-              remainingMs: polishBudget.remainingMs
+              failureCode: reviewResult.failureCode ?? "unknown",
+              failureClass: reviewResult.failureClass ?? "unknown",
+              failureMessage: reviewResult.failureMessage ?? null,
+              providerAttempts: reviewResult.providerAttempts,
+              timeoutMs: reviewBudget.timeoutMs,
+              promptChars: reviewPromptChars,
+              outputShape: currentIntent.outputShape,
+              ...llmTimingPayload(reviewResult)
             }
           });
-          draft = {
-            title: plan?.headline ?? deriveTitle(input.instruction),
-            content: ensureReferencesSection(assembledDraft, sourceIndex, referencesHeading),
-            summary: "Draft assembled from multi-pass section synthesis.",
-            nextSteps: [
-              "Verify factual claims against cited sources",
-              "Adjust style and voice for final publication",
-              "Publish or share"
-            ]
-          };
-          fallbackUsed = true;
-          fallbackReason = "polish_pass_skipped";
-          failureMessage = `Polish pass skipped due to low remaining budget (${polishBudget.remainingMs}ms)`;
-        }
+          return null;
+        };
 
-        const quality = evaluateDraftCompleteness(draft.content, maxWords);
-        if (!quality.isComplete) {
+        review = await runReviewPass("review_pass", draft);
+
+        if (review && review.deliverableStatus !== "complete" && review.repairFocus.length > 0) {
           const repairBudget = computePassBudget({
             deadlineAtMs: context.deadlineAtMs,
             reserveMs: WRITER_RESERVED_TIME_MS,
@@ -1057,22 +1146,24 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
             minTimeoutMs: 7_000,
             maxAttempts: REPAIR_PASS_MAX_ATTEMPTS
           });
+
           if (repairBudget.enabled) {
-            compactRetryUsed = true;
-            const repairPrompt = [
-              `Instruction: ${input.instruction}`,
-              `Target max words: ${maxWords}`,
-              `Missing requirements:\n${quality.missing.map((item) => `- ${item}`).join("\n")}`,
-              sourceIndex.length > 0
-                ? `Source index:\n${sourceIndex.map((item) => `- [S${item.id}] ${item.title} — ${item.url}`).join("\n")}`
-                : "Source index: none",
-              `Current draft:\n${draft.content}`
-            ].join("\n\n");
+            const repairPrompt = buildWriterRepairPrompt({
+              instruction: input.instruction,
+              intent,
+              draft,
+              review,
+              format,
+              tone,
+              audience,
+              maxWords,
+              sourceIndex,
+              contextSnippets
+            });
             const repairMessages = [
               {
                 role: "system" as const,
-                content:
-                  "You are a writing QA editor. Fix only missing requirements while preserving factual grounding and [S#] citations. Return strict JSON."
+                content: "You are a revision writer. Transform the current draft into the requested final deliverable. Return strict JSON only."
               },
               {
                 role: "user" as const,
@@ -1087,53 +1178,33 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
               payload: {
                 timeoutMs: repairBudget.timeoutMs,
                 maxAttempts: repairBudget.maxAttempts,
-                missing: quality.missing,
                 remainingMs: repairBudget.remainingMs,
-                promptChars: repairPromptChars
+                promptChars: repairPromptChars,
+                outputShape: intent.outputShape,
+                missingRequirements: review.missingRequirements,
+                repairFocus: review.repairFocus
               }
             });
+
             const repairResult = await runStructuredWithFallback({
               providers,
               request: {
-                schemaName: "writer_repair_v1",
-                jsonSchema: {
-                  type: "object",
-                  additionalProperties: false,
-                  properties: {
-                    revisedContent: { type: "string", minLength: 120, maxLength: 12000 },
-                    summary: { type: "string", minLength: 1, maxLength: 800 },
-                    nextSteps: {
-                      type: "array",
-                      maxItems: 6,
-                      items: { type: "string", minLength: 1, maxLength: 200 }
-                    },
-                    isComplete: { type: "boolean" },
-                    missingRequirements: {
-                      type: "array",
-                      maxItems: 8,
-                      items: { type: "string", minLength: 1, maxLength: 160 }
-                    }
-                  },
-                  required: ["revisedContent", "summary", "nextSteps", "isComplete", "missingRequirements"]
-                },
+                schemaName: "writer_repair_v2",
+                jsonSchema: WRITER_RESPONSE_JSON_SCHEMA,
                 timeoutMs: repairBudget.timeoutMs,
                 maxAttempts: repairBudget.maxAttempts,
                 messages: repairMessages
               },
-              validator: WriterQualityReviewSchema
+              validator: WriterResponseSchema
             });
             await maybeRecordUsage(context, repairResult.usage);
             passCount += 1;
+
             if (repairResult.result) {
               providerUsed = providerUsed ?? repairResult.providerUsed ?? repairResult.provider;
               draft = {
-                ...draft,
-                content: clipWords(
-                  ensureReferencesSection(repairResult.result.revisedContent, sourceIndex, referencesHeading),
-                  maxWords
-                ),
-                summary: repairResult.result.summary,
-                nextSteps: repairResult.result.nextSteps
+                ...repairResult.result,
+                content: clipWords(repairResult.result.content, maxWords)
               };
               await emitWriterStageEvent({
                 context,
@@ -1141,14 +1212,18 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
                 status: "completed",
                 payload: {
                   provider: repairResult.providerUsed ?? repairResult.provider,
-                  isComplete: repairResult.result.isComplete,
-                  missing: repairResult.result.missingRequirements,
+                  wordCount: countWords(draft.content),
+                  providerAttempts: repairResult.providerAttempts,
                   timeoutMs: repairBudget.timeoutMs,
                   promptChars: repairPromptChars,
+                  outputShape: intent.outputShape,
                   ...llmTimingPayload(repairResult)
                 }
               });
+              review = await runReviewPass("repair_review_pass", draft) ?? review;
             } else {
+              fallbackReason = repairResult.failureCode ?? "repair_pass_failed";
+              failureMessage = repairResult.failureMessage ?? failureMessage;
               await emitWriterStageEvent({
                 context,
                 stage: "repair_pass",
@@ -1160,176 +1235,250 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
                   providerAttempts: repairResult.providerAttempts,
                   timeoutMs: repairBudget.timeoutMs,
                   promptChars: repairPromptChars,
+                  outputShape: intent.outputShape,
                   ...llmTimingPayload(repairResult)
                 }
               });
             }
-          }
-        }
-
-        const finalQuality = evaluateDraftCompleteness(draft.content, maxWords);
-        if (finalQuality.isComplete) {
-          fallbackUsed = false;
-          fallbackReason = "none";
-          failureMessage = null;
-          draftQuality = "complete";
-        } else {
-          fallbackUsed = true;
-          fallbackReason = fallbackReason === "none" ? "quality_checks_incomplete" : fallbackReason;
-          failureMessage = failureMessage ?? finalQuality.missing.join(" ");
-          draftQuality = "placeholder";
-        }
-      }
-
-      if (!assembledSections) {
-        const compactBudget = computePassBudget({
-          deadlineAtMs: context.deadlineAtMs,
-          reserveMs: WRITER_RESERVED_TIME_MS,
-          maxTimeoutMs: COMPACT_RETRY_MAX_TIMEOUT_MS,
-          minTimeoutMs: 6_500,
-          maxAttempts: COMPACT_RETRY_MAX_ATTEMPTS
-        });
-        if (compactBudget.enabled) {
-          const compactPrompt = [
-            `Write a complete ${format} draft now.`,
-            `Instruction: ${input.instruction}`,
-            `Tone: ${tone}`,
-            `Audience: ${audience}`,
-            `Word limit: ${maxWords}`,
-            "Use source markers like [S1] for factual claims.",
-            sourceIndex.length > 0
-              ? `Sources:\n${sourceIndex.map((item) => `- [S${item.id}] ${item.title} | ${item.url} | ${item.claim}`).join("\n")}`
-              : "Sources: none"
-          ].join("\n\n");
-          const compactMessages = [
-            {
-              role: "system" as const,
-              content: "You are a concise writing assistant. Produce only the requested article text."
-            },
-            {
-              role: "user" as const,
-              content: compactPrompt
-            }
-          ];
-          const compactPromptChars = countMessageChars(compactMessages);
-          await emitWriterStageEvent({
-            context,
-            stage: "compact_retry",
-            status: "started",
-            payload: {
-              reason: "multi_pass_unavailable",
-              priorFallbackReason: fallbackReason,
-              maxWords,
-              format,
-              timeoutMs: compactBudget.timeoutMs,
-              maxAttempts: compactBudget.maxAttempts,
-              remainingMs: compactBudget.remainingMs,
-              promptChars: compactPromptChars
-            }
-          });
-
-          const compactResult = await runTextWithFallback({
-            providers,
-            request: {
-              timeoutMs: compactBudget.timeoutMs,
-              maxAttempts: compactBudget.maxAttempts,
-              messages: compactMessages
-            }
-          });
-          await maybeRecordUsage(context, compactResult.usage);
-          passCount += 1;
-          compactRetryUsed = true;
-
-          if (compactResult.content && countWords(compactResult.content) >= 120) {
-            providerUsed = providerUsed ?? compactResult.providerUsed ?? compactResult.provider;
-            const contentWithRefs = ensureReferencesSection(clipWords(compactResult.content, maxWords), sourceIndex, "References");
-            draft = {
-              title: `Draft: ${deriveTitle(input.instruction)}`,
-              content: contentWithRefs,
-              summary: "Draft generated through compact retry.",
-              nextSteps: [
-                "Verify factual claims against cited sources",
-                "Adjust voice and tone",
-                "Publish or share"
-              ]
-            };
-            const quality = evaluateDraftCompleteness(draft.content, maxWords);
-            draftQuality = quality.isComplete ? "complete" : "placeholder";
-            fallbackUsed = !quality.isComplete;
-            fallbackReason = quality.isComplete ? "none" : "compact_retry_incomplete";
-            failureMessage = quality.isComplete ? null : quality.missing.join(" ");
-            await emitWriterStageEvent({
-              context,
-              stage: "compact_retry",
-              status: "completed",
-              payload: {
-                provider: compactResult.providerUsed ?? compactResult.provider,
-                wordCount: countWords(draft.content),
-                providerAttempts: compactResult.providerAttempts,
-                timeoutMs: compactBudget.timeoutMs,
-                promptChars: compactPromptChars,
-                ...llmTimingPayload(compactResult)
-              }
-            });
           } else {
             await emitWriterStageEvent({
               context,
-              stage: "compact_retry",
-              status: "failed",
+              stage: "repair_pass",
+              status: "skipped",
               payload: {
-                reason: compactResult.failureCode ?? "empty_or_short_response",
-                failureMessage: compactResult.failureMessage ?? null,
-                providerAttempts: compactResult.providerAttempts,
-                timeoutMs: compactBudget.timeoutMs,
-                promptChars: compactPromptChars,
-                ...llmTimingPayload(compactResult)
+                reason: repairBudget.skipReason ?? "insufficient_deadline_budget",
+                remainingMs: repairBudget.remainingMs,
+                outputShape: intent.outputShape
               }
             });
-            draft = buildFallbackDraft({
-              reason: compactResult.failureMessage ?? failureMessage ?? fallbackReason,
-              instruction: input.instruction,
-              format,
-              audience,
-              tone,
-              maxWords,
-              contextSnippets,
-              sourceCards
+          }
+        }
+      }
+
+      if ((!review || review.deliverableStatus === "insufficient") && providers.length > 0) {
+        const retryBudget = computePassBudget({
+          deadlineAtMs: context.deadlineAtMs,
+          reserveMs: WRITER_RESERVED_TIME_MS,
+          maxTimeoutMs: DIRECT_RETRY_MAX_TIMEOUT_MS,
+          minTimeoutMs: 6_500,
+          maxAttempts: DIRECT_RETRY_MAX_ATTEMPTS
+        });
+        if (retryBudget.enabled) {
+          const retryPrompt = buildDirectRetryPrompt({
+            instruction: input.instruction,
+            intent,
+            format,
+            tone,
+            audience,
+            maxWords,
+            sourceIndex,
+            contextSnippets
+          });
+          const retryMessages = [
+            {
+              role: "system" as const,
+              content: "You are a direct writing assistant. Produce only the final requested draft body."
+            },
+            {
+              role: "user" as const,
+              content: retryPrompt
+            }
+          ];
+          const retryPromptChars = countMessageChars(retryMessages);
+          await emitWriterStageEvent({
+            context,
+            stage: "direct_retry",
+            status: "started",
+            payload: {
+              timeoutMs: retryBudget.timeoutMs,
+              maxAttempts: retryBudget.maxAttempts,
+              remainingMs: retryBudget.remainingMs,
+              promptChars: retryPromptChars,
+              outputShape
+            }
+          });
+
+          const retryResult = await runTextWithFallback({
+            providers,
+            request: {
+              timeoutMs: retryBudget.timeoutMs,
+              maxAttempts: retryBudget.maxAttempts,
+              messages: retryMessages
+            }
+          });
+          await maybeRecordUsage(context, retryResult.usage);
+          passCount += 1;
+
+          if (retryResult.content && countWords(retryResult.content) >= 90) {
+            providerUsed = providerUsed ?? retryResult.providerUsed ?? retryResult.provider;
+            draft = {
+              title: intent?.titleHint ?? deriveTitle(input.instruction),
+              content: clipWords(intent?.shouldIncludeReferences ? ensureReferencesSection(retryResult.content, sourceIndex, "References") : retryResult.content, maxWords),
+              summary: "Draft generated through direct retry.",
+              nextSteps: [
+                "Verify factual claims against cited sources",
+                "Adjust style and tone if needed",
+                "Publish or share"
+              ]
+            };
+            await emitWriterStageEvent({
+              context,
+              stage: "direct_retry",
+              status: "completed",
+              payload: {
+                provider: retryResult.providerUsed ?? retryResult.provider,
+                wordCount: countWords(draft.content),
+                providerAttempts: retryResult.providerAttempts,
+                timeoutMs: retryBudget.timeoutMs,
+                promptChars: retryPromptChars,
+                outputShape,
+                ...llmTimingPayload(retryResult)
+              }
             });
-            fallbackUsed = true;
-            fallbackReason = compactResult.failureCode ?? fallbackReason;
-            failureMessage = compactResult.failureMessage ?? failureMessage;
-            draftQuality = "placeholder";
+            if (intent) {
+              const reviewBudget = computePassBudget({
+                deadlineAtMs: context.deadlineAtMs,
+                reserveMs: WRITER_RESERVED_TIME_MS,
+                maxTimeoutMs: REVIEW_PASS_MAX_TIMEOUT_MS,
+                minTimeoutMs: 6_500,
+                maxAttempts: REVIEW_PASS_MAX_ATTEMPTS
+              });
+              if (reviewBudget.enabled) {
+                const reviewPrompt = buildWriterReviewPrompt({
+                  instruction: input.instruction,
+                  intent,
+                  draft,
+                  maxWords,
+                  sourceIndex
+                });
+                const reviewMessages = [
+                  {
+                    role: "system" as const,
+                    content: "You are a writing evaluator. Judge whether the draft is the requested deliverable or just process commentary. Return strict JSON only."
+                  },
+                  {
+                    role: "user" as const,
+                    content: reviewPrompt
+                  }
+                ];
+                const reviewResult = await runStructuredWithFallback({
+                  providers,
+                  request: {
+                    schemaName: "writer_review_v1",
+                    jsonSchema: {
+                      type: "object",
+                      additionalProperties: false,
+                      properties: {
+                        deliverableStatus: { type: "string", enum: ["complete", "partial", "insufficient"] },
+                        matchesRequestedShape: { type: "boolean" },
+                        processCommentaryDetected: { type: "boolean" },
+                        shouldPersist: { type: "boolean" },
+                        missingRequirements: {
+                          type: "array",
+                          maxItems: 8,
+                          items: { type: "string", minLength: 1, maxLength: 180 }
+                        },
+                        repairFocus: {
+                          type: "array",
+                          maxItems: 6,
+                          items: { type: "string", minLength: 1, maxLength: 180 }
+                        },
+                        summary: { type: "string", minLength: 1, maxLength: 400 }
+                      },
+                      required: [
+                        "deliverableStatus",
+                        "matchesRequestedShape",
+                        "processCommentaryDetected",
+                        "shouldPersist",
+                        "missingRequirements",
+                        "repairFocus",
+                        "summary"
+                      ]
+                    },
+                    timeoutMs: reviewBudget.timeoutMs,
+                    maxAttempts: reviewBudget.maxAttempts,
+                    messages: reviewMessages
+                  },
+                  validator: WriterReviewSchema
+                });
+                await maybeRecordUsage(context, reviewResult.usage);
+                passCount += 1;
+                if (reviewResult.result) {
+                  review = reviewResult.result;
+                  providerUsed = providerUsed ?? reviewResult.providerUsed ?? reviewResult.provider;
+                }
+              }
+            }
+          } else {
+            fallbackReason = retryResult.failureCode ?? fallbackReason;
+            failureMessage = retryResult.failureMessage ?? failureMessage;
+            await emitWriterStageEvent({
+              context,
+              stage: "direct_retry",
+              status: "failed",
+              payload: {
+                failureCode: retryResult.failureCode ?? "empty_or_short_response",
+                failureClass: retryResult.failureClass ?? "unknown",
+                failureMessage: retryResult.failureMessage ?? null,
+                providerAttempts: retryResult.providerAttempts,
+                timeoutMs: retryBudget.timeoutMs,
+                promptChars: retryPromptChars,
+                outputShape,
+                ...llmTimingPayload(retryResult)
+              }
+            });
           }
         } else {
           await emitWriterStageEvent({
             context,
-            stage: "compact_retry",
-            status: "failed",
+            stage: "direct_retry",
+            status: "skipped",
             payload: {
-              reason: "insufficient_deadline_budget",
-              priorFallbackReason: fallbackReason,
-              maxWords,
-              format,
-              timeoutMs: compactBudget.timeoutMs,
-              maxAttempts: compactBudget.maxAttempts,
-              remainingMs: compactBudget.remainingMs
+              reason: retryBudget.skipReason ?? "insufficient_deadline_budget",
+              remainingMs: retryBudget.remainingMs,
+              outputShape
             }
           });
-          fallbackUsed = true;
-          if (fallbackReason === "none") {
-            fallbackReason = "compact_retry_skipped";
-          }
-          failureMessage = failureMessage ?? `Compact retry skipped due to low remaining budget (${compactBudget.remainingMs}ms)`;
         }
       }
 
-      if (!assembledSections && fallbackReason === "writer_not_completed") {
-        fallbackReason = compactRetryUsed ? "compact_retry_incomplete" : "multi_pass_no_output";
-        fallbackUsed = true;
+      if (intent) {
+        outputShape = intent.outputShape;
       }
+      const mechanical = evaluateMechanicalQuality({
+        content: intent?.shouldIncludeReferences ? ensureReferencesSection(draft.content, sourceIndex, "References") : draft.content,
+        maxWords,
+        outputShape,
+        targetItemCount: intent?.targetItemCount,
+        shouldIncludeReferences: intent?.shouldIncludeReferences ?? sourceIndex.length > 0,
+        sourceIndex
+      });
+      draft.content = clipWords(
+        (intent?.shouldIncludeReferences ?? false) ? ensureReferencesSection(draft.content, sourceIndex, "References") : draft.content,
+        maxWords
+      );
 
-      if (!assembledSections && !failureMessage) {
-        failureMessage = "Writer did not assemble any section output.";
+      if (review) {
+        deliverableStatus = review.deliverableStatus;
+        processCommentaryDetected = review.processCommentaryDetected;
+      }
+      if (review?.deliverableStatus === "complete" && mechanical.missing.length === 0) {
+        draftQuality = "complete";
+        fallbackUsed = false;
+        fallbackReason = "none";
+        failureMessage = null;
+        deliverableStatus = "complete";
+      } else {
+        draftQuality = "placeholder";
+        fallbackUsed = true;
+        if (fallbackReason === "writer_not_completed") {
+          fallbackReason = review ? `review_${review.deliverableStatus}` : "draft_quality_incomplete";
+        }
+        const missingSummary = review?.missingRequirements?.length ? review.missingRequirements.join(" ") : mechanical.missing.join(" ");
+        failureMessage = failureMessage ?? (missingSummary || "Draft did not satisfy the requested deliverable.");
+        if (!review && countWords(draft.content) >= 120) {
+          deliverableStatus = "partial";
+        }
       }
 
       await emitWriterStageEvent({
@@ -1340,6 +1489,9 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
           provider: providerUsed,
           passCount,
           draftQuality,
+          deliverableStatus,
+          outputShape,
+          processCommentaryDetected,
           fallbackUsed,
           fallbackReason,
           failureMessage
@@ -1356,19 +1508,18 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
           reason: "missing_api_key"
         }
       });
-      draftQuality = "placeholder";
     }
 
     let writtenPath: string | null = null;
     let didWriteDraft = false;
     let preservedExistingDraft = false;
-    const fallbackWordCount = countWords(draft.content);
-    const shouldPersistDraft = shouldPersistPlaceholderDraft({
-      providersConfigured: providers.length > 0,
+    const finalWordCount = countWords(draft.content);
+    const shouldPersistDraft = shouldPersistGeneratedDraft({
+      explicitOutputPath: Boolean(input.outputPath),
       draftQuality,
-      fallbackWordCount,
-      sourceCardCount: sourceCards.length,
-      contextSnippetCount: contextSnippets.length,
+      deliverableStatus,
+      processCommentaryDetected,
+      wordCount: finalWordCount,
       fallbackReason,
       failureMessage
     });
@@ -1379,6 +1530,7 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
           format
         }))
       : input.outputPath;
+
     if (resolvedOutputPath && shouldPersistDraft) {
       await emitWriterStageEvent({
         context,
@@ -1387,6 +1539,7 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
         payload: {
           outputPath: resolvedOutputPath,
           draftQuality,
+          deliverableStatus,
           autoSelectedOutputPath: !input.outputPath
         }
       });
@@ -1413,8 +1566,15 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
 
         if (shouldPreventQualityDowngrade) {
           const existingContentText = existingContent as string;
-          const existingQuality = evaluateDraftCompleteness(existingContentText, maxWords);
-          if (existingQuality.isComplete) {
+          const existingQuality = evaluateMechanicalQuality({
+            content: existingContentText,
+            maxWords,
+            outputShape,
+            targetItemCount: intent?.targetItemCount,
+            shouldIncludeReferences: intent?.shouldIncludeReferences ?? sourceIndex.length > 0,
+            sourceIndex
+          });
+          if (existingQuality.missing.length === 0) {
             preservedExistingDraft = true;
             writtenPath = relativeOutputPath;
             await emitWriterStageEvent({
@@ -1425,14 +1585,14 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
                 outputPath: writtenPath,
                 reason: "quality_downgrade_prevented",
                 attemptedDraftQuality: draftQuality,
-                attemptedWordCount: fallbackWordCount,
+                attemptedDeliverableStatus: deliverableStatus,
+                attemptedWordCount: finalWordCount,
                 existingDraftQuality: "complete",
                 existingWordCount: existingQuality.wordCount,
                 existingCitationCount: existingQuality.citationCount
               }
             });
 
-            // Preserve the last complete file as the visible output for this call.
             draft = {
               title: deriveTitleFromContent(existingContentText),
               content: existingContentText.trim(),
@@ -1447,6 +1607,8 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
             fallbackUsed = false;
             fallbackReason = "none";
             failureMessage = null;
+            deliverableStatus = "complete";
+            processCommentaryDetected = false;
             context.addArtifact(writtenPath);
           }
         }
@@ -1462,7 +1624,9 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
             status: "completed",
             payload: {
               outputPath: writtenPath,
-              wordCount: countWords(draft.content)
+              wordCount: finalWordCount,
+              deliverableStatus,
+              draftQuality
             }
           });
         }
@@ -1492,8 +1656,15 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
         throw new Error("output file already exists and overwrite=false");
       }
       if (draftQuality !== "complete" && typeof existingContent === "string" && existingContent.trim().length > 0) {
-        const existingQuality = evaluateDraftCompleteness(existingContent, maxWords);
-        if (existingQuality.isComplete) {
+        const existingQuality = evaluateMechanicalQuality({
+          content: existingContent,
+          maxWords,
+          outputShape,
+          targetItemCount: intent?.targetItemCount,
+          shouldIncludeReferences: intent?.shouldIncludeReferences ?? sourceIndex.length > 0,
+          sourceIndex
+        });
+        if (existingQuality.missing.length === 0) {
           preservedExistingDraft = true;
           writtenPath = toProjectRelative(context.projectRoot, absoluteOutput);
           draft = {
@@ -1510,6 +1681,8 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
           fallbackUsed = false;
           fallbackReason = "none";
           failureMessage = null;
+          deliverableStatus = "complete";
+          processCommentaryDetected = false;
           context.addArtifact(writtenPath);
           await emitWriterStageEvent({
             context,
@@ -1519,7 +1692,8 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
               outputPath: writtenPath,
               reason: "quality_downgrade_prevented",
               attemptedDraftQuality: "placeholder",
-              attemptedWordCount: fallbackWordCount,
+              attemptedDeliverableStatus: deliverableStatus,
+              attemptedWordCount: finalWordCount,
               existingDraftQuality: "complete",
               existingWordCount: existingQuality.wordCount,
               existingCitationCount: existingQuality.citationCount
@@ -1540,7 +1714,9 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
             fallbackReason,
             failureMessage,
             draftQuality,
-            compactRetryUsed,
+            deliverableStatus,
+            outputShape,
+            processCommentaryDetected,
             providerUsed,
             passCount,
             persistedFallbackDraft: false,
@@ -1556,10 +1732,12 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
           outputPath: resolvedOutputPath,
           reason: draftQuality !== "complete" ? "placeholder_persist_blocked" : "draft_not_writable",
           draftQuality,
-          wordCount: fallbackWordCount,
+          deliverableStatus,
+          wordCount: finalWordCount,
           autoSelectedOutputPath: !input.outputPath,
           fallbackReason,
-          failureMessage
+          failureMessage,
+          processCommentaryDetected
         }
       });
     }
@@ -1579,7 +1757,9 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WriterAgentToolInput
       fallbackReason,
       failureMessage,
       draftQuality,
-      compactRetryUsed,
+      deliverableStatus,
+      outputShape,
+      processCommentaryDetected,
       providerUsed,
       passCount,
       persistedFallbackDraft: didWriteDraft && draftQuality !== "complete",

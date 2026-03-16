@@ -45,6 +45,7 @@ interface AlfredOrchestratorOptions {
 interface AlfredPlannerOutput {
   thought: string;
   actionType: "delegate_agent" | "call_tool" | "respond";
+  responseKind: "final" | "clarification" | "progress" | null;
   delegateAgent: string | null;
   delegateBrief: string | null;
   toolName: string | null;
@@ -75,6 +76,22 @@ interface AlfredTurnGroundingOutput {
   referencedOutputId: string | null;
 }
 
+interface AlfredTurnInterpretationOutput {
+  thought: string;
+  groundedObjective: string;
+  taskType: AlfredTaskType;
+  requiredDeliverable: string;
+  hardConstraints: string[];
+  doneCriteria: string[];
+  assumptions: string[];
+  requiresDraft: boolean;
+  requiresCitations: boolean;
+  targetWordCount: number | null;
+  requestedOutputPath: string | null;
+  clarificationNeeded: boolean;
+  clarificationQuestion: string | null;
+}
+
 type AlfredTaskType = "lead_generation" | "general";
 
 interface AlfredActionSnapshot {
@@ -91,6 +108,11 @@ interface AlfredObjectiveContract {
   hardConstraints: string[];
   softPreferences: string[];
   doneCriteria: string[];
+  assumptions: string[];
+  requiresDraft: boolean;
+  requiresCitations: boolean;
+  targetWordCountHint: number | null;
+  requestedOutputPathHint: string | null;
 }
 
 interface AlfredTurnState {
@@ -443,6 +465,73 @@ async function resolveTurnObjectiveWithSessionGrounding(args: {
   };
 }
 
+function buildAlfredTurnInterpretationSystemPrompt(sessionContext?: SessionPromptContext): string {
+  return composeSystemPrompt([
+    {
+      label: `Persona ${ALFRED_MASTER_PROMPT_VERSION}`,
+      content: ALFRED_MASTER_SYSTEM_PROMPT
+    },
+    {
+      label: "Role",
+      content:
+        "Interpret the current execute-mode user turn into a stable execution contract for Alfred. Own semantics; do not leave intent to deterministic prompt classifiers."
+    },
+    {
+      label: "Directives",
+      content:
+        "Use the current user turn as primary truth, while considering session context and recent conversation. Produce a grounded objective, deliverable, hard constraints, and done criteria that preserve explicit user requirements. Only set `clarificationNeeded=true` when missing information is genuinely blocking and assumptions would materially risk the outcome. If reasonable defaults or assumptions can unblock the work, set `clarificationNeeded=false`, proceed, and record those assumptions explicitly."
+    },
+    {
+      label: "Session Context",
+      content: formatSessionContextBlock(sessionContext)
+    },
+    {
+      label: "Recent Conversation",
+      content: formatRecentTurnsBlock(sessionContext)
+    }
+  ]);
+}
+
+async function interpretTurnWithModel(args: {
+  apiKey?: string;
+  structuredChatRunner: typeof openAiClient.runOpenAiStructuredChatWithDiagnostics;
+  originalMessage: string;
+  groundedObjective: string;
+  sessionContext?: SessionPromptContext;
+}): Promise<openAiClient.StructuredChatDiagnostic<AlfredTurnInterpretationOutput>> {
+  if (!args.apiKey) {
+    return {};
+  }
+  return args.structuredChatRunner(
+    {
+      apiKey: args.apiKey,
+      schemaName: "alfred_turn_interpretation",
+      jsonSchema: ALFRED_TURN_INTERPRETATION_JSON_SCHEMA,
+      messages: [
+        {
+          role: "system",
+          content: buildAlfredTurnInterpretationSystemPrompt(args.sessionContext)
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            currentMessage: args.originalMessage,
+            groundedObjective: args.groundedObjective,
+            sessionContext: {
+              activeObjective: args.sessionContext?.activeObjective ?? null,
+              lastCompletedRun: args.sessionContext?.lastCompletedRun ?? null,
+              recentOutputs: args.sessionContext?.recentOutputs ?? [],
+              unresolvedItems: args.sessionContext?.unresolvedItems ?? []
+            },
+            recentConversation: args.sessionContext?.recentTurns?.slice(-6) ?? []
+          })
+        }
+      ]
+    },
+    AlfredTurnInterpretationOutputSchema
+  );
+}
+
 function looksLikeExecutableLeadRequest(message: string): boolean {
   const hasLeadIntent = containsAnyWord(message, ["find", "get", "list", "collect", "source", "prospect"]);
   const hasLeadEntity = containsAnyWord(message, ["lead", "leads", "msp", "contact", "contacts"])
@@ -523,18 +612,20 @@ const ALFRED_PLANNER_OUTPUT_JSON_SCHEMA = {
   properties: {
     thought: { type: "string", minLength: 1, maxLength: 500 },
     actionType: { type: "string", enum: ["delegate_agent", "call_tool", "respond"] },
+    responseKind: { anyOf: [{ type: "string", enum: ["final", "clarification", "progress"] }, { type: "null" }] },
     delegateAgent: { anyOf: [{ type: "string", minLength: 1, maxLength: 80 }, { type: "null" }] },
     delegateBrief: { anyOf: [{ type: "string", minLength: 1, maxLength: 1200 }, { type: "null" }] },
     toolName: { anyOf: [{ type: "string", minLength: 1, maxLength: 80 }, { type: "null" }] },
     toolInputJson: { anyOf: [{ type: "string", minLength: 2, maxLength: 1200 }, { type: "null" }] },
     responseText: { anyOf: [{ type: "string", minLength: 1, maxLength: 4000 }, { type: "null" }] }
   },
-  required: ["thought", "actionType", "delegateAgent", "delegateBrief", "toolName", "toolInputJson", "responseText"]
+  required: ["thought", "actionType", "responseKind", "delegateAgent", "delegateBrief", "toolName", "toolInputJson", "responseText"]
 } as const;
 
 const AlfredPlannerOutputSchema: z.ZodType<AlfredPlannerOutput> = z.object({
   thought: z.string().min(1).max(500),
   actionType: z.enum(["delegate_agent", "call_tool", "respond"]),
+  responseKind: z.enum(["final", "clarification", "progress"]).nullable(),
   delegateAgent: z.string().min(1).max(80).nullable(),
   delegateBrief: z.string().min(1).max(1200).nullable(),
   toolName: z.string().min(1).max(80).nullable(),
@@ -629,6 +720,69 @@ const AlfredTurnGroundingOutputSchema: z.ZodType<AlfredTurnGroundingOutput> = z.
   source: z.enum(["message", "recent_output", "recent_turn", "active_objective", "last_completed_run"]),
   groundedObjective: z.string().min(1).max(1200),
   referencedOutputId: z.string().min(1).max(160).nullable()
+});
+
+const ALFRED_TURN_INTERPRETATION_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    thought: { type: "string", minLength: 1, maxLength: 500 },
+    groundedObjective: { type: "string", minLength: 1, maxLength: 1200 },
+    taskType: { type: "string", enum: ["lead_generation", "general"] },
+    requiredDeliverable: { type: "string", minLength: 1, maxLength: 300 },
+    hardConstraints: {
+      type: "array",
+      maxItems: 10,
+      items: { type: "string", minLength: 2, maxLength: 220 }
+    },
+    doneCriteria: {
+      type: "array",
+      maxItems: 10,
+      items: { type: "string", minLength: 2, maxLength: 260 }
+    },
+    assumptions: {
+      type: "array",
+      maxItems: 8,
+      items: { type: "string", minLength: 2, maxLength: 220 }
+    },
+    requiresDraft: { type: "boolean" },
+    requiresCitations: { type: "boolean" },
+    targetWordCount: { anyOf: [{ type: "integer", minimum: 100, maximum: 5000 }, { type: "null" }] },
+    requestedOutputPath: { anyOf: [{ type: "string", minLength: 3, maxLength: 400 }, { type: "null" }] },
+    clarificationNeeded: { type: "boolean" },
+    clarificationQuestion: { anyOf: [{ type: "string", minLength: 1, maxLength: 1200 }, { type: "null" }] }
+  },
+  required: [
+    "thought",
+    "groundedObjective",
+    "taskType",
+    "requiredDeliverable",
+    "hardConstraints",
+    "doneCriteria",
+    "assumptions",
+    "requiresDraft",
+    "requiresCitations",
+    "targetWordCount",
+    "requestedOutputPath",
+    "clarificationNeeded",
+    "clarificationQuestion"
+  ]
+} as const;
+
+const AlfredTurnInterpretationOutputSchema: z.ZodType<AlfredTurnInterpretationOutput> = z.object({
+  thought: z.string().min(1).max(500),
+  groundedObjective: z.string().min(1).max(1200),
+  taskType: z.enum(["lead_generation", "general"]),
+  requiredDeliverable: z.string().min(1).max(300),
+  hardConstraints: z.array(z.string().min(2).max(220)).max(10),
+  doneCriteria: z.array(z.string().min(2).max(260)).max(10),
+  assumptions: z.array(z.string().min(2).max(220)).max(8),
+  requiresDraft: z.boolean(),
+  requiresCitations: z.boolean(),
+  targetWordCount: z.number().int().min(100).max(5000).nullable(),
+  requestedOutputPath: z.string().min(3).max(400).nullable(),
+  clarificationNeeded: z.boolean(),
+  clarificationQuestion: z.string().min(1).max(1200).nullable()
 });
 
 function nowIso(): string {
@@ -733,7 +887,7 @@ function buildAlfredPlannerSystemPrompt(sessionContext?: SessionPromptContext): 
     {
       label: "Directives",
       content:
-        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. You have two capability catalogs at runtime: `availableTools` and `availableAgents`. Each tool includes `inputContract` with required fields, bounds, and an example payload: obey these strictly when choosing `toolInputJson` (for example, if `maxResults <= 15`, never exceed it). Choose strategy dynamically from the user ask and current evidence. You may execute directly with tools, delegate to a specialist agent, or respond if complete. Prefer direct execution when a small number of tool actions can likely complete the task; delegate when specialist iterative loops are likely higher-yield. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. If `resolvedSessionOutput` is present, treat it as a reusable session asset. If `bodyPreview` is present, you may use it for lightweight continuation or transformation. If `artifactPath` is present and the exact stored body matters, call `file_read` before responding or revising. Respect execution permission: if `executionPermission` is `plan_only`, return `actionType=respond` with plan guidance and no execution. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
+        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. You have two capability catalogs at runtime: `availableTools` and `availableAgents`. Each tool includes `inputContract` with required fields, bounds, and an example payload: obey these strictly when choosing `toolInputJson` (for example, if `maxResults <= 15`, never exceed it). Choose strategy dynamically from the user ask and current evidence. You may execute directly with tools, delegate to a specialist agent, or respond if complete. Prefer direct execution when a small number of tool actions can likely complete the task; delegate when specialist iterative loops are likely higher-yield. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. If `resolvedSessionOutput` is present, treat it as a reusable session asset. If `bodyPreview` is present, you may use it for lightweight continuation or transformation. If `artifactPath` is present and the exact stored body matters, call `file_read` before responding or revising. When `actionType=respond`, set `responseKind` explicitly: use `final` for a completed answer, `clarification` only when blocking ambiguity genuinely requires user input, and `progress` for interim guidance/status. Respect execution permission: if `executionPermission` is `plan_only`, return `actionType=respond` with plan guidance and no execution. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
     },
     {
       label: "Session Context",
@@ -1102,9 +1256,38 @@ function normalizePathForCompare(pathValue: string): string {
   return normalized;
 }
 
-function buildObjectiveContract(message: string, leadExecutionBrief?: LeadExecutionBrief | null): AlfredObjectiveContract {
+function dedupeStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const value of values) {
+    const normalized = collapseWhitespace(value);
+    if (!normalized) {
+      continue;
+    }
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(normalized);
+  }
+  return output;
+}
+
+function buildObjectiveContract(
+  message: string,
+  leadExecutionBrief?: LeadExecutionBrief | null,
+  interpretation?: AlfredTurnInterpretationOutput | null
+): AlfredObjectiveContract {
   const taskType = detectObjectiveTaskType(message, leadExecutionBrief);
   const hardConstraints = deriveHardConstraints(message);
+  const targetWordCountHint = interpretation?.targetWordCount ?? extractTargetWordCount(message);
+  const requestedOutputPathHint = interpretation?.requestedOutputPath ?? extractRequestedOutputPath(message);
+  const requiresCitations = interpretation?.requiresCitations
+    ?? hardConstraints.some((item) => containsAnyWord(item, ["citation", "source"]));
+  const requiresDraft = interpretation?.requiresDraft
+    ?? containsAnyWord(message, ["blog", "post", "article", "draft", "write"]);
+  const assumptions = interpretation?.assumptions ?? [];
 
   if (leadExecutionBrief) {
     const requiredDeliverable =
@@ -1113,33 +1296,51 @@ function buildObjectiveContract(message: string, leadExecutionBrief?: LeadExecut
         : `Produce ${leadExecutionBrief.requestedLeadCount} lead records.`;
     const doneCriteria = buildCompletionCriteria(message, leadExecutionBrief);
     return {
-      taskType,
+      taskType: interpretation?.taskType ?? taskType,
       requiredDeliverable,
-      hardConstraints,
+      hardConstraints: dedupeStrings([
+        ...hardConstraints,
+        ...(interpretation?.hardConstraints ?? [])
+      ]),
       softPreferences: [],
-      doneCriteria
+      doneCriteria: dedupeStrings([
+        ...doneCriteria,
+        ...(interpretation?.doneCriteria ?? [])
+      ]),
+      assumptions,
+      requiresDraft,
+      requiresCitations,
+      targetWordCountHint,
+      requestedOutputPathHint
     };
   }
 
-  const requiredDeliverable =
-    containsAnyWord(message, ["blog", "post"])
-      ? "Deliver the requested blog draft with citations."
-      : `Provide a complete response for: ${collapseWhitespace(message).slice(0, 180)}`;
-  const doneCriteria = [
-    `Answer the current turn directly and honestly: ${collapseWhitespace(message).slice(0, 240)}`
-  ];
-  if (containsAnyWord(message, ["cite", "cited", "citation", "citations", "source", "sources"])) {
-    doneCriteria.push("Include explicit source citations for factual claims.");
-  }
-  if (containsAnyWord(message, ["blog", "post"])) {
-    doneCriteria.push("Return the complete draft text in the requested format.");
-  }
+  const requiredDeliverable = interpretation?.requiredDeliverable
+    ?? (
+      containsAnyWord(message, ["blog", "post"])
+        ? "Deliver the requested blog draft with citations."
+        : `Provide a complete response for: ${collapseWhitespace(message).slice(0, 180)}`
+    );
+  const doneCriteria = interpretation?.doneCriteria?.length
+    ? interpretation.doneCriteria
+    : [
+        `Answer the current turn directly and honestly: ${collapseWhitespace(message).slice(0, 240)}`,
+        ...(requiresCitations ? ["Include explicit source citations for factual claims."] : []),
+        ...(requiresDraft ? ["Return the complete draft text in the requested format."] : [])
+      ];
   return {
-    taskType,
+    taskType: interpretation?.taskType ?? taskType,
     requiredDeliverable,
-    hardConstraints,
+    hardConstraints: interpretation?.hardConstraints?.length
+      ? dedupeStrings(interpretation.hardConstraints)
+      : hardConstraints,
     softPreferences: [],
-    doneCriteria
+    doneCriteria: dedupeStrings(doneCriteria),
+    assumptions,
+    requiresDraft,
+    requiresCitations,
+    targetWordCountHint,
+    requestedOutputPathHint
   };
 }
 
@@ -1181,20 +1382,16 @@ function buildSpecialistTaskContract(args: {
   if (agentName !== "research_agent") {
     return undefined;
   }
-  const requiresDraft =
-    containsAnyWord(args.message, ["blog", "post", "article", "draft", "write"])
-    || containsAnyWord(args.objectiveContract.requiredDeliverable, ["draft"]);
-  const requiresCitations =
-    containsAnyWord(args.message, ["cite", "cited", "citation", "citations", "source", "sources"])
-    || args.objectiveContract.hardConstraints.some((item) => containsAnyWord(item, ["citation", "source"]));
+  const requiresDraft = args.objectiveContract.requiresDraft;
+  const requiresCitations = args.objectiveContract.requiresCitations;
   return {
     requiredDeliverable: args.objectiveContract.requiredDeliverable,
     requiresDraft,
     requiresCitations,
     minimumCitationCount: requiresCitations ? 2 : 0,
     doneCriteria: args.objectiveContract.doneCriteria,
-    requestedOutputPath: args.requestedOutputPath,
-    targetWordCount: extractTargetWordCount(args.message)
+    requestedOutputPath: args.requestedOutputPath ?? args.objectiveContract.requestedOutputPathHint,
+    targetWordCount: args.objectiveContract.targetWordCountHint
   };
 }
 
@@ -1468,7 +1665,7 @@ function buildAlfredTurnState(args: {
   lastAction: AlfredActionSnapshot | null;
   runRecord?: RunRecord;
 }): AlfredTurnState {
-  const requestedOutputPath = extractRequestedOutputPath(args.message);
+  const requestedOutputPath = args.objectiveContract.requestedOutputPathHint;
   const canonicalLeadBrief = args.leadExecutionBrief ?? args.leadState.executionBrief ?? null;
   const inferredFacts = inferLeadFactsFromRunRecord(args.runRecord);
   const collectedLeadCount = Math.max(args.leadState.leads.length, inferredFacts.collectedLeadCount);
@@ -1516,9 +1713,9 @@ function buildAlfredTurnState(args: {
       }
     }
   } else {
-    const targetWordCount = extractTargetWordCount(args.message);
-    const requiresDraft = containsAnyWord(args.objectiveContract.requiredDeliverable, ["blog", "draft", "article", "write"]);
-    const requiresCitations = args.objectiveContract.hardConstraints.some((item) => containsAnyWord(item, ["citation", "source"]));
+    const targetWordCount = args.objectiveContract.targetWordCountHint;
+    const requiresDraft = args.objectiveContract.requiresDraft;
+    const requiresCitations = args.objectiveContract.requiresCitations;
     const minimumDraftWords = targetWordCount
       ? Math.max(220, Math.floor(targetWordCount * 0.75))
       : 400;
@@ -1634,26 +1831,6 @@ function looksLikeCitation(text: string): boolean {
     || containsAnyWord(text, ["source", "citation", "citations", "reference", "references"]);
 }
 
-function looksLikeClarificationResponse(text: string): boolean {
-  const normalized = collapseWhitespace(text).toLowerCase();
-  const clarificationSignals = [
-    "clarify",
-    "clarification",
-    "confirm",
-    "which",
-    "what",
-    "please provide",
-    "please confirm",
-    "could you"
-  ];
-  const proceedSignals = ["proceed", "proceeding", "starting", "working on", "running", "retrying", "i will"];
-  return (
-    containsAnyPhrase(normalized, clarificationSignals) ||
-    ((containsAnyPhrase(normalized, proceedSignals) && normalized.length <= 180)) ||
-    normalized.includes("?")
-  );
-}
-
 function extractLeadCountHint(value: unknown): number {
   const text =
     typeof value === "string"
@@ -1714,7 +1891,7 @@ function evaluateCompletionContractGate(args: {
     };
   }
 
-  const requiresCitations = args.objectiveContract.hardConstraints.some((item) => containsAnyWord(item, ["citation", "source"]));
+  const requiresCitations = args.objectiveContract.requiresCitations;
   if (requiresCitations) {
     const evidenceText = [
       args.evaluation.responseText ?? "",
@@ -1733,9 +1910,9 @@ function evaluateCompletionContractGate(args: {
     }
   }
 
-  const requiresDraft = containsAnyWord(args.objectiveContract.requiredDeliverable, ["blog", "draft"]);
+  const requiresDraft = args.objectiveContract.requiresDraft;
   if (requiresDraft) {
-    const targetWordCount = extractTargetWordCount(args.turnState.turnObjective);
+    const targetWordCount = args.objectiveContract.targetWordCountHint;
     const minimumDraftWords = targetWordCount
       ? Math.max(220, Math.floor(targetWordCount * 0.75))
       : 400;
@@ -1795,6 +1972,19 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       }
     : turnGrounding.fallback;
   const turnObjective = resolvedTurnObjective.objective;
+  const turnInterpretation = turnMode === "diagnostic"
+    ? null
+    : await interpretTurnWithModel({
+        apiKey: options.openAiApiKey,
+        structuredChatRunner,
+        originalMessage: options.message,
+        groundedObjective: turnObjective,
+        sessionContext: runtimeSessionContext
+      });
+  if (turnInterpretation?.usage) {
+    await options.runStore.addLlmUsage(options.runId, turnInterpretation.usage, 1);
+  }
+  const interpretedTurn = turnInterpretation?.result ?? null;
   const resolvedSessionOutput = findSessionOutputById(runtimeSessionContext, turnGrounding.result?.referencedOutputId);
   const resolvedSessionOutputBodyPreview = await loadSessionOutputBodyPreview({
     workspaceDir: options.workspaceDir,
@@ -1903,8 +2093,8 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         sessionContext: runtimeSessionContext
       })
     : undefined;
-  const objectiveContract = buildObjectiveContract(turnObjective, initialLeadBrief);
-  const requestedOutputPath = extractRequestedOutputPath(turnObjective);
+  const objectiveContract = buildObjectiveContract(turnObjective, initialLeadBrief, interpretedTurn);
+  const requestedOutputPath = objectiveContract.requestedOutputPathHint;
   scratchpad.currentObjectiveContract = objectiveContract;
   if (initialLeadBrief) {
     scratchpad.currentLeadExecutionBrief = initialLeadBrief;
@@ -1993,6 +2183,21 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         source: resolvedTurnObjective.source,
         originalMessage: options.message.slice(0, 240),
         resolvedTurnObjective: turnObjective.slice(0, 500)
+      },
+      timestamp: nowIso()
+    });
+  }
+  if (interpretedTurn) {
+    await options.runStore.appendEvent({
+      runId: options.runId,
+      sessionId: options.sessionId,
+      phase: "thought",
+      eventType: "alfred_turn_interpreted",
+      payload: {
+        groundedObjective: interpretedTurn.groundedObjective,
+        taskType: interpretedTurn.taskType,
+        clarificationNeeded: interpretedTurn.clarificationNeeded,
+        assumptions: interpretedTurn.assumptions
       },
       timestamp: nowIso()
     });
@@ -2103,6 +2308,16 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
             content: JSON.stringify({
               turnObjective,
               executionPermission,
+              turnInterpretation: interpretedTurn
+                ? {
+                    groundedObjective: interpretedTurn.groundedObjective,
+                    assumptions: interpretedTurn.assumptions,
+                    clarificationNeeded: interpretedTurn.clarificationNeeded,
+                    clarificationQuestion: interpretedTurn.clarificationQuestion,
+                    requiredDeliverable: interpretedTurn.requiredDeliverable,
+                    doneCriteria: interpretedTurn.doneCriteria
+                  }
+                : null,
               objectiveContract,
               currentLeadExecutionBrief: (scratchpad.currentLeadExecutionBrief as LeadExecutionBrief | undefined) ?? null,
               turnState: refreshTurnState(),
@@ -2231,6 +2446,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         iteration,
         thought: plan.thought,
         actionType: plan.actionType,
+        responseKind: plan.responseKind,
         delegateAgent: plan.delegateAgent,
         toolName: plan.toolName,
         turnState: refreshTurnState()
@@ -2239,7 +2455,8 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     });
 
     if (plan.actionType === "respond") {
-      if (looksLikeClarificationResponse(plan.responseText ?? "")) {
+      const responseKind = plan.responseKind ?? "final";
+      if (responseKind === "clarification") {
         await options.runStore.appendEvent({
           runId: options.runId,
           sessionId: options.sessionId,
@@ -2254,7 +2471,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       }
       if (
         executionPermission !== "plan_only" &&
-        !looksLikeClarificationResponse(plan.responseText ?? "")
+        responseKind === "final"
       ) {
         const respondGate = evaluateCompletionContractGate({
           evaluation: {

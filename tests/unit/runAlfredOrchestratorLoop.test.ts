@@ -17,6 +17,68 @@ class FakeSearchManager {
   }
 }
 
+function buildDefaultTurnInterpretation(options: { messages?: Array<{ role: string; content: string }> }) {
+  const payload = JSON.parse(options.messages?.[1]?.content ?? "{}") as {
+    groundedObjective?: string | null;
+    currentMessage?: string | null;
+  };
+  const groundedObjective = payload.groundedObjective ?? payload.currentMessage ?? "Handle the current turn.";
+  const normalized = String(groundedObjective);
+  const requiresDraft = /\b(blog|post|article|draft|write)\b/i.test(normalized);
+  const requiresCitations = /\b(cite|citation|citations|source|sources)\b/i.test(normalized);
+  const requiredDeliverable = requiresDraft
+    ? "Deliver the requested blog draft with citations."
+    : `Provide a complete response for: ${normalized.slice(0, 180)}`;
+  const doneCriteria = [`Answer the current turn directly and honestly: ${normalized.slice(0, 220)}`];
+  if (requiresCitations) {
+    doneCriteria.push("Include explicit source citations for factual claims.");
+  }
+  if (requiresDraft) {
+    doneCriteria.push("Return the complete draft text in the requested format.");
+  }
+  return {
+    thought: "Interpret the turn directly from the current request.",
+    groundedObjective: normalized,
+    taskType: "general" as const,
+    requiredDeliverable,
+    hardConstraints: [],
+    doneCriteria,
+    assumptions: [],
+    requiresDraft,
+    requiresCitations,
+    targetWordCount: null,
+    requestedOutputPath: null,
+    clarificationNeeded: false,
+    clarificationQuestion: null
+  };
+}
+
+function withDefaultTurnInterpretation(
+  handler: (...args: any[]) => Promise<StructuredChatDiagnostic<any>>
+) {
+  return async <T>(...args: any[]): Promise<StructuredChatDiagnostic<T>> => {
+    const options = (args[0] ?? {}) as { schemaName: string; messages?: Array<{ role: string; content: string }> };
+    if (options.schemaName === "alfred_turn_interpretation") {
+      return {
+        result: buildDefaultTurnInterpretation(options)
+      } as StructuredChatDiagnostic<T>;
+    }
+    const diagnostic = await handler(...args);
+    if (
+      options.schemaName === "alfred_orchestrator_plan" &&
+      diagnostic.result &&
+      typeof diagnostic.result === "object" &&
+      !Array.isArray(diagnostic.result)
+    ) {
+      const resultRecord = diagnostic.result as Record<string, unknown>;
+      if (resultRecord.actionType === "respond" && resultRecord.responseKind == null) {
+        resultRecord.responseKind = "final";
+      }
+    }
+    return diagnostic;
+  };
+}
+
 test("runAlfredOrchestratorLoop does not use deterministic pre-execution clarification gates", async () => {
   const workspace = await createTempWorkspace("alfred-orchestrator-no-preexecute-clarification-gate");
   const runStore = new RunStore(workspace);
@@ -51,13 +113,14 @@ test("runAlfredOrchestratorLoop does not use deterministic pre-execution clarifi
     diminishingThreshold: 1,
     policyMode: "trusted",
     isCancellationRequested: async () => false,
-    structuredChatRunner: async <T>(options: { schemaName: string }): Promise<StructuredChatDiagnostic<T>> => {
+    structuredChatRunner: withDefaultTurnInterpretation(async <T>(options: { schemaName: string; messages?: Array<{ role: string; content: string }> }): Promise<StructuredChatDiagnostic<T>> => {
       plannerCalled = true;
       if (options.schemaName === "alfred_orchestrator_plan") {
         return {
           result: {
             thought: "Proceed directly based on user prompt.",
             actionType: "respond" as const,
+            responseKind: "progress" as const,
             delegateAgent: null,
             delegateBrief: null,
             toolName: null,
@@ -67,7 +130,7 @@ test("runAlfredOrchestratorLoop does not use deterministic pre-execution clarifi
         } as StructuredChatDiagnostic<T>;
       }
       throw new Error(`unexpected schema request: ${options.schemaName}`);
-    }
+    })
   });
 
   assert.equal(outcome.status, "completed");
@@ -104,6 +167,7 @@ test("runAlfredOrchestratorLoop skips clarification gate when user explicitly gr
         result: {
           thought: "Autonomy granted; proceed.",
           actionType: "respond" as const,
+          responseKind: "progress" as const,
           delegateAgent: null,
           delegateBrief: null,
           toolName: null,
@@ -143,7 +207,7 @@ test("runAlfredOrchestratorLoop skips clarification gate when user explicitly gr
     diminishingThreshold: 1,
     policyMode: "trusted",
     isCancellationRequested: async () => false,
-    structuredChatRunner
+    structuredChatRunner: withDefaultTurnInterpretation(structuredChatRunner)
   });
 
   assert.equal(outcome.status, "completed");
@@ -254,7 +318,7 @@ test("runAlfredOrchestratorLoop responds after successful tool when completion e
     diminishingThreshold: 1,
     policyMode: "trusted",
     isCancellationRequested: async () => false,
-    structuredChatRunner
+    structuredChatRunner: withDefaultTurnInterpretation(structuredChatRunner)
   });
 
   assert.equal(outcome.status, "completed");
@@ -407,7 +471,7 @@ test("runAlfredOrchestratorLoop records delegation telemetry and passes scratchp
     diminishingThreshold: 1,
     policyMode: "trusted",
     isCancellationRequested: async () => false,
-    structuredChatRunner,
+    structuredChatRunner: withDefaultTurnInterpretation(structuredChatRunner),
     agentLoopRunner
   });
 
@@ -521,7 +585,7 @@ test("runAlfredOrchestratorLoop passes unified taskContract when delegating rese
     diminishingThreshold: 1,
     policyMode: "trusted",
     isCancellationRequested: async () => false,
-    structuredChatRunner,
+    structuredChatRunner: withDefaultTurnInterpretation(structuredChatRunner),
     agentLoopRunner
   });
 
@@ -585,6 +649,7 @@ test("runAlfredOrchestratorLoop respects planner choice without forcing delegati
         result: {
           thought: "Need clarifications first before execution.",
           actionType: "respond" as const,
+          responseKind: "clarification" as const,
           delegateAgent: null,
           delegateBrief: null,
           toolName: null,
@@ -630,7 +695,7 @@ test("runAlfredOrchestratorLoop respects planner choice without forcing delegati
     diminishingThreshold: 1,
     policyMode: "trusted",
     isCancellationRequested: async () => false,
-    structuredChatRunner,
+    structuredChatRunner: withDefaultTurnInterpretation(structuredChatRunner),
     agentLoopRunner: async () => {
       delegated = true;
       return {
@@ -646,6 +711,7 @@ test("runAlfredOrchestratorLoop respects planner choice without forcing delegati
   assert.equal(outcome.assistantText, "Please clarify exclusions.");
   const updatedRun = await runStore.getRun(run.runId);
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(events.some((event) => event.eventType === "alfred_clarification_requested"));
   assert.ok(!events.some((event) => event.eventType === "alfred_plan_adjusted"));
 });
 
@@ -717,7 +783,7 @@ test("runAlfredOrchestratorLoop exposes full runtime catalogs to planner", async
     diminishingThreshold: 1,
     policyMode: "trusted",
     isCancellationRequested: async () => false,
-    structuredChatRunner
+    structuredChatRunner: withDefaultTurnInterpretation(structuredChatRunner)
   });
 
   assert.equal(outcome.status, "completed");
@@ -802,7 +868,7 @@ test("runAlfredOrchestratorLoop respects plan-only execution permission and does
     diminishingThreshold: 1,
     policyMode: "trusted",
     isCancellationRequested: async () => false,
-    structuredChatRunner,
+    structuredChatRunner: withDefaultTurnInterpretation(structuredChatRunner),
     agentLoopRunner: async () => {
       delegated = true;
       return {
@@ -932,13 +998,14 @@ test("runAlfredOrchestratorLoop does not misclassify article prompts containing 
     diminishingThreshold: 1,
     policyMode: "trusted",
     isCancellationRequested: async () => false,
-    structuredChatRunner: async <T>(options: { schemaName: string }): Promise<StructuredChatDiagnostic<T>> => {
+    structuredChatRunner: withDefaultTurnInterpretation(async <T>(options: { schemaName: string; messages?: Array<{ role: string; content: string }> }): Promise<StructuredChatDiagnostic<T>> => {
       plannerCalled = true;
       if (options.schemaName === "alfred_orchestrator_plan") {
         return {
           result: {
             thought: "Proceed with writing flow.",
             actionType: "respond" as const,
+            responseKind: "final" as const,
             delegateAgent: null,
             delegateBrief: null,
             toolName: null,
@@ -948,7 +1015,7 @@ test("runAlfredOrchestratorLoop does not misclassify article prompts containing 
         } as StructuredChatDiagnostic<T>;
       }
       throw new Error(`unexpected schema request: ${options.schemaName}`);
-    }
+    })
   });
 
   assert.ok(outcome.status === "completed" || outcome.status === "failed");
@@ -987,6 +1054,7 @@ test("runAlfredOrchestratorLoop carries forward objective on follow-up execute t
         result: {
           thought: "Objective is clear from session follow-up context.",
           actionType: "respond" as const,
+          responseKind: "progress" as const,
           delegateAgent: null,
           delegateBrief: null,
           toolName: null,
@@ -1026,7 +1094,7 @@ test("runAlfredOrchestratorLoop carries forward objective on follow-up execute t
     diminishingThreshold: 1,
     policyMode: "trusted",
     isCancellationRequested: async () => false,
-    structuredChatRunner,
+    structuredChatRunner: withDefaultTurnInterpretation(structuredChatRunner),
     sessionContext: {
       activeObjective: "Try again",
       recentTurns: [
@@ -1087,6 +1155,7 @@ test("runAlfredOrchestratorLoop treats 'You decide' as follow-up continuation of
         result: {
           thought: "Continue with previous objective and choose defaults.",
           actionType: "respond" as const,
+          responseKind: "progress" as const,
           delegateAgent: null,
           delegateBrief: null,
           toolName: null,
@@ -1126,7 +1195,7 @@ test("runAlfredOrchestratorLoop treats 'You decide' as follow-up continuation of
     diminishingThreshold: 1,
     policyMode: "trusted",
     isCancellationRequested: async () => false,
-    structuredChatRunner,
+    structuredChatRunner: withDefaultTurnInterpretation(structuredChatRunner),
     sessionContext: {
       activeObjective: "You decide",
       recentTurns: [
@@ -1197,6 +1266,7 @@ test("runAlfredOrchestratorLoop can ground a follow-up turn against recent sessi
         result: {
           thought: "Grounded objective is clear from session output memory.",
           actionType: "respond" as const,
+          responseKind: "progress" as const,
           delegateAgent: null,
           delegateBrief: null,
           toolName: null,
@@ -1236,7 +1306,7 @@ test("runAlfredOrchestratorLoop can ground a follow-up turn against recent sessi
     diminishingThreshold: 1,
     policyMode: "trusted",
     isCancellationRequested: async () => false,
-    structuredChatRunner,
+    structuredChatRunner: withDefaultTurnInterpretation(structuredChatRunner),
     sessionContext: {
       activeObjective: "Paste it here",
       recentOutputs: [
@@ -1399,7 +1469,7 @@ test("runAlfredOrchestratorLoop can recover session outputs from durable run his
     diminishingThreshold: 1,
     policyMode: "trusted",
     isCancellationRequested: async () => false,
-    structuredChatRunner,
+    structuredChatRunner: withDefaultTurnInterpretation(structuredChatRunner),
     sessionContext: {
       recentTurns: [
         {
@@ -1659,7 +1729,7 @@ test("runAlfredOrchestratorLoop blocks respond when completion violates objectiv
     diminishingThreshold: 1,
     policyMode: "trusted",
     isCancellationRequested: async () => false,
-    structuredChatRunner
+    structuredChatRunner: withDefaultTurnInterpretation(structuredChatRunner)
   });
 
   assert.equal(outcome.status, "completed");
@@ -1754,7 +1824,7 @@ test("runAlfredOrchestratorLoop blocks completion when requested output path is 
     diminishingThreshold: 1,
     policyMode: "trusted",
     isCancellationRequested: async () => false,
-    structuredChatRunner
+    structuredChatRunner: withDefaultTurnInterpretation(structuredChatRunner)
   });
 
   assert.equal(outcome.status, "completed");
@@ -1848,7 +1918,7 @@ test("runAlfredOrchestratorLoop allows respond when draft/citation/output eviden
     diminishingThreshold: 1,
     policyMode: "trusted",
     isCancellationRequested: async () => false,
-    structuredChatRunner
+    structuredChatRunner: withDefaultTurnInterpretation(structuredChatRunner)
   });
 
   assert.equal(outcome.status, "completed");

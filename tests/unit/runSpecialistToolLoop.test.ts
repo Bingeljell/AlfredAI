@@ -385,13 +385,21 @@ test("runSpecialistToolLoop exposes generic active-work state to the planner", a
     evidenceRecords?: Array<{ kind?: string }>;
     synthesisState?: { status?: string; readyForSynthesis?: boolean };
   } | undefined;
+  const writerReadiness = plannerPayload.writerReadiness as {
+    evidenceReady?: boolean;
+    finalizeReady?: boolean;
+    missingEvidence?: string[];
+  } | undefined;
   assert.ok(activeWorkState);
+  assert.ok(writerReadiness);
   assert.ok((activeWorkState?.assumptions?.length ?? 0) >= 1);
   assert.ok((activeWorkState?.activeWorkItems?.length ?? 0) >= 1);
   assert.ok((activeWorkState?.candidateSets?.length ?? 0) >= 1);
   assert.ok((activeWorkState?.candidateSets?.[0]?.itemCount ?? 0) >= 1);
   assert.ok((activeWorkState?.evidenceRecords?.length ?? 0) >= 1);
   assert.match(activeWorkState?.synthesisState?.status ?? "", /not_ready|emerging|ready|partial|complete/);
+  assert.equal(writerReadiness?.evidenceReady, false);
+  assert.ok((writerReadiness?.missingEvidence?.length ?? 0) >= 1);
 });
 
 test("runSpecialistToolLoop applies flaky-search retry profile to parallel search plans", async () => {

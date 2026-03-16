@@ -97,6 +97,13 @@ interface ActiveWorkStateSnapshot {
   synthesisState: AgentSynthesisState;
 }
 
+interface WriterReadinessState {
+  evidenceReady: boolean;
+  finalizeReady: boolean;
+  hasReusableEvidence: boolean;
+  missingEvidence: string[];
+}
+
 const SPECIALIST_PLANNER_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -465,14 +472,108 @@ function defaultToolInputJson(tool: string, objective: string): string | null {
   }
 }
 
-function shouldApplyEvidenceGapGuard(args: {
+function buildEvidenceRecoveryAction(
+  availableToolNames: Set<string>,
+  objective: string,
+  sourceUrls: Set<string>
+): Array<{ tool: string; inputJson: string }> | null {
+  if (availableToolNames.has("web_fetch")) {
+    const urls = selectFetchUrlsForHandoff(sourceUrls, 8);
+    return [
+      {
+        tool: "web_fetch",
+        inputJson: urls.length > 0
+          ? JSON.stringify({
+              urls,
+              maxPages: Math.min(8, urls.length),
+              browseConcurrency: 3
+            })
+          : JSON.stringify({
+              query: deriveObjectiveQuery(objective),
+              maxPages: 8,
+              browseConcurrency: 3
+            })
+      }
+    ];
+  }
+
+  if (availableToolNames.has("search")) {
+    return [
+      {
+        tool: "search",
+        inputJson: JSON.stringify({
+          query: deriveObjectiveQuery(objective),
+          maxResults: 10
+        })
+      }
+    ];
+  }
+
+  if (availableToolNames.has("lead_search_shortlist")) {
+    return [
+      {
+        tool: "lead_search_shortlist",
+        inputJson: JSON.stringify({
+          query: deriveObjectiveQuery(objective),
+          maxResults: 10,
+          maxUrls: 12
+        })
+      }
+    ];
+  }
+
+  return null;
+}
+
+function assessWriterReadiness(args: {
   contract: AgentTaskContract;
   thresholds: EvidenceThresholds;
   progress: SpecialistProgressState;
   sourceCardCount: number;
+  synthesisState: AgentSynthesisState;
+}): WriterReadinessState {
+  const missingEvidence: string[] = [];
+  const fetchedReady = args.progress.fetchedPageCount >= args.thresholds.minFetchedPagesForDraft;
+  const sourceCardsReady = args.sourceCardCount >= args.thresholds.minSourceCardsForDraft;
+  const reusableFetch = args.progress.fetchedPageCount >= Math.max(2, args.thresholds.minFetchedPagesForDraft - 1);
+  const reusableSourceCards = args.sourceCardCount >= Math.max(1, args.thresholds.minSourceCardsForDraft - 2);
+  const reusableDiscovery = args.progress.sourceUrls.size >= 4;
+
+  if (args.contract.requiresDraft && !fetchedReady) {
+    missingEvidence.push(
+      `Fetched evidence below threshold (${args.progress.fetchedPageCount}/${args.thresholds.minFetchedPagesForDraft}).`
+    );
+  }
+  if (args.contract.requiresDraft && !sourceCardsReady) {
+    missingEvidence.push(
+      `Structured evidence below threshold (${args.sourceCardCount}/${args.thresholds.minSourceCardsForDraft}).`
+    );
+  }
+
+  const evidenceReady = !args.contract.requiresDraft || (fetchedReady && sourceCardsReady);
+  const hasReusableEvidence = reusableFetch || reusableSourceCards || reusableDiscovery;
+  const finalizeReady =
+    args.synthesisState.readyForSynthesis
+    || hasReusableEvidence
+    || evidenceReady;
+
+  return {
+    evidenceReady,
+    finalizeReady,
+    hasReusableEvidence,
+    missingEvidence
+  };
+}
+
+function shouldApplyEvidenceGapGuard(args: {
+  contract: AgentTaskContract;
   actions: Array<{ tool: string; inputJson: string }>;
   availableToolNames: Set<string>;
   objective: string;
+  progress: SpecialistProgressState;
+  writerReadiness: WriterReadinessState;
+  thresholds: EvidenceThresholds;
+  sourceCardCount: number;
 }): {
   adjusted: Array<{ tool: string; inputJson: string }> | null;
   reason: string | null;
@@ -481,13 +582,17 @@ function shouldApplyEvidenceGapGuard(args: {
     sourceCardCount: number;
     minFetchedPages: number;
     minSourceCards: number;
+    writerReady: boolean;
+    missingEvidence: string[];
   };
 } {
   const detail = {
     fetchedPageCount: args.progress.fetchedPageCount,
     sourceCardCount: args.sourceCardCount,
     minFetchedPages: args.thresholds.minFetchedPagesForDraft,
-    minSourceCards: args.thresholds.minSourceCardsForDraft
+    minSourceCards: args.thresholds.minSourceCardsForDraft,
+    writerReady: args.writerReadiness.evidenceReady,
+    missingEvidence: args.writerReadiness.missingEvidence
   };
   if (!args.contract.requiresDraft || args.progress.draftWordCount > 0) {
     return { adjusted: null, reason: null, detail };
@@ -496,71 +601,15 @@ function shouldApplyEvidenceGapGuard(args: {
   if (!includesDraftAction) {
     return { adjusted: null, reason: null, detail };
   }
-  const lacksEvidence =
-    args.progress.fetchedPageCount < args.thresholds.minFetchedPagesForDraft
-    || args.sourceCardCount < args.thresholds.minSourceCardsForDraft;
-  if (!lacksEvidence) {
+  if (args.writerReadiness.evidenceReady) {
     return { adjusted: null, reason: null, detail };
   }
 
-  if (args.availableToolNames.has("web_fetch")) {
-    const urls = selectFetchUrlsForHandoff(args.progress.sourceUrls, 8);
-    return {
-      adjusted: [
-        {
-          tool: "web_fetch",
-          inputJson: urls.length > 0
-            ? JSON.stringify({
-                urls,
-                maxPages: Math.min(8, urls.length),
-                browseConcurrency: 3
-              })
-            : JSON.stringify({
-                query: deriveObjectiveQuery(args.objective),
-                maxPages: 8,
-                browseConcurrency: 3
-              })
-        }
-      ],
-      reason: "insufficient_evidence_for_writer",
-      detail
-    };
-  }
-
-  if (args.availableToolNames.has("search")) {
-    return {
-      adjusted: [
-        {
-          tool: "search",
-          inputJson: JSON.stringify({
-            query: deriveObjectiveQuery(args.objective),
-            maxResults: 10
-          })
-        }
-      ],
-      reason: "insufficient_evidence_for_writer",
-      detail
-    };
-  }
-
-  if (args.availableToolNames.has("lead_search_shortlist")) {
-    return {
-      adjusted: [
-        {
-          tool: "lead_search_shortlist",
-          inputJson: JSON.stringify({
-            query: deriveObjectiveQuery(args.objective),
-            maxResults: 10,
-            maxUrls: 12
-          })
-        }
-      ],
-      reason: "insufficient_evidence_for_writer",
-      detail
-    };
-  }
-
-  return { adjusted: null, reason: null, detail };
+  return {
+    adjusted: buildEvidenceRecoveryAction(args.availableToolNames, args.objective, args.progress.sourceUrls),
+    reason: "insufficient_evidence_for_writer",
+    detail
+  };
 }
 
 function hasEvidenceAdvanced(current: EvidenceSnapshot, previous: EvidenceSnapshot | null): boolean {
@@ -580,8 +629,9 @@ function shouldApplyWriterRetryBudgetGuard(args: {
   evidenceAdvancedSinceLastDraft: boolean;
   availableToolNames: Set<string>;
   progress: SpecialistProgressState;
-  sourceCardCount: number;
   objective: string;
+  writerReadiness: WriterReadinessState;
+  sourceCardCount: number;
 }): {
   adjusted: Array<{ tool: string; inputJson: string }> | null;
   reason: string | null;
@@ -606,11 +656,7 @@ function shouldApplyWriterRetryBudgetGuard(args: {
     return { adjusted: null, reason: null, detail };
   }
 
-  const hasReusableEvidence =
-    args.progress.fetchedPageCount >= MIN_FETCHED_PAGES_FOR_DRAFT ||
-    args.sourceCardCount >= MIN_SOURCE_CARDS_FOR_WRITER_REVISE ||
-    args.progress.sourceUrls.size > 0;
-  if (hasReusableEvidence) {
+  if (args.writerReadiness.hasReusableEvidence) {
     const draftTool =
       args.actions.find((item) => DRAFT_TOOL_NAMES.has(item.tool))?.tool
       ?? (args.availableToolNames.has("article_writer") ? "article_writer" : "writer_agent");
@@ -639,86 +685,27 @@ function shouldApplyWriterRetryBudgetGuard(args: {
     };
   }
 
-  if (args.availableToolNames.has("web_fetch")) {
-    const urls = selectFetchUrlsForHandoff(args.progress.sourceUrls, 8);
-    return {
-      adjusted: [
-        {
-          tool: "web_fetch",
-          inputJson: urls.length > 0
-            ? JSON.stringify({
-                urls,
-                maxPages: Math.min(8, urls.length),
-                browseConcurrency: 3
-              })
-            : JSON.stringify({
-                query: deriveObjectiveQuery(args.objective),
-                maxPages: 8,
-                browseConcurrency: 3
-              })
-        }
-      ],
-      reason: "writer_retry_budget_guard",
-      detail: {
-        ...detail,
-        strategy: "retrieve_more_evidence"
-      }
-    };
-  }
-
-  if (args.availableToolNames.has("search")) {
-    return {
-      adjusted: [
-        {
-          tool: "search",
-          inputJson: JSON.stringify({
-            query: deriveObjectiveQuery(args.objective),
-            maxResults: 10
-          })
-        }
-      ],
-      reason: "writer_retry_budget_guard",
-      detail: {
-        ...detail,
-        strategy: "retrieve_more_evidence"
-      }
-    };
-  }
-
-  if (args.availableToolNames.has("lead_search_shortlist")) {
-    return {
-      adjusted: [
-        {
-          tool: "lead_search_shortlist",
-          inputJson: JSON.stringify({
-            query: deriveObjectiveQuery(args.objective),
-            maxResults: 10,
-            maxUrls: 12
-          })
-        }
-      ],
-      reason: "writer_retry_budget_guard",
-      detail: {
-        ...detail,
-        strategy: "retrieve_more_evidence"
-      }
-    };
-  }
-
-  return { adjusted: null, reason: null, detail };
+  return {
+    adjusted: buildEvidenceRecoveryAction(args.availableToolNames, args.objective, args.progress.sourceUrls),
+    reason: "writer_retry_budget_guard",
+    detail: {
+      ...detail,
+      strategy: "retrieve_more_evidence"
+    }
+  };
 }
 
 function shouldApplyLowBudgetFinalizeGuard(args: {
   skillName: string;
   remainingMs: number;
   actions: Array<{ tool: string; inputJson: string }>;
-  progress: SpecialistProgressState;
-  sourceCardCount: number;
-  thresholds: EvidenceThresholds;
   availableToolNames: Set<string>;
   objective: string;
   requestedOutputPath: string | null;
   targetWordCount?: number | null;
+  progress: SpecialistProgressState;
+  sourceCardCount: number;
+  writerReadiness: WriterReadinessState;
 }): {
   adjusted: Array<{ tool: string; inputJson: string }> | null;
   reason: string | null;
@@ -727,13 +714,17 @@ function shouldApplyLowBudgetFinalizeGuard(args: {
     fetchedPageCount: number;
     sourceCardCount: number;
     draftWordCount: number;
+    finalizeReady: boolean;
+    missingEvidence: string[];
   };
 } {
   const detail = {
     remainingMs: args.remainingMs,
     fetchedPageCount: args.progress.fetchedPageCount,
     sourceCardCount: args.sourceCardCount,
-    draftWordCount: args.progress.draftWordCount
+    draftWordCount: args.progress.draftWordCount,
+    finalizeReady: args.writerReadiness.finalizeReady,
+    missingEvidence: args.writerReadiness.missingEvidence
   };
   if (args.skillName !== "research_agent") {
     return { adjusted: null, reason: null, detail };
@@ -747,11 +738,7 @@ function shouldApplyLowBudgetFinalizeGuard(args: {
   if (!hasSearchHeavyMix) {
     return { adjusted: null, reason: null, detail };
   }
-  const hasReusableEvidence =
-    args.progress.fetchedPageCount >= Math.max(2, args.thresholds.minFetchedPagesForDraft - 1)
-    || args.sourceCardCount >= Math.max(1, args.thresholds.minSourceCardsForDraft - 2)
-    || args.progress.sourceUrls.size >= 4;
-  if (!hasReusableEvidence) {
+  if (!args.writerReadiness.finalizeReady) {
     return { adjusted: null, reason: null, detail };
   }
   const draftTool = args.availableToolNames.has("article_writer")
@@ -1849,6 +1836,13 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       thresholds: evidenceThresholds
     });
     hydrateToolContextWorkState(toolContext, activeWorkState);
+    const writerReadiness = assessWriterReadiness({
+      contract: taskContract,
+      thresholds: evidenceThresholds,
+      progress,
+      sourceCardCount,
+      synthesisState: activeWorkState.synthesisState
+    });
     const currentEvidenceSnapshot: EvidenceSnapshot = {
       sourceUrlCount: progress.sourceUrls.size,
       fetchedPageCount: progress.fetchedPageCount,
@@ -1935,6 +1929,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
                 evidenceRecords: activeWorkState.evidenceRecords.slice(-8),
                 synthesisState: activeWorkState.synthesisState
               },
+              writerReadiness,
               loopShape: {
                 consecutiveSearchOnlyIterations
               },
@@ -2180,12 +2175,14 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     if (actions.length > 0) {
       const evidenceGap = shouldApplyEvidenceGapGuard({
         contract: taskContract,
-        thresholds: evidenceThresholds,
-        progress,
-        sourceCardCount,
         actions,
         availableToolNames: new Set(Array.from(availableTools.keys())),
         objective: options.message
+        ,
+        progress,
+        writerReadiness,
+        thresholds: evidenceThresholds,
+        sourceCardCount
       });
       if (evidenceGap.adjusted && evidenceGap.adjusted.length > 0) {
         await options.runStore.appendEvent({
@@ -2214,8 +2211,9 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         evidenceAdvancedSinceLastDraft,
         availableToolNames: new Set(Array.from(availableTools.keys())),
         progress,
-        sourceCardCount,
-        objective: options.message
+        objective: options.message,
+        writerReadiness,
+        sourceCardCount
       });
       if (retryGuard.adjusted && retryGuard.adjusted.length > 0) {
         await options.runStore.appendEvent({
@@ -2242,13 +2240,13 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         skillName: options.skillName,
         remainingMs,
         actions,
-        progress,
-        sourceCardCount,
-        thresholds: evidenceThresholds,
         availableToolNames: new Set(Array.from(availableTools.keys())),
         objective: options.message,
         requestedOutputPath,
-        targetWordCount: taskContract.targetWordCount ?? null
+        targetWordCount: taskContract.targetWordCount ?? null,
+        progress,
+        sourceCardCount,
+        writerReadiness
       });
       if (lowBudgetFinalizeGuard.adjusted && lowBudgetFinalizeGuard.adjusted.length > 0) {
         await options.runStore.appendEvent({

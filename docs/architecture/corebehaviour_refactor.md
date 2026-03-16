@@ -217,6 +217,12 @@ Acceptance:
 
 - writer either runs with real chance of success or does not run
 
+Implementation status:
+
+- Specialist runtime now computes a shared `writerReadiness` assessment from evidence coverage plus active-work synthesis state.
+- Writer-evidence rerouting, revise-vs-retrieve retries, and low-budget finalize decisions now consume that shared readiness state instead of duplicating scattered threshold logic.
+- Remaining work in this phase is to keep tightening final-response paths so placeholder or low-evidence drafts cannot masquerade as complete outcomes.
+
 ### Phase 6: Reduce Remaining Heuristic Ownership
 
 Files:

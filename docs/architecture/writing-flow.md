@@ -1,75 +1,146 @@
-# Alfred Writing Flow (JSON Control Plane + Plaintext Draft Plane)
+# Alfred Writing Flow
 
-This document captures the agreed runtime pattern for research -> writing tasks.
+This document describes the current research -> writing runtime pattern after the memory and core-behavior refactor work.
 
-## Goals
+It is intentionally generic. The same loop shape should support articles, notes, comparison writeups, research packets, and later writing-oriented tools.
 
-- Keep user prompts loose ("research X and write an article").
-- Keep control flow reliable and debuggable.
-- Keep writing generation flexible and model-led (not schema-rigid prose).
-- Prefer cheap revision before expensive re-research when gaps are small.
+## Design rule
 
-## End-to-end flow
+- `LLM owns semantics`
+- `Runtime owns mechanics`
 
-1. User prompt arrives (plaintext).
-2. Alfred planner decides the next action (JSON action envelope).
-3. Retrieval tools run with typed JSON contracts (`search`, `web_fetch`).
-4. Retrieved evidence is stored in run scratchpad/state (structured object).
-5. Alfred calls writing model to generate article text (plaintext output).
-6. Alfred persists draft to target file (`file_write` JSON contract).
-7. Alfred runs completion checks:
-   - deterministic checks first (word count, path exists, citation markers present),
-   - optional model evaluator second (quality/faithfulness rubric as JSON result).
-8. If checks fail:
-   - if evidence is sufficient and gap is small, prefer revision pass,
-   - if evidence is weak/missing, do targeted retrieval then rewrite/revise.
-9. Alfred returns final answer with artifact path.
+Meaning:
 
-## JSON vs plaintext boundaries
+- the model decides what the task means, whether assumptions are acceptable, what evidence matters, and when synthesis is ready
+- the runtime manages budgets, tool execution, persistence, retrieval, and recovery when the next mechanical step is already obvious
 
-Use JSON for control plane:
+## Current writing path
 
-- planner actions (`respond` / `call_tool` / `delegate_agent`),
-- tool input/output envelopes,
-- run-state metrics and telemetry,
-- completion/evaluation signals.
+1. User sends a plaintext request.
+2. Alfred grounds the turn against:
+   - current user message
+   - recent conversation
+   - session working memory
+   - recoverable recent outputs/artifacts
+3. Alfred builds an immutable turn contract from model interpretation.
+4. Alfred decides whether to:
+   - respond directly
+   - call tools directly
+   - delegate to `research_agent`
+5. For writing/research-heavy work, Alfred typically delegates to the specialist loop.
+6. Specialist loop builds and updates generic active-work state:
+   - assumptions
+   - candidate sets
+   - evidence records
+   - unresolved items
+   - synthesis state
+7. Retrieval tools run as needed:
+   - `search`
+   - `lead_search_shortlist`
+   - `web_fetch`
+   - other task-relevant tools
+8. Specialist loop decides whether it is ready to assemble/synthesize from current evidence.
+9. `writer_agent` only runs if `writerReadiness` says the write pass is mechanically viable.
+10. If writer succeeds with a meaningful draft, the output is persisted to a session artifact path when appropriate and registered in session memory as a recent output.
+11. Alfred returns either:
+   - a completed output
+   - a reusable partial
+   - metadata-only recovery state
+   - or an honest failure summary
 
-Use plaintext for draft plane:
+## Memory in writing runs
 
-- article content generation,
-- article revision/editing pass output.
+Writing runs now use the same memory model as the rest of Alfred:
 
-Rationale: this preserves reliable orchestration while avoiding brittle schema-constrained prose generation.
+- `live context`
+  - recent turns for immediate follow-ups
+- `working memory`
+  - active objective
+  - recent outputs
+  - unresolved items
+  - thread summary
+- `durable retrieval`
+  - recoverable outputs derived from persisted prior runs
 
-## Revision-first policy
+Important consequences:
 
-When a draft exists but constraints are unmet (for example 753 words vs 800 minimum):
+- Alfred can ground a follow-up against prior session outputs without relying only on the last few text turns.
+- If a prior output has a stored artifact and is marked `body_available`, Alfred can load a bounded body preview for planning.
+- Fresh standalone turns do not automatically inherit stale artifact obligations from previous runs.
 
-- do not default to full `search` + `web_fetch` + full rewrite,
-- run a revision pass against existing draft and current evidence first,
-- re-retrieve only when evidence deficiency is explicit.
+## Writer readiness contract
 
-## Clarification gate for ambiguous loose prompts
+Writer is no longer treated as an emergency “finalize whatever exists” sink.
 
-For highly ambiguous asks, Alfred should ask one focused clarification question before tool execution.
+Before invoking writer, the runtime now checks:
 
-Example:
+- evidence readiness
+- synthesis readiness
+- output contract readiness
+- viable remaining time window
 
-- User: "Research the Middle East war and write me an article."
-- Alfred: "Do you want emphasis on geopolitical, humanitarian, or technology/AI dimensions, or should I balance all three?"
+If those conditions are not met, Alfred should:
 
-Rules:
+- continue retrieval or assembly if budget allows
+- or return an honest partial state
 
-- Max 1 clarification round before proceeding.
-- If user says "you decide", Alfred proceeds with sensible defaults and states assumptions.
+The goal is to avoid burning the last budget window on doomed placeholder drafting.
 
-## Telemetry expectations for writing runs
+## Output availability states
 
-Tool-level events should make writing non-black-box:
+Writing-related outputs now have explicit availability semantics:
 
-- writer attempt started/completed/failed,
-- fallback/compact-retry indicator,
-- persistence attempt/result,
-- completion-gap summary (what is missing and why).
+- `body_available`
+  - a reusable body exists and can be read/reused
+- `metadata_only`
+  - Alfred knows the work happened and has recoverable metadata/summary, but not a reusable body
+- `missing`
+  - no recoverable output body or metadata is available
 
-This is required to debug long runs without manually reconstructing behavior from raw JSON.
+These states are used in specialist stop/failure handling and session output records.
+
+## Clarification policy
+
+Clarification should be rare.
+
+Current behavior target:
+
+- Alfred asks only when ambiguity is genuinely blocking
+- delegated research contracts usually default to `clarificationAllowed=false` once Alfred has already accepted reasonable defaults
+- planner must explicitly mark clarification as `responseKind=clarification`
+
+Alfred should prefer:
+
+- proceeding with explicit assumptions
+- recording those assumptions in runtime state
+- surfacing them in the final answer if needed
+
+## Revision vs retrieval
+
+The runtime now tries to distinguish:
+
+- missing evidence
+- completion gaps
+
+That means Alfred should increasingly do this:
+
+- if evidence is already strong, assemble/revise from current material
+- if evidence is weak or missing, retrieve/fetch more before writing
+
+This is not fully end-state yet, but it is the intended direction and is partially implemented in the specialist loop.
+
+## Diagnostics and telemetry
+
+Writing runs should be inspectable from run telemetry, not inferred from vague assistant text.
+
+Useful current telemetry includes:
+
+- specialist phase transitions
+- active-work synthesis state
+- writer readiness
+- output availability
+- guard-trigger events
+- planner timeout/failure events
+- artifact persistence
+
+This is now the main debugging surface when writing runs fail.

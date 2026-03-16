@@ -2,7 +2,7 @@
 
 ## Goal
 
-Make Alfred behave more like a general-purpose second brain and less like a deterministic workflow engine.
+Make Alfred behave more like a general-purpose second brain and less like a prompt-shaped workflow engine.
 
 Design rule:
 
@@ -14,260 +14,198 @@ That means:
 - Alfred interprets user intent, continuity, assumptions, ambiguity, and completion using model reasoning.
 - Deterministic code persists memory, validates schemas, enforces safety, manages budgets, and executes tools.
 
-## Problem
+## Why This Refactor Exists
 
-Today Alfred still has too much heuristic ownership over meaning-bearing parts of execution:
+Historically, Alfred owned too much meaning in deterministic code:
 
 - turn continuation heuristics
-- task-type inference
-- hard-constraint extraction from prompt text
-- clarification detection from question-like text
-- completion gates that infer semantics from keywords instead of from an interpreted task contract
+- task-type inference from prompt text
+- hard-constraint extraction from keywords
+- clarification detection from question-like responses
+- completion checks that inferred semantics from regex/phrasing instead of task state
 
-This causes capability loss:
+That caused the failures we were seeing:
 
 - unnecessary clarification loops
-- poor convergence on open-ended research tasks
-- runtime forcing the wrong move under budget pressure
-- weak continuity across turns compared to a strong direct frontier-model chat
+- weak continuity across turns
+- specialist loops that kept searching instead of converging
+- low-budget writer fallback being used as a fake completion path
 
-## Refactor Principles
+## Current Architecture Direction
 
-### 1. Plaintext turns are interpreted, not classified
+The runtime is being reshaped around four ideas:
 
-Normal user prompts should not be routed by regex or keyword ownership.
+1. Plaintext turns are interpreted, not classified.
+2. Session memory must preserve usable cognition, not just logs.
+3. Specialist convergence must be driven by evidence state, not optimistic phase labels.
+4. Writer should only run when there is a real chance of producing a reusable output.
 
-Instead, each turn should produce a model-owned interpretation contract that answers:
+## Current Runtime State
 
-- what is the user trying to do
-- is this a continuation
-- is prior work being referenced
-- what assumptions are reasonable
-- what information is missing
-- is missing information actually blocking
-- what does success look like
+This section reflects what is actually implemented today.
 
-### 2. Clarification is a strategic action
+### Turn semantics
 
-Clarification should not be inferred because a planner response contains a question mark.
-
-Clarification should happen only when the model explicitly marks ambiguity as blocking.
-
-### 3. Memory should support cognition, not just logging
-
-Alfred needs:
-
-- live context
-- working memory
-- durable retrieval
-
-And within working memory, Alfred needs more than recent outputs. It needs active thread cognition:
-
-- assumptions
-- unresolved items
-- active work items
-- candidate sets
-- evidence records
-- synthesis readiness
-
-### 4. Specialist progression should be evidence-driven
-
-The specialist loop should not treat `phase=complete/respond` as meaningful unless the current evidence state supports that claim.
-
-The runtime should track:
-
-- evidence accumulation
-- candidate accumulation
-- synthesis readiness
-- no-progress loops
-- remaining budget
-
-The model should decide what the next move is from that state.
-
-### 5. Writer should only run when writer-ready
-
-Writer should not be used as a low-budget “finalize whatever you can” sink.
-
-Writer should only be invoked when:
-
-- there is enough evidence to synthesize honestly
-- there is enough remaining time for a real pass
-- the task contract allows synthesis
-
-If not, Alfred should continue gathering evidence or return an honest partial state.
-
-## Refactor Roadmap
-
-### Phase 1: Model-Owned Turn Interpretation
-
-Files:
-
-- `src/core/runAlfredOrchestratorLoop.ts`
-
-Changes:
-
-- Add a structured `turn_interpretation` model call for execute-mode plaintext turns.
-- Use it to build a stable turn contract:
-  - grounded objective
-  - required deliverable
-  - done criteria
-  - assumptions
-  - target word count hint
-  - output-path hint
-  - draft/citation intent
-  - clarification-needed flag
-- Keep deterministic fallback only when no model interpretation is available.
-
-Acceptance:
-
-- turn semantics are no longer primarily owned by prompt heuristics
-- clarification is driven by structured interpretation, not text-shape guesses
-
-### Phase 2: Explicit Planner Response Kind
-
-Files:
-
-- `src/core/runAlfredOrchestratorLoop.ts`
-
-Changes:
-
-- Extend planner output with `responseKind`:
+- Execute-mode turns now go through a structured `turn_interpretation` model call in [runAlfredOrchestratorLoop.ts](/Users/nikhil/Projects/Alfredv1/src/core/runAlfredOrchestratorLoop.ts).
+- Alfred builds an immutable `objectiveContract` from grounded turn interpretation rather than relying only on prompt heuristics.
+- Alfred planner responses now carry explicit `responseKind`:
   - `final`
   - `clarification`
   - `progress`
-- Stop inferring clarification from question-like response text.
+- Planner clarification is no longer inferred from punctuation or text shape in the normal response path.
 
-Acceptance:
+### Session memory and prior-output grounding
 
-- planner must explicitly label clarification vs final response
+- Session working memory now includes:
+  - `recentOutputs`
+  - `unresolvedItems`
+  - `activeThreadSummary`
+  - `recentTurns`
+- Completed runs can be turned into session output records with explicit availability:
+  - `body_available`
+  - `metadata_only`
+  - `missing`
+- Alfred can recover durable recent outputs from prior runs and merge them into runtime session context.
+- If a prior output has a stored artifact and `availability=body_available`, Alfred can load a bounded body preview for planning.
+- Fresh standalone turns now keep a stricter boundary around stale artifacts: if grounding resolves to `source=message`, Alfred does not inherit prior output-path or artifact obligations unless the current turn explicitly references them.
+
+### Specialist runtime cognition
+
+- Specialist/runtime contexts now carry generic active-work state:
+  - `assumptions`
+  - `unresolvedItems`
+  - `activeWorkItems`
+  - `candidateSets`
+  - `evidenceRecords`
+  - `synthesisState`
+- This state is generic by design. It is not article-specific, lead-specific, or game-specific.
+- Specialist planner context receives `activeWorkState` directly so the model can plan against current evidence and synthesis readiness.
+
+### Specialist convergence
+
+- Research tasks now default to `requiresAssembly=true`, which prevents premature completion after a single shortlist/search step.
+- Specialist planner responses now also use explicit `responseKind`.
+- Delegated research contracts default to `clarificationAllowed=false` unless the task contract says otherwise.
+- Unsupported long-form `respond` attempts are blocked when evidence and synthesis state do not justify them.
+- Evidence readiness is now separated from final completion gaps. Alfred can distinguish:
+  - enough evidence to synthesize
+  - not yet enough for final polish/citations/artifacts
+- When runtime state is clearly `fetch_pending`, search-only replans can be mechanically corrected into fetch/evidence actions.
+- Planner timeouts during `discovery_complete_fetch_pending` can recover into fetch instead of burning another shortlist/search iteration.
+
+### Writer readiness
+
+- Specialist runtime now computes shared `writerReadiness` from:
+  - evidence readiness
+  - synthesis state
+  - time budget viability
+  - output contract readiness
+- Low-budget forced writer fallback is no longer treated as an acceptable completion strategy.
+- Search/synthesis loops can reroute into assembly when evidence is ready, rather than waiting for a low-budget emergency finalize path.
+- Low-confidence placeholder drafts from failed low-budget or no-output writer passes are no longer persisted as new artifacts by default.
+
+### Output availability contract
+
+- Specialist stop/failure handling now emits explicit output availability:
+  - `body_available`
+  - `metadata_only`
+  - `missing`
+- Final contract/failure paths now distinguish:
+  - reusable body
+  - recoverable metadata only
+  - no recoverable output
+- This prevents placeholder or low-evidence outcomes from masquerading as reusable completed drafts.
+
+## Refactor Status By Phase
+
+### Phase 1: Model-Owned Turn Interpretation
+
+Status: substantially implemented
+
+Delivered:
+
+- structured turn interpretation for execute-mode plaintext turns
+- immutable turn contract built from grounded interpretation
+- clarification now model-signaled instead of punctuation-signaled
+
+Remaining:
+
+- remove more fallback prompt heuristics where they still influence task setup
+
+### Phase 2: Explicit Planner Response Kind
+
+Status: implemented in Alfred and specialist loops
+
+Delivered:
+
+- planner-visible `responseKind`
+- explicit distinction between final, clarification, and progress responses
+
+Remaining:
+
+- none material for this phase
 
 ### Phase 3: Generic Active Work State
 
-Files:
+Status: implemented
 
-- `src/types.ts`
-- `src/services/chatService.ts`
-- `src/core/runSpecialistToolLoop.ts`
-- new helpers under `src/memory/` or `src/core/`
+Delivered:
 
-Changes:
+- generic cognition state across runtime contexts
+- planner-visible `activeWorkState`
+- recent output registry and durable recent-output recovery
 
-- Add generic session/runtime cognition state:
-  - `activeWorkItems`
-  - `candidateSets`
-  - `evidenceRecords`
-  - `assumptions`
-  - `unresolvedItems`
-  - `synthesisState`
+Remaining:
 
-Important:
-
-- not domain-specific
-- not “games”, “articles”, or “leads”
-- reusable across any task shape
-
-Acceptance:
-
-- Alfred can converge on ranked lists, comparisons, drafts, and research packets without domain-specific control logic
-
-Implementation status:
-
-- Shared runtime scaffolding is landed across Alfred, specialist, and lead tool contexts:
-  - `assumptions`
-  - `unresolvedItems`
-  - `activeWorkItems`
-  - `candidateSets`
-  - `evidenceRecords`
-  - `synthesisState`
-- Specialist planner context now receives a generic `activeWorkState` snapshot derived from runtime evidence, candidates, assumptions, and synthesis readiness.
-- Remaining work in this phase is to let the model rely on this state for stronger convergence decisions before replacing more heuristic progression guards.
+- continue using this state to replace remaining heuristic progression logic
 
 ### Phase 4: Evidence-Driven Specialist Convergence
 
-Files:
+Status: substantially implemented
 
-- `src/core/runSpecialistToolLoop.ts`
+Delivered:
 
-Changes:
+- evidence-backed response blocking
+- `requiresAssembly` for research-style tasks
+- evidence readiness separated from completion gaps
+- fetch-pending mechanical recovery
+- assembly-first rerouting
+- explicit output availability in stop/failure paths
 
-- Replace overconfident phase labels with evidence-driven readiness signals
-- track candidate coverage and support strength generically
-- make model plan against real coverage state
+Remaining:
 
-Acceptance:
-
-- specialist loop stops thrashing between discovery, clarification, and synthesis
-
-Implementation status:
-
-- Specialist response blocking now consults generic active-work evidence state, not just draft-word or citation counters.
-- Unsupported long-form `respond` attempts are blocked when the runtime has no evidence backbone or synthesis is still unresolved.
-- Failure telemetry and fallback summaries now carry unresolved-work and synthesis-state detail so debugging can see where convergence failed.
-- Research tasks now carry `requiresAssembly`, so the specialist phase machine no longer marks non-draft research asks as `complete` after a single shortlist/search step.
-- Synthesis readiness now distinguishes evidence readiness from final completion gaps (for example missing citations or not-yet-written artifacts), which lets the model assemble from evidence before polishing the final deliverable.
-- Forced fetch-to-synthesis phase jumps have been removed, so specialist progression is no longer hard-switched into writing just because a fetch threshold was crossed.
-- Assembly and low-budget fallback guards now require both evidence readiness and a viable writer time window, which keeps the runtime from routing into doomed write passes when there is not enough budget left for a real synthesis attempt.
-- Search-only replans are now mechanically corrected when runtime state already says `fetch` is the next unresolved step, and planner timeouts during `discovery_complete_fetch_pending` can recover directly into a fetch/evidence action instead of burning another iteration on shortlist churn.
-- Specialist stop/failure paths now emit explicit output availability state (`body_available`, `metadata_only`, `missing`) so convergence outcomes are inspectable and finalization logic no longer treats all partials as equivalent.
+- reduce the last specialist loop guards that still encode progression heuristics instead of relying purely on model-produced state plus runtime mechanics
 
 ### Phase 5: Writer Readiness Contract
 
-Files:
+Status: substantially implemented
 
-- `src/core/runSpecialistToolLoop.ts`
-- `src/agent/tools/definitions/writerAgent.tool.ts`
+Delivered:
 
-Changes:
+- shared `writerReadiness`
+- viable writer time-window checks
+- no forced low-budget writer sink
+- no placeholder draft persistence as fresh output by default
+- finalization logic distinguishes reusable body vs metadata-only vs missing
 
-- introduce minimum writer readiness:
-  - evidence ready
-  - time budget ready
-  - output contract ready
-- remove low-value forced placeholder drafting as a “completion” strategy
+Remaining:
 
-Acceptance:
-
-- writer either runs with real chance of success or does not run
-
-Implementation status:
-
-- Specialist runtime now computes a shared `writerReadiness` assessment from evidence coverage plus active-work synthesis state.
-- Writer-evidence rerouting, revise-vs-retrieve retries, and low-budget finalize decisions now consume that shared readiness state instead of duplicating scattered threshold logic.
-- Writer readiness now includes `timeBudgetReady`, `outputContractReady`, and a task-shape-specific minimum writer window so specialist/runtime code can reason about whether a write pass is mechanically viable before invoking the writer.
-- Low-confidence placeholder drafts from failed low-budget or no-output passes are no longer persisted as fresh artifacts by default; explicit output paths still preserve overwrite protection and complete-draft downgrade protection.
-- Final response/failure paths now use explicit output availability state, so placeholder or low-evidence outcomes cannot masquerade as reusable completed drafts.
-- Synthesis-phase search loops can now be rerouted into an assembly pass once evidence readiness is satisfied, instead of waiting to hit a low-budget emergency fallback.
+- tighten any remaining response paths that still treat weak draft state too optimistically
 
 ### Phase 6: Remaining Heuristic Ownership
 
-Implementation status:
+Status: still the main unfinished cleanup
 
-- Specialist planner now has explicit `responseKind` and research contracts default to `clarificationAllowed: false`, which blocks unnecessary follow-up questions once Alfred has already accepted defaults.
-- Fresh standalone turns now keep a stricter boundary around prior artifacts: when turn grounding resolves to `source=message`, Alfred no longer carries stale session output paths or artifact-specific completion obligations into the new task contract unless the current user turn explicitly names them.
-- Major heuristic ownership still remains in:
-  - `buildSpecialistTaskContract` prompt regexing for draft/citation/word-count intent
-  - orchestrator-side objective/task helpers (`detectObjectiveTaskType`, `deriveHardConstraints`, `extractTargetWordCount`)
-  - specialist loop guards that still encode runtime progression heuristics
-- The runtime is now closer to `LLM owns semantics / runtime owns mechanics`, but Phase 6 is still the main unfinished cleanup pass.
+Still present in meaningful places:
 
-### Phase 6: Reduce Remaining Heuristic Ownership
+- specialist task-contract prompt regexing for draft/citation/word-count intent
+- orchestrator objective/task helpers such as:
+  - `detectObjectiveTaskType`
+  - `deriveHardConstraints`
+  - `extractTargetWordCount`
+- specialist loop guards that still encode progression shortcuts
 
-Files:
-
-- `src/core/runAlfredOrchestratorLoop.ts`
-- `src/core/runSpecialistToolLoop.ts`
-
-Targets:
-
-- `detectObjectiveTaskType`
-- `deriveHardConstraints`
-- `extractTargetWordCount`
-- clarification detectors
-- phrase-based continuation ownership
-
-Acceptance:
-
-- heuristics become fallback helpers, not the source of truth for meaning
+The runtime is now much closer to `LLM owns semantics / runtime owns mechanics`, but this is still the largest open architecture gap.
 
 ## Deterministic Code That Should Remain
 
@@ -276,10 +214,11 @@ These should stay deterministic:
 - `/commands`
 - schema validation
 - file path extraction
-- tool approval
+- tool approval and policy gates
 - budget / timeout / cancellation
 - persistence and retrieval
 - artifact existence checks
+- runtime recovery when state already makes the next mechanical step obvious
 
 ## Success Criteria
 

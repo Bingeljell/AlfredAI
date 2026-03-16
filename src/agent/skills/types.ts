@@ -4,6 +4,7 @@ import type { SearchManager } from "../../tools/search/searchManager.js";
 import type { LeadAgentDefaults } from "../types.js";
 import type { executeLeadSubReactPipeline } from "../../tools/lead/subReactPipeline.js";
 import type { LeadExecutionBrief } from "../../tools/lead/schemas.js";
+import type { LlmProvider } from "../../services/llm/types.js";
 
 export interface AgentTaskContract {
   requiredDeliverable: string;
@@ -30,6 +31,7 @@ export interface AgentSkillRunOptions {
   runId: string;
   sessionId: string;
   openAiApiKey?: string;
+  llmProviders?: LlmProvider[];
   defaults: LeadAgentDefaults;
   leadPipelineExecutor: typeof executeLeadSubReactPipeline;
   maxIterations: number;

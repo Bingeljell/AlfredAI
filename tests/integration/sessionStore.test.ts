@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SessionStore } from "../../src/memory/sessionStore.js";
+import { deriveSessionOutputRecordFromRun } from "../../src/memory/sessionOutputs.js";
 import { RunStore } from "../../src/runs/runStore.js";
 import { ChatService } from "../../src/services/chatService.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
@@ -128,4 +129,40 @@ test("chat service injects session context on follow-up turns and supports /news
 
   const afterReset = await sessionStore.getSession(session.id);
   assert.equal(afterReset?.workingMemory, undefined);
+});
+
+test("session output recovery keeps placeholder writer artifacts at metadata-only availability", () => {
+  const output = deriveSessionOutputRecordFromRun({
+    runId: "run-placeholder",
+    message: "Write a ranked list.",
+    runStatus: "completed",
+    assistantText: "Writer attempted the draft but needs more verification.",
+    artifactPaths: ["workspace/alfred/sessions/session-1/outputs/run-placeholder-memo.md"],
+    toolCalls: [
+      {
+        toolName: "article_writer",
+        inputRedacted: {},
+        outputRedacted: {
+          title: "Top 10 PC Games Planning Memo",
+          content: "Planning memo about what still needs verification before the final list can be assembled.",
+          summary: "Evidence memo only.",
+          format: "memo",
+          wordCount: 142,
+          draftQuality: "placeholder",
+          deliverableStatus: "insufficient",
+          processCommentaryDetected: true
+        },
+        durationMs: 1200,
+        status: "ok",
+        timestamp: new Date().toISOString()
+      }
+    ]
+  });
+
+  assert.ok(output);
+  assert.equal(output?.availability, "metadata_only");
+  assert.equal(output?.kind, "draft");
+  assert.equal(output?.metadata?.draftQuality, "placeholder");
+  assert.equal(output?.metadata?.deliverableStatus, "insufficient");
+  assert.equal(output?.metadata?.processCommentaryDetected, true);
 });

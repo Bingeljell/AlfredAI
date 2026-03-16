@@ -68,6 +68,9 @@ interface SpecialistProgressState {
   citationCount: number;
   searchTimeoutCount: number;
   errorSamples: string[];
+  lastWriterOutputAvailability: SessionOutputAvailability | null;
+  lastWriterDeliverableStatus: "complete" | "partial" | "insufficient" | null;
+  lastWriterProcessCommentaryDetected: boolean;
 }
 
 interface ProgressSnapshot {
@@ -106,6 +109,29 @@ interface WriterReadinessState {
   timeBudgetReady: boolean;
   outputContractReady: boolean;
   minimumRemainingMs: number;
+}
+
+function deriveWriterResultOutputAvailability(payload: Record<string, unknown>): SessionOutputAvailability {
+  const deliverableStatus =
+    payload.deliverableStatus === "complete" || payload.deliverableStatus === "partial" || payload.deliverableStatus === "insufficient"
+      ? payload.deliverableStatus
+      : null;
+  const draftQuality = typeof payload.draftQuality === "string" ? payload.draftQuality : null;
+  const processCommentaryDetected = payload.processCommentaryDetected === true;
+  const hasRenderableBody =
+    (typeof payload.content === "string" && payload.content.trim().length > 0)
+    || (typeof payload.outputPath === "string" && payload.outputPath.trim().length > 0);
+
+  if (draftQuality === "complete" || deliverableStatus === "complete") {
+    return hasRenderableBody ? "body_available" : "missing";
+  }
+  if (deliverableStatus === "partial" && !processCommentaryDetected) {
+    return hasRenderableBody ? "body_available" : "metadata_only";
+  }
+  if (hasRenderableBody || typeof payload.summary === "string") {
+    return "metadata_only";
+  }
+  return "missing";
 }
 
 const SPECIALIST_PLANNER_JSON_SCHEMA = {
@@ -1112,6 +1138,7 @@ function buildSynthesisState(args: {
 }): AgentSynthesisState {
   const missingEvidence: string[] = [];
   const completionGaps: string[] = [];
+  const requiresReusableBody = args.contract.requiresAssembly === true || args.contract.requiresDraft;
   if (args.progress.fetchedPageCount < args.thresholds.minFetchedPagesForDraft) {
     missingEvidence.push(
       `Fetched evidence is below the current threshold (${args.progress.fetchedPageCount}/${args.thresholds.minFetchedPagesForDraft} pages).`
@@ -1122,8 +1149,8 @@ function buildSynthesisState(args: {
       `Structured evidence coverage is below the current threshold (${args.sourceCardCount}/${args.thresholds.minSourceCardsForDraft} source cards).`
     );
   }
-  if (args.contract.requiresDraft && args.progress.draftWordCount === 0) {
-    completionGaps.push("A synthesized draft body has not been produced yet.");
+  if (requiresReusableBody && args.progress.lastWriterOutputAvailability !== "body_available") {
+    completionGaps.push("A reusable synthesized body has not been produced yet.");
   }
   if (args.contract.requiresCitations && args.progress.citationCount < args.contract.minimumCitationCount) {
     completionGaps.push(
@@ -1137,7 +1164,15 @@ function buildSynthesisState(args: {
   const readyForSynthesis = missingEvidence.length === 0;
 
   let status: AgentSynthesisState["status"] = "not_ready";
-  if (readyForSynthesis && completionGaps.length === 0 && (args.progress.draftWordCount > 0 || !args.contract.requiresDraft)) {
+  if (
+    readyForSynthesis
+    && completionGaps.length === 0
+    && (
+      args.progress.lastWriterOutputAvailability === "body_available"
+      || (!requiresReusableBody && args.progress.draftWordCount > 0)
+      || !requiresReusableBody
+    )
+  ) {
     status = args.artifactCount > 0 || !args.requestedOutputPath ? "complete" : "partial";
   } else if (readyForSynthesis) {
     status = "ready";
@@ -1165,7 +1200,8 @@ function buildSynthesisState(args: {
       ["fetchedPageCount", args.progress.fetchedPageCount],
       ["sourceCardCount", args.sourceCardCount],
       ["draftWordCount", args.progress.draftWordCount],
-      ["artifactCount", args.artifactCount]
+      ["artifactCount", args.artifactCount],
+      ["lastWriterOutputAvailability", args.progress.lastWriterOutputAvailability]
     ])
   };
 }
@@ -1433,7 +1469,10 @@ function createSpecialistProgressState(): SpecialistProgressState {
     draftWordCount: 0,
     citationCount: 0,
     searchTimeoutCount: 0,
-    errorSamples: []
+    errorSamples: [],
+    lastWriterOutputAvailability: null,
+    lastWriterDeliverableStatus: null,
+    lastWriterProcessCommentaryDetected: false
   };
 }
 
@@ -1596,7 +1635,17 @@ function updateSpecialistProgress(progress: SpecialistProgressState, result: Too
     const content = typeof payload.content === "string" ? payload.content : "";
     const draftQuality = typeof payload.draftQuality === "string" ? payload.draftQuality : undefined;
     const fallbackUsed = payload.fallbackUsed === true;
-    const shouldCountDraftProgress = draftQuality === "complete" || (!draftQuality && !fallbackUsed);
+    const deliverableStatus =
+      payload.deliverableStatus === "complete" || payload.deliverableStatus === "partial" || payload.deliverableStatus === "insufficient"
+        ? payload.deliverableStatus
+        : null;
+    const processCommentaryDetected = payload.processCommentaryDetected === true;
+    const outputAvailability = deriveWriterResultOutputAvailability(payload);
+    progress.lastWriterOutputAvailability = outputAvailability;
+    progress.lastWriterDeliverableStatus = deliverableStatus;
+    progress.lastWriterProcessCommentaryDetected = processCommentaryDetected;
+    const shouldCountDraftProgress =
+      outputAvailability === "body_available" && (draftQuality === "complete" || (!draftQuality && !fallbackUsed));
     if (shouldCountDraftProgress) {
       progress.draftWordCount = Math.max(progress.draftWordCount, countWords(content));
       progress.citationCount = Math.max(progress.citationCount, extractUrls(content).length);
@@ -1701,12 +1750,17 @@ function deriveSpecialistOutputAvailability(args: {
   activeWorkState: ActiveWorkStateSnapshot;
   artifactCount: number;
 }): SessionOutputAvailability {
+  if (args.progress.lastWriterOutputAvailability) {
+    return args.progress.lastWriterOutputAvailability;
+  }
   if (args.artifactCount > 0) {
-    return "body_available";
+    return args.contract.requiresAssembly === true || args.contract.requiresDraft || args.contract.requiresCitations
+      ? "metadata_only"
+      : "body_available";
   }
   const responseWords = countWords(args.responseText ?? "");
   const draftWords = Math.max(args.progress.draftWordCount, responseWords);
-  if (args.contract.requiresDraft) {
+  if (args.contract.requiresDraft || args.contract.requiresAssembly === true) {
     if (draftWords >= 180) {
       return "body_available";
     }
@@ -1758,6 +1812,11 @@ function evaluateSpecialistContractGate(args: {
       unmet.push("synthesis_not_ready");
     }
     if (outputAvailability !== "body_available") {
+      unmet.push("output_body_unavailable");
+    }
+  }
+  if (args.contract.requiresAssembly === true && outputAvailability !== "body_available") {
+    if (hasAnyEvidence) {
       unmet.push("output_body_unavailable");
     }
   }
@@ -1843,6 +1902,7 @@ function createToolContext(options: SpecialistToolLoopOptions, deadlineAtMs: num
     searchManager: options.searchManager,
     workspaceDir: options.workspaceDir,
     openAiApiKey: options.openAiApiKey,
+    llmProviders: options.llmProviders,
     defaults: options.defaults,
     leadPipelineExecutor: options.leadPipelineExecutor,
     state,

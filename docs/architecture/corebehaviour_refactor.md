@@ -103,6 +103,10 @@ This section reflects what is actually implemented today.
 - Low-budget forced writer fallback is no longer treated as an acceptable completion strategy.
 - Search/synthesis loops can reroute into assembly when evidence is ready, rather than waiting for a low-budget emergency finalize path.
 - Low-confidence placeholder drafts from failed low-budget or no-output writer passes are no longer persisted as new artifacts by default.
+- Writer-quality signals now drive reusable-body classification across runtime memory:
+  - specialist loop records last writer output availability and deliverable status
+  - assembly tasks only become `complete` when a reusable synthesized body exists
+  - persisted artifacts from insufficient writer outputs remain `metadata_only` instead of being treated as finished bodies
 
 ### Output availability contract
 
@@ -114,6 +118,7 @@ This section reflects what is actually implemented today.
   - reusable body
   - recoverable metadata only
   - no recoverable output
+- Session-output recovery now also respects writer quality metadata, so old placeholder drafts or planning memos no longer re-enter later turns as `body_available`.
 - This prevents placeholder or low-evidence outcomes from masquerading as reusable completed drafts.
 
 ## Refactor Status By Phase

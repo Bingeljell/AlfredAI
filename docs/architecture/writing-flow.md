@@ -111,6 +111,11 @@ Writing-related outputs now have explicit availability semantics:
 
 These states are used in specialist stop/failure handling and session output records.
 
+Important:
+
+- artifact existence alone is no longer enough to count as `body_available` for assembly/draft tasks
+- writer quality signals (`deliverableStatus`, process-commentary detection, draft quality) now decide whether a stored draft is truly reusable or only recoverable as metadata
+
 ## Clarification policy
 
 Clarification should be rare.

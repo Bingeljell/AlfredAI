@@ -251,6 +251,73 @@ test("runSpecialistToolLoop blocks unsupported long-form respond attempts withou
   assert.ok(unmet.includes("synthesis_not_ready"));
 });
 
+test("runSpecialistToolLoop treats persisted non-writer artifacts as metadata-only for assembly tasks", async () => {
+  const workspace = await createTempWorkspace("specialist-metadata-only-artifact");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun(
+    "session-1",
+    "Research AI news and draft a cited blog post",
+    "running"
+  );
+
+  const outcome = await runSpecialistToolLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as never,
+    workspaceDir: workspace,
+    message: "Research AI news and draft a cited blog post",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in this test");
+    },
+    maxIterations: 1,
+    maxDurationMs: 60_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    skillName: "research_agent",
+    skillDescription: "Research skill",
+    skillSystemPrompt: "Do research",
+    toolAllowlist: ["file_write"],
+    structuredChatRunner: async <T>() =>
+      ({
+        result: {
+          thought: "Persist a scratch artifact first.",
+          actionType: "single",
+          singleTool: "file_write",
+          singleInputJson: JSON.stringify({
+            path: "artifacts/scratch.md",
+            content: "Planning notes only. Final draft still pending."
+          }),
+          parallelActions: null,
+          responseText: null
+        }
+      }) as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.match(outcome.assistantText ?? "", /recoverable research metadata/i);
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  const stopEvent = events.find((event) => event.eventType === "specialist_stop");
+  assert.ok(stopEvent);
+  assert.equal((stopEvent?.payload as { outputAvailability?: string } | undefined)?.outputAvailability, "metadata_only");
+});
+
 test("runSpecialistToolLoop blocks specialist clarification when task contract disallows it", async () => {
   const workspace = await createTempWorkspace("specialist-clarification-lock");
   const runStore = new RunStore(workspace);
@@ -1345,7 +1412,10 @@ test("phase lock uses discovered URLs for discovery->fetch handoff when availabl
     draftWordCount: 0,
     citationCount: 0,
     searchTimeoutCount: 0,
-    errorSamples: []
+    errorSamples: [],
+    lastWriterOutputAvailability: null,
+    lastWriterDeliverableStatus: null,
+    lastWriterProcessCommentaryDetected: false
   };
 
   const decision = shouldForcePhaseTransition({

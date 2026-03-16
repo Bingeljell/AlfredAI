@@ -28,11 +28,25 @@ export function deriveSessionOutputKind(args: {
 export function deriveSessionOutputAvailability(args: {
   artifactPath: string | null;
   contentPreview: string;
+  isWriterOutput?: boolean;
+  draftQuality?: string | null;
+  deliverableStatus?: string | null;
+  processCommentaryDetected?: boolean;
 }): SessionOutputAvailability {
-  if (args.artifactPath) {
-    return "body_available";
+  const hasBody = Boolean(args.artifactPath) || args.contentPreview.length > 0;
+  if (args.isWriterOutput !== true) {
+    if (args.artifactPath) {
+      return "body_available";
+    }
+    return args.contentPreview.length > 0 ? "metadata_only" : "missing";
   }
-  if (args.contentPreview.length > 0) {
+  if (args.draftQuality === "complete" || args.deliverableStatus === "complete") {
+    return hasBody ? "body_available" : "missing";
+  }
+  if (args.deliverableStatus === "partial" && args.processCommentaryDetected !== true) {
+    return hasBody ? "body_available" : "metadata_only";
+  }
+  if (hasBody) {
     return "metadata_only";
   }
   return "missing";
@@ -79,16 +93,29 @@ export function deriveSessionOutputRecordFromRun(args: {
     toolName: writerToolCall?.toolName ?? null,
     format
   });
+  const draftQuality = typeof writerOutput?.draftQuality === "string" ? writerOutput.draftQuality : null;
+  const deliverableStatus = typeof writerOutput?.deliverableStatus === "string" ? writerOutput.deliverableStatus : null;
+  const processCommentaryDetected = writerOutput?.processCommentaryDetected === true;
   const availability = deriveSessionOutputAvailability({
     artifactPath,
-    contentPreview
+    contentPreview,
+    isWriterOutput: Boolean(writerToolCall),
+    draftQuality,
+    deliverableStatus,
+    processCommentaryDetected
   });
   const metadata: Record<string, string | number | boolean | null> = {};
   if (typeof writerOutput?.wordCount === "number") {
     metadata.wordCount = writerOutput.wordCount;
   }
-  if (typeof writerOutput?.draftQuality === "string") {
-    metadata.draftQuality = writerOutput.draftQuality;
+  if (draftQuality) {
+    metadata.draftQuality = draftQuality;
+  }
+  if (deliverableStatus) {
+    metadata.deliverableStatus = deliverableStatus;
+  }
+  if (processCommentaryDetected) {
+    metadata.processCommentaryDetected = true;
   }
   if (typeof format === "string") {
     metadata.outputFormat = format;

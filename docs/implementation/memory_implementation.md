@@ -232,22 +232,36 @@ Commit 5:
 
 ## Acceptance Tests
 
+These examples are representative continuity cases, not deterministic phrase handlers. Normal plaintext follow-ups should resolve through session state and model reasoning rather than regex matches on specific wording.
+
 Writing:
 - turn 1: research and write an article
 - turn 2: `paste it here`
 - expected: Alfred pastes the stored body without pretending it is missing
 
 Rewrite:
-- turn 1: write an article
-- turn 5: `rewrite that article in a more aggressive tone`
-- expected: Alfred resolves prior session output and rewrites it if body exists
+- turn 1: research and write an article
+- turn 5: revise the prior draft with a different tone or objective
+- expected: Alfred resolves the prior session output generically and either reuses the stored body or explains truthfully what is still recoverable
 
 Metadata-only recovery:
 - turn 1: article run completed but body artifact missing
-- turn 2: `paste it`
+- turn 2: follow up asking to reuse or paste the prior output
 - expected: Alfred says it remembers the article and can regenerate, instead of pretending it never existed
 
 Cross-skill continuity:
-- produce leads, notes, or research packet in one turn
+- produce leads, notes, or a research packet in one turn
 - reference them later in the same session
-- expected: same session output resolution path works without task-specific prompt filters
+- expected: the same session-output resolution path works without task-specific prompt filters
+
+## Implementation Status
+
+- Completed:
+  - Phase 1 session output registry
+  - Phase 2 default writer persistence
+  - Phase 3 session artifact resolver over working-memory outputs
+  - Phase 5 initial durable retrieval bridge scaffolding via run-history recovery and artifact body previews
+- Pending:
+  - Phase 4 output-availability contract enforcement across all user-facing response paths
+  - durable retrieval beyond recent run history (`rag_memory_query` / QMD bridge)
+  - removal of remaining regex-style orchestration heuristics that still own task typing, constraints, and clarification detection

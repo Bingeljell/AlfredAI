@@ -13,6 +13,7 @@ import { discoverLeadAgentTools } from "../agent/tools/registry.js";
 import { redactValue } from "../utils/redact.js";
 import { listAgentSkills } from "../agent/skills/registry.js";
 import type { AgentTaskContract } from "../agent/skills/types.js";
+import { buildRuntimeSessionContext, loadSessionOutputBodyPreview } from "../memory/sessionOutputResolver.js";
 import { LeadExecutionBriefSchema, type LeadExecutionBrief } from "../tools/lead/schemas.js";
 import { classifyStructuredFailure, computeRetryDelayMs, sleep } from "./reliability.js";
 import { getToolInputContract } from "../agent/toolContracts.js";
@@ -732,7 +733,7 @@ function buildAlfredPlannerSystemPrompt(sessionContext?: SessionPromptContext): 
     {
       label: "Directives",
       content:
-        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. You have two capability catalogs at runtime: `availableTools` and `availableAgents`. Each tool includes `inputContract` with required fields, bounds, and an example payload: obey these strictly when choosing `toolInputJson` (for example, if `maxResults <= 15`, never exceed it). Choose strategy dynamically from the user ask and current evidence. You may execute directly with tools, delegate to a specialist agent, or respond if complete. Prefer direct execution when a small number of tool actions can likely complete the task; delegate when specialist iterative loops are likely higher-yield. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. If `resolvedSessionOutput` is present and has an `artifactPath`, treat it as a reusable session asset: use `file_read` if you need the exact stored body before responding or revising. Respect execution permission: if `executionPermission` is `plan_only`, return `actionType=respond` with plan guidance and no execution. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
+        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. You have two capability catalogs at runtime: `availableTools` and `availableAgents`. Each tool includes `inputContract` with required fields, bounds, and an example payload: obey these strictly when choosing `toolInputJson` (for example, if `maxResults <= 15`, never exceed it). Choose strategy dynamically from the user ask and current evidence. You may execute directly with tools, delegate to a specialist agent, or respond if complete. Prefer direct execution when a small number of tool actions can likely complete the task; delegate when specialist iterative loops are likely higher-yield. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. If `resolvedSessionOutput` is present, treat it as a reusable session asset. If `bodyPreview` is present, you may use it for lightweight continuation or transformation. If `artifactPath` is present and the exact stored body matters, call `file_read` before responding or revising. Respect execution permission: if `executionPermission` is `plan_only`, return `actionType=respond` with plan guidance and no execution. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
     },
     {
       label: "Session Context",
@@ -1755,12 +1756,35 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   const startMs = Date.now();
   const deadlineAtMs = startMs + options.maxDurationMs;
   const structuredChatRunner = options.structuredChatRunner ?? openAiClient.runOpenAiStructuredChatWithDiagnostics;
-  const turnGrounding = await resolveTurnObjectiveWithSessionGrounding({
-    apiKey: options.openAiApiKey,
-    structuredChatRunner,
-    message: options.message,
-    sessionContext: options.sessionContext
+  const turnMode = detectTurnMode(options.message);
+  const executionPermission = detectExecutionPermission(options.message);
+  const runtimeSession = await buildRuntimeSessionContext({
+    sessionContext: options.sessionContext,
+    runStore: options.runStore,
+    sessionId: options.sessionId,
+    excludeRunId: options.runId,
+    recentOutputLimit: 6
   });
+  const runtimeSessionContext = runtimeSession.sessionContext;
+  const turnGrounding = turnMode === "diagnostic"
+    ? {
+        result: {
+          thought: "Diagnostic slash-command preserves the current message without session grounding.",
+          source: "message" as const,
+          groundedObjective: options.message,
+          referencedOutputId: null
+        },
+        fallback: {
+          objective: options.message,
+          source: "message" as const
+        }
+      }
+    : await resolveTurnObjectiveWithSessionGrounding({
+        apiKey: options.openAiApiKey,
+        structuredChatRunner,
+        message: options.message,
+        sessionContext: runtimeSessionContext
+      });
   if (turnGrounding.usage) {
     await options.runStore.addLlmUsage(options.runId, turnGrounding.usage, 1);
   }
@@ -1771,7 +1795,12 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       }
     : turnGrounding.fallback;
   const turnObjective = resolvedTurnObjective.objective;
-  const resolvedSessionOutput = findSessionOutputById(options.sessionContext, turnGrounding.result?.referencedOutputId);
+  const resolvedSessionOutput = findSessionOutputById(runtimeSessionContext, turnGrounding.result?.referencedOutputId);
+  const resolvedSessionOutputBodyPreview = await loadSessionOutputBodyPreview({
+    workspaceDir: options.workspaceDir,
+    output: resolvedSessionOutput,
+    maxChars: 6_000
+  });
   const discoveredTools = await discoverLeadAgentTools();
   const availableTools = discoveredTools;
   const availableToolSpecs = Array.from(availableTools.values()).map((tool) => ({
@@ -1871,7 +1900,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         apiKey: options.openAiApiKey,
         structuredChatRunner,
         message: turnObjective,
-        sessionContext: options.sessionContext
+        sessionContext: runtimeSessionContext
       })
     : undefined;
   const objectiveContract = buildObjectiveContract(turnObjective, initialLeadBrief);
@@ -1937,10 +1966,23 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       promptStack: {
         master: ALFRED_MASTER_PROMPT_VERSION
       },
-      sessionContextLoaded: Boolean(options.sessionContext)
+      sessionContextLoaded: Boolean(runtimeSessionContext)
     },
     timestamp: nowIso()
   });
+  if (runtimeSession.recoveredOutputs.length > 0) {
+    await options.runStore.appendEvent({
+      runId: options.runId,
+      sessionId: options.sessionId,
+      phase: "thought",
+      eventType: "alfred_session_outputs_recovered",
+      payload: {
+        recoveredCount: runtimeSession.recoveredOutputs.length,
+        recoveredOutputIds: runtimeSession.recoveredOutputs.map((output) => output.id).slice(0, 6)
+      },
+      timestamp: nowIso()
+    });
+  }
   if (resolvedTurnObjective.source !== "message") {
     await options.runStore.appendEvent({
       runId: options.runId,
@@ -1977,8 +2019,6 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     timestamp: nowIso()
   });
 
-  const turnMode = detectTurnMode(options.message);
-  const executionPermission = detectExecutionPermission(options.message);
   await options.runStore.appendEvent({
     runId: options.runId,
     sessionId: options.sessionId,
@@ -1993,7 +2033,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
 
   if (turnMode === "diagnostic") {
     const explicitRunId = extractRunIdFromMessage(options.message);
-    const targetRunId = explicitRunId ?? options.sessionContext?.lastCompletedRun?.runId ?? options.sessionContext?.lastRunId;
+    const targetRunId = explicitRunId ?? runtimeSessionContext?.lastCompletedRun?.runId ?? runtimeSessionContext?.lastRunId;
     const targetRun = targetRunId ? await options.runStore.getRun(targetRunId) : undefined;
     const targetEvents = targetRun ? await options.runStore.listRunEvents(targetRun) : [];
     const diagnosticText = targetRun
@@ -2041,7 +2081,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
               apiKey: options.openAiApiKey,
               structuredChatRunner,
               message: turnObjective,
-              sessionContext: options.sessionContext
+              sessionContext: runtimeSessionContext
             }))
         )
       });
@@ -2056,7 +2096,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         messages: [
           {
             role: "system",
-            content: buildAlfredPlannerSystemPrompt(options.sessionContext)
+            content: buildAlfredPlannerSystemPrompt(runtimeSessionContext)
           },
           {
             role: "user",
@@ -2079,6 +2119,8 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
                     availability: resolvedSessionOutput.availability,
                     artifactPath: resolvedSessionOutput.artifactPath ?? null,
                     contentPreview: resolvedSessionOutput.contentPreview ?? null,
+                    bodyPreview: resolvedSessionOutputBodyPreview?.content ?? null,
+                    bodyPreviewTruncated: resolvedSessionOutputBodyPreview?.truncated ?? false,
                     metadata: resolvedSessionOutput.metadata ?? null
                   }
                 : null,
@@ -2295,7 +2337,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
             apiKey: options.openAiApiKey,
             structuredChatRunner,
             message: delegatedMessage,
-            sessionContext: options.sessionContext
+            sessionContext: runtimeSessionContext
           })
         : undefined;
       const delegationId = `delegation_${iteration}`;
@@ -2431,7 +2473,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
             artifactPaths: leadOutcome.artifactPaths,
             delegationEvidence
           },
-          sessionContext: options.sessionContext
+          sessionContext: runtimeSessionContext
         });
         plannerCallsUsed += 1;
         if (completionDiagnostic.usage) {
@@ -2662,7 +2704,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           lastDelegationSummary,
           actionSummary: `call_tool:${toolName}`,
           latestResult: latestToolOutput,
-          sessionContext: options.sessionContext
+          sessionContext: runtimeSessionContext
         });
         plannerCallsUsed += 1;
         if (completionDiagnostic.usage) {

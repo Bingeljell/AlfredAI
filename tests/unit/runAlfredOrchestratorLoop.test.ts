@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
 import { runAlfredOrchestratorLoop } from "../../src/core/runAlfredOrchestratorLoop.js";
 import { RunStore } from "../../src/runs/runStore.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
@@ -1277,6 +1278,145 @@ test("runAlfredOrchestratorLoop can ground a follow-up turn against recent sessi
   const resolvedEvent = events.find((event) => event.eventType === "alfred_turn_objective_resolved");
   assert.ok(resolvedEvent);
   assert.equal((resolvedEvent?.payload as { source?: string }).source, "recent_output");
+});
+
+test("runAlfredOrchestratorLoop can recover session outputs from durable run history", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-durable-output-recovery");
+  const runStore = new RunStore(workspace);
+  const previousRun = await runStore.createRun(
+    "session-1",
+    "Research the chip market and write a sector brief.",
+    "completed"
+  );
+  const artifactPath = `workspace/alfred/sessions/session-1/outputs/${previousRun.runId}-article.md`;
+  await mkdir(`${workspace}/workspace/alfred/sessions/session-1/outputs`, { recursive: true });
+  await writeFile(
+    `${workspace}/${artifactPath}`,
+    "# Semiconductor Brief\n\nThe draft body was persisted to a session artifact.\n",
+    "utf8"
+  );
+  await runStore.addToolCall(previousRun.runId, {
+    toolName: "writer_agent",
+    inputRedacted: {
+      instruction: "Write a sector brief"
+    },
+    outputRedacted: {
+      title: "Semiconductor Brief",
+      format: "blog_post",
+      wordCount: 640,
+      content: "The draft body was persisted to a session artifact.",
+      draftQuality: "complete"
+    },
+    durationMs: 1_200,
+    status: "ok",
+    timestamp: new Date().toISOString()
+  });
+  await runStore.updateRun(previousRun.runId, {
+    status: "completed",
+    artifactPaths: [artifactPath],
+    assistantText: "The sector brief was drafted and saved."
+  });
+
+  const run = await runStore.createRun("session-1", "Use the previous brief as the basis for the next response.", "running");
+
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string; messages?: Array<{ role: string; content: string }> }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_turn_grounding") {
+      const groundingInput = JSON.parse(options.messages?.[1]?.content ?? "{}") as {
+        recentOutputs?: Array<{ id?: string; title?: string; artifactPath?: string | null }>;
+      };
+      assert.equal(groundingInput.recentOutputs?.length, 1);
+      assert.equal(groundingInput.recentOutputs?.[0]?.title, "Semiconductor Brief");
+      assert.equal(groundingInput.recentOutputs?.[0]?.artifactPath, artifactPath);
+      return {
+        result: {
+          thought: "The user is referring to the stored prior brief.",
+          source: "recent_output" as const,
+          groundedObjective:
+            "Use the stored session brief titled 'Semiconductor Brief' as the basis for the next response. Reuse the saved body if available.",
+          referencedOutputId: `${previousRun.runId}:article`
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      const plannerInput = JSON.parse(options.messages?.[1]?.content ?? "{}") as {
+        resolvedSessionOutput?: {
+          title?: string;
+          artifactPath?: string;
+          availability?: string;
+          bodyPreview?: string | null;
+          bodyPreviewTruncated?: boolean;
+        };
+      };
+      assert.equal(plannerInput.resolvedSessionOutput?.title, "Semiconductor Brief");
+      assert.equal(plannerInput.resolvedSessionOutput?.artifactPath, artifactPath);
+      assert.equal(plannerInput.resolvedSessionOutput?.availability, "body_available");
+      assert.match(plannerInput.resolvedSessionOutput?.bodyPreview ?? "", /persisted to a session artifact/i);
+      assert.equal(plannerInput.resolvedSessionOutput?.bodyPreviewTruncated, false);
+      return {
+        result: {
+          thought: "Durable memory recovery supplied the prior brief.",
+          actionType: "respond" as const,
+          delegateAgent: null,
+          delegateBrief: null,
+          toolName: null,
+          toolInputJson: null,
+          responseText: "Recovered the stored session brief."
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message: "Use the previous brief as the basis for the next response.",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in durable-output recovery test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 30_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner,
+    sessionContext: {
+      recentTurns: [
+        {
+          role: "assistant",
+          content: "The brief was completed in the previous turn.",
+          timestamp: "2026-03-16T09:01:00.000Z"
+        }
+      ]
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.equal(outcome.assistantText, "Recovered the stored session brief.");
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(events.some((event) => event.eventType === "alfred_session_outputs_recovered"));
 });
 
 test("runAlfredOrchestratorLoop answers diagnostic turns from run evidence without delegating", async () => {

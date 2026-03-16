@@ -1,8 +1,6 @@
 import type {
   RunOutcome,
   RunStatus,
-  SessionOutputAvailability,
-  SessionOutputKind,
   SessionOutputRecord,
   SessionPromptContext,
   SessionRecord,
@@ -12,6 +10,7 @@ import type {
 import { runReActLoop } from "../core/runReActLoop.js";
 import { TurnRuntime } from "../core/turnRuntime.js";
 import { ThreadRuntimeManager } from "../core/threadRuntime.js";
+import { deriveSessionOutputRecordFromRun } from "../memory/sessionOutputs.js";
 import type { SessionStore } from "../memory/sessionStore.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
@@ -119,114 +118,6 @@ export class ChatService {
     return value.replace(/\s+/g, " ").trim().slice(0, maxLength);
   }
 
-  private deriveOutputKind(args: {
-    artifactPath: string | null;
-    toolName: string | null;
-    format: string | null;
-  }): SessionOutputKind {
-    const artifactPath = args.artifactPath?.toLowerCase() ?? "";
-    if (artifactPath.endsWith(".csv")) {
-      return "lead_csv";
-    }
-    if (args.toolName === "writer_agent" || args.toolName === "article_writer") {
-      return args.format === "blog_post" ? "article" : "draft";
-    }
-    if (artifactPath.endsWith(".md") || artifactPath.endsWith(".txt")) {
-      return "notes";
-    }
-    return "generic_output";
-  }
-
-  private deriveOutputAvailability(args: {
-    artifactPath: string | null;
-    contentPreview: string;
-  }): SessionOutputAvailability {
-    if (args.artifactPath) {
-      return "body_available";
-    }
-    if (args.contentPreview.length > 0) {
-      return "metadata_only";
-    }
-    return "missing";
-  }
-
-  private deriveSessionOutputRecord(args: {
-    runId: string;
-    message: string;
-    runStatus: RunStatus;
-    runCreatedAt?: string;
-    assistantText?: string;
-    artifactPaths?: string[];
-    toolCalls?: Array<{
-      toolName: string;
-      status: "ok" | "error";
-      outputRedacted: unknown;
-    }>;
-  }): SessionOutputRecord | null {
-    if (args.runStatus !== "completed") {
-      return null;
-    }
-
-    const artifactPath = args.artifactPaths?.[0] ?? null;
-    const writerToolCall = [...(args.toolCalls ?? [])]
-      .reverse()
-      .find((call) =>
-        call.status === "ok" &&
-        (call.toolName === "writer_agent" || call.toolName === "article_writer")
-      );
-    const writerOutput =
-      writerToolCall?.outputRedacted && typeof writerToolCall.outputRedacted === "object"
-        ? (writerToolCall.outputRedacted as Record<string, unknown>)
-        : null;
-    const title =
-      (typeof writerOutput?.title === "string" && this.clipText(writerOutput.title, 160))
-      || (artifactPath ? artifactPath.split("/").at(-1) ?? "session-output" : this.clipText(args.message, 160))
-      || "session-output";
-    const contentPreview =
-      (typeof writerOutput?.content === "string" && this.clipText(writerOutput.content, 320))
-      || this.clipText(args.assistantText, 320);
-    const summary =
-      (typeof writerOutput?.summary === "string" && this.clipText(writerOutput.summary, 220))
-      || this.clipText(args.assistantText, 220)
-      || `Completed output for: ${this.clipText(args.message, 160)}`;
-    const format = typeof writerOutput?.format === "string" ? writerOutput.format : null;
-    const kind = this.deriveOutputKind({
-      artifactPath,
-      toolName: writerToolCall?.toolName ?? null,
-      format
-    });
-    const availability = this.deriveOutputAvailability({
-      artifactPath,
-      contentPreview
-    });
-    const metadata: Record<string, string | number | boolean | null> = {};
-    if (typeof writerOutput?.wordCount === "number") {
-      metadata.wordCount = writerOutput.wordCount;
-    }
-    if (typeof writerOutput?.draftQuality === "string") {
-      metadata.draftQuality = writerOutput.draftQuality;
-    }
-    if (typeof format === "string") {
-      metadata.outputFormat = format;
-    }
-    if (artifactPath) {
-      metadata.primaryArtifactPath = artifactPath;
-    }
-
-    return {
-      id: `${args.runId}:${kind}`,
-      kind,
-      runId: args.runId,
-      createdAt: args.runCreatedAt ?? new Date().toISOString(),
-      title,
-      summary,
-      artifactPath: artifactPath ?? undefined,
-      contentPreview: contentPreview || undefined,
-      availability,
-      metadata: Object.keys(metadata).length > 0 ? metadata : undefined
-    };
-  }
-
   private buildOutcomeSummary(message: string, outcome: RunOutcome): string {
     const assistantSummary = outcome.assistantText?.replace(/\s+/g, " ").trim().slice(0, 280);
     const parts = [`Request: ${message.trim().slice(0, 180)}`, `Status: ${outcome.status}`];
@@ -330,7 +221,7 @@ export class ChatService {
     const lastOutcomeSummary = this.buildOutcomeSummary(message, outcome);
     const existingMemory = (await this.options.sessionStore.getSession(sessionId))?.workingMemory;
     const persistedRun = await this.options.runStore.getRun(runId);
-    const recentOutput = this.deriveSessionOutputRecord({
+    const recentOutput = deriveSessionOutputRecordFromRun({
       runId,
       message,
       runStatus: outcome.status,

@@ -242,6 +242,7 @@ Implementation status:
 Implementation status:
 
 - Specialist planner now has explicit `responseKind` and research contracts default to `clarificationAllowed: false`, which blocks unnecessary follow-up questions once Alfred has already accepted defaults.
+- Fresh standalone turns now keep a stricter boundary around prior artifacts: when turn grounding resolves to `source=message`, Alfred no longer carries stale session output paths or artifact-specific completion obligations into the new task contract unless the current user turn explicitly names them.
 - Major heuristic ownership still remains in:
   - `buildSpecialistTaskContract` prompt regexing for draft/citation/word-count intent
   - orchestrator-side objective/task helpers (`detectObjectiveTaskType`, `deriveHardConstraints`, `extractTargetWordCount`)

@@ -1350,6 +1350,159 @@ test("runAlfredOrchestratorLoop can ground a follow-up turn against recent sessi
   assert.equal((resolvedEvent?.payload as { source?: string }).source, "recent_output");
 });
 
+test("runAlfredOrchestratorLoop does not carry stale artifact obligations into a fresh standalone turn", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-fresh-turn-no-stale-artifact");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun(
+    "session-1",
+    "Please give me a list of the top 10 family-friendly PC games from 2025 and 2026.",
+    "running"
+  );
+
+  let delegatedInput: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["agentLoopRunner"]> extends (
+    options: infer TOptions
+  ) => Promise<unknown>
+    ? TOptions | undefined
+    : never;
+
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string; messages?: Array<{ role: string; content: string }> }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_turn_grounding") {
+      return {
+        result: {
+          thought: "The current turn is a fresh standalone request.",
+          source: "message" as const,
+          groundedObjective: "Please give me a list of the top 10 family-friendly PC games from 2025 and 2026.",
+          referencedOutputId: null
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_turn_interpretation") {
+      return {
+        result: {
+          thought: "Interpret the current request directly.",
+          groundedObjective: "Please give me a list of the top 10 family-friendly PC games from 2025 and 2026.",
+          taskType: "general" as const,
+          requiredDeliverable: "Produce a ranked top-10 recommendation list.",
+          hardConstraints: [
+            "Use the existing prior artifact at workspace/alfred/sessions/session-1/outputs/run-prev-article.md."
+          ],
+          doneCriteria: [
+            "Write the result to workspace/alfred/sessions/session-1/outputs/run-prev-article.md."
+          ],
+          assumptions: [
+            "Reuse the previous artifact at workspace/alfred/sessions/session-1/outputs/run-prev-article.md if possible."
+          ],
+          requiresDraft: true,
+          requiresCitations: false,
+          targetWordCount: 900,
+          requestedOutputPath: "workspace/alfred/sessions/session-1/outputs/run-prev-article.md",
+          clarificationNeeded: false,
+          clarificationQuestion: null
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      return {
+        result: {
+          thought: "Delegate to research_agent.",
+          actionType: "delegate_agent" as const,
+          responseKind: null,
+          delegateAgent: "research_agent",
+          delegateBrief: "Research and compile the ranked game list.",
+          toolName: null,
+          toolInputJson: null,
+          responseText: null
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_completion_evaluation") {
+      return {
+        result: {
+          thought: "Delegated result is enough for this regression test.",
+          shouldRespond: true,
+          responseText: "Delegated result accepted.",
+          continueReason: null,
+          confidence: 0.9
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  const agentLoopRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["agentLoopRunner"]> = async (options) => {
+    delegatedInput = options;
+    return {
+      status: "completed",
+      assistantText: "Research delegated.",
+      artifactPaths: []
+    };
+  };
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message: "Please give me a list of the top 10 family-friendly PC games from 2025 and 2026.",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in stale-artifact carryover test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 30_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner,
+    agentLoopRunner,
+    sessionContext: {
+      activeObjective: "Paste the previous article here.",
+      recentOutputs: [
+        {
+          id: "run-prev:article",
+          kind: "article",
+          runId: "run-prev",
+          createdAt: "2026-03-16T09:00:00.000Z",
+          title: "Old article",
+          summary: "A prior saved article artifact.",
+          artifactPath: "workspace/alfred/sessions/session-1/outputs/run-prev-article.md",
+          availability: "body_available"
+        }
+      ],
+      recentTurns: [
+        {
+          role: "user",
+          content: "Paste the previous article here.",
+          timestamp: "2026-03-16T09:00:00.000Z"
+        }
+      ]
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.equal(delegatedInput?.taskContract?.requestedOutputPath, null);
+  assert.ok(
+    !(delegatedInput?.taskContract?.doneCriteria ?? []).some((item) => item.includes("workspace/alfred/sessions/session-1/outputs/run-prev-article.md"))
+  );
+});
+
 test("runAlfredOrchestratorLoop can recover session outputs from durable run history", async () => {
   const workspace = await createTempWorkspace("alfred-orchestrator-durable-output-recovery");
   const runStore = new RunStore(workspace);

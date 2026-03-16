@@ -465,7 +465,10 @@ async function resolveTurnObjectiveWithSessionGrounding(args: {
   };
 }
 
-function buildAlfredTurnInterpretationSystemPrompt(sessionContext?: SessionPromptContext): string {
+function buildAlfredTurnInterpretationSystemPrompt(args: {
+  sessionContext?: SessionPromptContext;
+  groundedSource: AlfredTurnGroundingOutput["source"];
+}): string {
   return composeSystemPrompt([
     {
       label: `Persona ${ALFRED_MASTER_PROMPT_VERSION}`,
@@ -479,15 +482,15 @@ function buildAlfredTurnInterpretationSystemPrompt(sessionContext?: SessionPromp
     {
       label: "Directives",
       content:
-        "Use the current user turn as primary truth, while considering session context and recent conversation. Produce a grounded objective, deliverable, hard constraints, and done criteria that preserve explicit user requirements. Only set `clarificationNeeded=true` when missing information is genuinely blocking and assumptions would materially risk the outcome. If reasonable defaults or assumptions can unblock the work, set `clarificationNeeded=false`, proceed, and record those assumptions explicitly."
+        "Use the current user turn as primary truth, while considering session context and recent conversation. Produce a grounded objective, deliverable, hard constraints, and done criteria that preserve explicit user requirements. Only set `clarificationNeeded=true` when missing information is genuinely blocking and assumptions would materially risk the outcome. If reasonable defaults or assumptions can unblock the work, set `clarificationNeeded=false`, proceed, and record those assumptions explicitly. If `groundedSource=message`, do not inherit prior output paths, artifact obligations, or draft-reuse requirements unless the current user turn explicitly names them."
     },
     {
       label: "Session Context",
-      content: formatSessionContextBlock(sessionContext)
+      content: formatSessionContextBlock(args.sessionContext)
     },
     {
       label: "Recent Conversation",
-      content: formatRecentTurnsBlock(sessionContext)
+      content: formatRecentTurnsBlock(args.sessionContext)
     }
   ]);
 }
@@ -497,6 +500,7 @@ async function interpretTurnWithModel(args: {
   structuredChatRunner: typeof openAiClient.runOpenAiStructuredChatWithDiagnostics;
   originalMessage: string;
   groundedObjective: string;
+  groundedSource: AlfredTurnGroundingOutput["source"];
   sessionContext?: SessionPromptContext;
 }): Promise<openAiClient.StructuredChatDiagnostic<AlfredTurnInterpretationOutput>> {
   if (!args.apiKey) {
@@ -510,13 +514,17 @@ async function interpretTurnWithModel(args: {
       messages: [
         {
           role: "system",
-          content: buildAlfredTurnInterpretationSystemPrompt(args.sessionContext)
+          content: buildAlfredTurnInterpretationSystemPrompt({
+            sessionContext: args.sessionContext,
+            groundedSource: args.groundedSource
+          })
         },
         {
           role: "user",
           content: JSON.stringify({
             currentMessage: args.originalMessage,
             groundedObjective: args.groundedObjective,
+            groundedSource: args.groundedSource,
             sessionContext: {
               activeObjective: args.sessionContext?.activeObjective ?? null,
               lastCompletedRun: args.sessionContext?.lastCompletedRun ?? null,
@@ -1225,6 +1233,17 @@ function deriveHardConstraints(message: string): string[] {
   return constraints;
 }
 
+function sanitizeCarryoverStringsForFreshTurn(args: {
+  values: string[];
+  groundedSource: AlfredTurnGroundingOutput["source"];
+  explicitRequestedOutputPath: string | null;
+}): string[] {
+  if (args.groundedSource !== "message" || args.explicitRequestedOutputPath) {
+    return args.values;
+  }
+  return args.values.filter((value) => !value.toLowerCase().includes("workspace/"));
+}
+
 function normalizeRequestedOutputPath(pathValue: string): string {
   let normalized = pathValue.trim();
   const trailing = ").,;:!?";
@@ -1277,17 +1296,37 @@ function dedupeStrings(values: string[]): string[] {
 function buildObjectiveContract(
   message: string,
   leadExecutionBrief?: LeadExecutionBrief | null,
-  interpretation?: AlfredTurnInterpretationOutput | null
+  interpretation?: AlfredTurnInterpretationOutput | null,
+  groundedSource: AlfredTurnGroundingOutput["source"] = "message",
+  originalMessage?: string
 ): AlfredObjectiveContract {
   const taskType = detectObjectiveTaskType(message, leadExecutionBrief);
   const hardConstraints = deriveHardConstraints(message);
   const targetWordCountHint = interpretation?.targetWordCount ?? extractTargetWordCount(message);
-  const requestedOutputPathHint = interpretation?.requestedOutputPath ?? extractRequestedOutputPath(message);
+  const explicitRequestedOutputPath = extractRequestedOutputPath(originalMessage ?? message);
+  const requestedOutputPathHint = groundedSource === "message"
+    ? explicitRequestedOutputPath
+    : (interpretation?.requestedOutputPath ?? explicitRequestedOutputPath);
+  const interpretedHardConstraints = sanitizeCarryoverStringsForFreshTurn({
+    values: interpretation?.hardConstraints ?? [],
+    groundedSource,
+    explicitRequestedOutputPath
+  });
+  const interpretedDoneCriteria = sanitizeCarryoverStringsForFreshTurn({
+    values: interpretation?.doneCriteria ?? [],
+    groundedSource,
+    explicitRequestedOutputPath
+  });
+  const interpretedAssumptions = sanitizeCarryoverStringsForFreshTurn({
+    values: interpretation?.assumptions ?? [],
+    groundedSource,
+    explicitRequestedOutputPath
+  });
   const requiresCitations = interpretation?.requiresCitations
     ?? hardConstraints.some((item) => containsAnyWord(item, ["citation", "source"]));
   const requiresDraft = interpretation?.requiresDraft
     ?? containsAnyWord(message, ["blog", "post", "article", "draft", "write"]);
-  const assumptions = interpretation?.assumptions ?? [];
+  const assumptions = interpretedAssumptions;
 
   if (leadExecutionBrief) {
     const requiredDeliverable =
@@ -1300,12 +1339,12 @@ function buildObjectiveContract(
       requiredDeliverable,
       hardConstraints: dedupeStrings([
         ...hardConstraints,
-        ...(interpretation?.hardConstraints ?? [])
+        ...interpretedHardConstraints
       ]),
       softPreferences: [],
       doneCriteria: dedupeStrings([
         ...doneCriteria,
-        ...(interpretation?.doneCriteria ?? [])
+        ...interpretedDoneCriteria
       ]),
       assumptions,
       requiresDraft,
@@ -1321,21 +1360,19 @@ function buildObjectiveContract(
         ? "Deliver the requested blog draft with citations."
         : `Provide a complete response for: ${collapseWhitespace(message).slice(0, 180)}`
     );
-  const doneCriteria = interpretation?.doneCriteria?.length
-    ? interpretation.doneCriteria
-    : [
-        `Answer the current turn directly and honestly: ${collapseWhitespace(message).slice(0, 240)}`,
-        ...(requiresCitations ? ["Include explicit source citations for factual claims."] : []),
-        ...(requiresDraft ? ["Return the complete draft text in the requested format."] : [])
-      ];
+  const defaultDoneCriteria = [
+    `Answer the current turn directly and honestly: ${collapseWhitespace(message).slice(0, 240)}`,
+    ...(requiresCitations ? ["Include explicit source citations for factual claims."] : []),
+    ...(requiresDraft ? ["Return the complete draft text in the requested format."] : [])
+  ];
   return {
     taskType: interpretation?.taskType ?? taskType,
     requiredDeliverable,
-    hardConstraints: interpretation?.hardConstraints?.length
-      ? dedupeStrings(interpretation.hardConstraints)
+    hardConstraints: interpretedHardConstraints.length
+      ? dedupeStrings(interpretedHardConstraints)
       : hardConstraints,
     softPreferences: [],
-    doneCriteria: dedupeStrings(doneCriteria),
+    doneCriteria: dedupeStrings(interpretedDoneCriteria.length ? interpretedDoneCriteria : defaultDoneCriteria),
     assumptions,
     requiresDraft,
     requiresCitations,
@@ -1981,6 +2018,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         structuredChatRunner,
         originalMessage: options.message,
         groundedObjective: turnObjective,
+        groundedSource: resolvedTurnObjective.source,
         sessionContext: runtimeSessionContext
       });
   if (turnInterpretation?.usage) {
@@ -2143,7 +2181,13 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         sessionContext: runtimeSessionContext
       })
     : undefined;
-  const objectiveContract = buildObjectiveContract(turnObjective, initialLeadBrief, interpretedTurn);
+  const objectiveContract = buildObjectiveContract(
+    turnObjective,
+    initialLeadBrief,
+    interpretedTurn,
+    resolvedTurnObjective.source,
+    options.message
+  );
   const requestedOutputPath = objectiveContract.requestedOutputPathHint;
   scratchpad.currentObjectiveContract = objectiveContract;
   if (initialLeadBrief) {

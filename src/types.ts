@@ -4,6 +4,30 @@ export type RunStatus = "queued" | "running" | "completed" | "cancelled" | "fail
 
 export type SearchProviderName = "searxng" | "brave" | "brightdata";
 
+export type SessionOutputKind =
+  | "article"
+  | "draft"
+  | "research_packet"
+  | "lead_csv"
+  | "lead_set"
+  | "notes"
+  | "generic_output";
+
+export type SessionOutputAvailability = "body_available" | "metadata_only" | "missing";
+
+export interface SessionOutputRecord {
+  id: string;
+  kind: SessionOutputKind;
+  runId: string;
+  createdAt: string;
+  title: string;
+  summary: string;
+  artifactPath?: string;
+  contentPreview?: string;
+  availability: SessionOutputAvailability;
+  metadata?: Record<string, string | number | boolean | null>;
+}
+
 export interface SessionWorkingMemory {
   activeObjective?: string;
   lastRunId?: string;
@@ -11,8 +35,11 @@ export interface SessionWorkingMemory {
   lastCompletedAt?: string;
   lastArtifacts?: string[];
   lastOutcomeSummary?: string;
+  activeThreadSummary?: string;
   sessionSummary?: string;
   recentTurns?: SessionTurnSnippet[];
+  recentOutputs?: SessionOutputRecord[];
+  unresolvedItems?: string[];
 }
 
 export interface SessionTurnSnippet {
@@ -34,8 +61,11 @@ export interface SessionPromptContext {
   };
   lastArtifacts?: string[];
   lastOutcomeSummary?: string;
+  activeThreadSummary?: string;
   sessionSummary?: string;
   recentTurns?: SessionTurnSnippet[];
+  recentOutputs?: SessionOutputRecord[];
+  unresolvedItems?: string[];
 }
 
 export interface SessionRecord {

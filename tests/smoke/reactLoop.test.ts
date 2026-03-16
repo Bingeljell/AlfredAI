@@ -53,6 +53,18 @@ test("runReActLoop produces a completed outcome with artifact", async () => {
       },
       lastArtifacts: ["/tmp/prev.csv"],
       lastOutcomeSummary: "Found 3 leads and saved CSV.",
+      recentOutputs: [
+        {
+          id: "run-prev:lead_csv",
+          kind: "lead_csv",
+          runId: "run-prev",
+          createdAt: "2026-03-09T10:00:05.000Z",
+          title: "prev.csv",
+          summary: "Found 3 leads and saved CSV.",
+          artifactPath: "/tmp/prev.csv",
+          availability: "body_available"
+        }
+      ],
       sessionSummary: "Previous turn found 3 leads.",
       recentTurns: [
         {
@@ -124,4 +136,5 @@ test("runReActLoop produces a completed outcome with artifact", async () => {
   assert.ok(events.some((event) => event.eventType === "session_context_loaded"));
   const sessionEvent = events.find((event) => event.eventType === "session_context_loaded");
   assert.equal(sessionEvent?.payload.recentTurnCount, 2);
+  assert.equal(sessionEvent?.payload.recentOutputCount, 1);
 });

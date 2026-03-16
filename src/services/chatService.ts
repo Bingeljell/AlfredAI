@@ -1,4 +1,14 @@
-import type { RunOutcome, RunStatus, SessionPromptContext, SessionRecord, SessionTurnSnippet, SessionWorkingMemory } from "../types.js";
+import type {
+  RunOutcome,
+  RunStatus,
+  SessionOutputAvailability,
+  SessionOutputKind,
+  SessionOutputRecord,
+  SessionPromptContext,
+  SessionRecord,
+  SessionTurnSnippet,
+  SessionWorkingMemory
+} from "../types.js";
 import { runReActLoop } from "../core/runReActLoop.js";
 import { TurnRuntime } from "../core/turnRuntime.js";
 import { ThreadRuntimeManager } from "../core/threadRuntime.js";
@@ -91,6 +101,132 @@ export class ChatService {
     return [...(turns ?? []), nextTurn].slice(-8);
   }
 
+  private appendRecentOutput(
+    outputs: SessionOutputRecord[] | undefined,
+    output: SessionOutputRecord | null
+  ): SessionOutputRecord[] | undefined {
+    if (!output) {
+      return outputs;
+    }
+    const deduped = [...(outputs ?? []).filter((item) => item.id !== output.id), output];
+    return deduped.slice(-6);
+  }
+
+  private clipText(value: string | undefined, maxLength: number): string {
+    if (!value) {
+      return "";
+    }
+    return value.replace(/\s+/g, " ").trim().slice(0, maxLength);
+  }
+
+  private deriveOutputKind(args: {
+    artifactPath: string | null;
+    toolName: string | null;
+    format: string | null;
+  }): SessionOutputKind {
+    const artifactPath = args.artifactPath?.toLowerCase() ?? "";
+    if (artifactPath.endsWith(".csv")) {
+      return "lead_csv";
+    }
+    if (args.toolName === "writer_agent" || args.toolName === "article_writer") {
+      return args.format === "blog_post" ? "article" : "draft";
+    }
+    if (artifactPath.endsWith(".md") || artifactPath.endsWith(".txt")) {
+      return "notes";
+    }
+    return "generic_output";
+  }
+
+  private deriveOutputAvailability(args: {
+    artifactPath: string | null;
+    contentPreview: string;
+  }): SessionOutputAvailability {
+    if (args.artifactPath) {
+      return "body_available";
+    }
+    if (args.contentPreview.length > 0) {
+      return "metadata_only";
+    }
+    return "missing";
+  }
+
+  private deriveSessionOutputRecord(args: {
+    runId: string;
+    message: string;
+    runStatus: RunStatus;
+    runCreatedAt?: string;
+    assistantText?: string;
+    artifactPaths?: string[];
+    toolCalls?: Array<{
+      toolName: string;
+      status: "ok" | "error";
+      outputRedacted: unknown;
+    }>;
+  }): SessionOutputRecord | null {
+    if (args.runStatus !== "completed") {
+      return null;
+    }
+
+    const artifactPath = args.artifactPaths?.[0] ?? null;
+    const writerToolCall = [...(args.toolCalls ?? [])]
+      .reverse()
+      .find((call) =>
+        call.status === "ok" &&
+        (call.toolName === "writer_agent" || call.toolName === "article_writer")
+      );
+    const writerOutput =
+      writerToolCall?.outputRedacted && typeof writerToolCall.outputRedacted === "object"
+        ? (writerToolCall.outputRedacted as Record<string, unknown>)
+        : null;
+    const title =
+      (typeof writerOutput?.title === "string" && this.clipText(writerOutput.title, 160))
+      || (artifactPath ? artifactPath.split("/").at(-1) ?? "session-output" : this.clipText(args.message, 160))
+      || "session-output";
+    const contentPreview =
+      (typeof writerOutput?.content === "string" && this.clipText(writerOutput.content, 320))
+      || this.clipText(args.assistantText, 320);
+    const summary =
+      (typeof writerOutput?.summary === "string" && this.clipText(writerOutput.summary, 220))
+      || this.clipText(args.assistantText, 220)
+      || `Completed output for: ${this.clipText(args.message, 160)}`;
+    const format = typeof writerOutput?.format === "string" ? writerOutput.format : null;
+    const kind = this.deriveOutputKind({
+      artifactPath,
+      toolName: writerToolCall?.toolName ?? null,
+      format
+    });
+    const availability = this.deriveOutputAvailability({
+      artifactPath,
+      contentPreview
+    });
+    const metadata: Record<string, string | number | boolean | null> = {};
+    if (typeof writerOutput?.wordCount === "number") {
+      metadata.wordCount = writerOutput.wordCount;
+    }
+    if (typeof writerOutput?.draftQuality === "string") {
+      metadata.draftQuality = writerOutput.draftQuality;
+    }
+    if (typeof format === "string") {
+      metadata.outputFormat = format;
+    }
+    if (artifactPath) {
+      metadata.primaryArtifactPath = artifactPath;
+    }
+
+    return {
+      id: `${args.runId}:${kind}`,
+      kind,
+      runId: args.runId,
+      createdAt: args.runCreatedAt ?? new Date().toISOString(),
+      title,
+      summary,
+      artifactPath: artifactPath ?? undefined,
+      contentPreview: contentPreview || undefined,
+      availability,
+      metadata: Object.keys(metadata).length > 0 ? metadata : undefined
+    };
+  }
+
   private buildOutcomeSummary(message: string, outcome: RunOutcome): string {
     const assistantSummary = outcome.assistantText?.replace(/\s+/g, " ").trim().slice(0, 280);
     const parts = [`Request: ${message.trim().slice(0, 180)}`, `Status: ${outcome.status}`];
@@ -113,6 +249,12 @@ export class ChatService {
     }
     if (memory.lastArtifacts?.length) {
       parts.push(`Artifacts: ${memory.lastArtifacts.join(", ")}`);
+    }
+    if (memory.recentOutputs?.length) {
+      const latest = memory.recentOutputs.at(-1);
+      if (latest) {
+        parts.push(`Latest output: ${latest.kind} (${latest.availability}) - ${latest.title}`);
+      }
     }
     return parts.join(" | ").slice(0, 700);
   }
@@ -143,8 +285,11 @@ export class ChatService {
       lastCompletedRun,
       lastArtifacts: memory.lastArtifacts?.slice(0, 5),
       lastOutcomeSummary: memory.lastOutcomeSummary,
+      activeThreadSummary: memory.activeThreadSummary,
       sessionSummary: memory.sessionSummary,
-      recentTurns: memory.recentTurns?.slice(-6)
+      recentTurns: memory.recentTurns?.slice(-6),
+      recentOutputs: memory.recentOutputs?.slice(-4),
+      unresolvedItems: memory.unresolvedItems?.slice(-6)
     };
 
     return Object.values(context).some((value) => {
@@ -171,21 +316,36 @@ export class ChatService {
         content: message,
         runId
       }),
+      activeThreadSummary: this.clipText(message, 320),
       sessionSummary: this.buildSessionSummary({
         ...(existingMemory ?? {}),
         activeObjective,
-        lastRunId: runId
+        lastRunId: runId,
+        activeThreadSummary: this.clipText(message, 320)
       })
     });
   }
 
   private async persistRunOutcome(sessionId: string, runId: string, message: string, outcome: RunOutcome): Promise<void> {
     const lastOutcomeSummary = this.buildOutcomeSummary(message, outcome);
+    const existingMemory = (await this.options.sessionStore.getSession(sessionId))?.workingMemory;
+    const persistedRun = await this.options.runStore.getRun(runId);
+    const recentOutput = this.deriveSessionOutputRecord({
+      runId,
+      message,
+      runStatus: outcome.status,
+      runCreatedAt: persistedRun?.createdAt,
+      assistantText: outcome.assistantText ?? persistedRun?.assistantText,
+      artifactPaths: outcome.artifactPaths ?? persistedRun?.artifactPaths,
+      toolCalls: persistedRun?.toolCalls
+    });
     const memoryPatch: Partial<SessionWorkingMemory> = {
       activeObjective: message.trim().slice(0, 240),
       lastRunId: runId,
       lastOutcomeSummary,
-      lastArtifacts: outcome.artifactPaths?.slice(0, 5) ?? []
+      lastArtifacts: outcome.artifactPaths?.slice(0, 5) ?? [],
+      activeThreadSummary: this.clipText(outcome.assistantText ?? message, 320),
+      recentOutputs: this.appendRecentOutput(existingMemory?.recentOutputs, recentOutput)
     };
 
     if (outcome.status === "completed") {
@@ -193,7 +353,6 @@ export class ChatService {
       memoryPatch.lastCompletedAt = new Date().toISOString();
     }
 
-    const existingMemory = (await this.options.sessionStore.getSession(sessionId))?.workingMemory;
     memoryPatch.recentTurns = this.appendRecentTurn(existingMemory?.recentTurns, {
       role: "assistant",
       content: outcome.assistantText ?? "",

@@ -101,10 +101,20 @@ test("chat service injects session context on follow-up turns and supports /news
     lastCompletedRun?: { message?: string; artifactPaths?: string[] };
     lastOutcomeSummary?: string;
     recentTurns?: Array<{ role: string; content: string }>;
+    recentOutputs?: Array<{
+      kind: string;
+      availability: string;
+      title: string;
+      artifactPath?: string;
+    }>;
   };
   assert.equal(secondContext.lastCompletedRun?.message, "Find 3 leads");
   assert.deepEqual(secondContext.lastCompletedRun?.artifactPaths, ["/tmp/leads.csv"]);
   assert.match(secondContext.lastOutcomeSummary ?? "", /Handled: Find 3 leads/);
+  assert.equal(secondContext.recentOutputs?.length, 1);
+  assert.equal(secondContext.recentOutputs?.[0]?.kind, "lead_csv");
+  assert.equal(secondContext.recentOutputs?.[0]?.availability, "body_available");
+  assert.equal(secondContext.recentOutputs?.[0]?.artifactPath, "/tmp/leads.csv");
   assert.ok(secondContext.recentTurns?.some((turn) => turn.role === "user" && turn.content === "Find 3 leads"));
   assert.ok(secondContext.recentTurns?.some((turn) => turn.role === "assistant" && /Handled: Find 3 leads/.test(turn.content)));
   assert.equal(secondContext.recentTurns?.at(-1)?.role, "user");

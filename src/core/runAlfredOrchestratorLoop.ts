@@ -14,7 +14,6 @@ import { redactValue } from "../utils/redact.js";
 import { listAgentSkills } from "../agent/skills/registry.js";
 import type { AgentTaskContract } from "../agent/skills/types.js";
 import { LeadExecutionBriefSchema, type LeadExecutionBrief } from "../tools/lead/schemas.js";
-import { parseRequestedLeadCount } from "../tools/lead/requestIntent.js";
 import { classifyStructuredFailure, computeRetryDelayMs, sleep } from "./reliability.js";
 import { getToolInputContract } from "../agent/toolContracts.js";
 
@@ -119,21 +118,170 @@ interface CompletionGateDecision {
 type AlfredTurnMode = "diagnostic" | "execute";
 type AlfredExecutionPermission = "execute" | "plan_only";
 
-const FOLLOW_UP_CONTINUATION_PATTERNS = [
-  /^\s*(try again|retry|rerun|run again)\s*[.!]?\s*$/i,
-  /^\s*(proceed|continue|go ahead|do it|yes|yep|yeah|ok|okay)\s*[.!]?\s*$/i,
-  /^\s*(let'?s go|do that|that works|sounds good)\s*[.!]?\s*$/i
-];
+const FOLLOW_UP_CONTINUATION_EXACT_PHRASES = new Set([
+  "try again",
+  "retry",
+  "rerun",
+  "run again",
+  "proceed",
+  "continue",
+  "go ahead",
+  "do it",
+  "yes",
+  "yep",
+  "yeah",
+  "ok",
+  "okay",
+  "you decide",
+  "your call",
+  "up to you",
+  "surprise me",
+  "pick for me",
+  "lets go",
+  "let's go",
+  "do that",
+  "that works",
+  "sounds good"
+]);
+
+function isWhitespaceChar(value: string): boolean {
+  return value === " " || value === "\n" || value === "\t" || value === "\r" || value === "\f" || value === "\v";
+}
+
+function collapseWhitespace(value: string): string {
+  let output = "";
+  let inWhitespace = false;
+  for (const ch of value) {
+    if (isWhitespaceChar(ch)) {
+      if (!inWhitespace && output.length > 0) {
+        output += " ";
+      }
+      inWhitespace = true;
+      continue;
+    }
+    output += ch;
+    inWhitespace = false;
+  }
+  return output.trim();
+}
+
+function trimPunctuationEdges(value: string): string {
+  const punctuation = ".,!?;:'\"`[](){}<>|";
+  let start = 0;
+  let end = value.length;
+  while (start < end && punctuation.includes(value[start] ?? "")) {
+    start += 1;
+  }
+  while (end > start && punctuation.includes(value[end - 1] ?? "")) {
+    end -= 1;
+  }
+  return value.slice(start, end);
+}
+
+function tokenizeLower(value: string): string[] {
+  const normalized = collapseWhitespace(value).toLowerCase();
+  if (!normalized) {
+    return [];
+  }
+  return normalized
+    .split(" ")
+    .map((token) => trimPunctuationEdges(token))
+    .filter((token) => token.length > 0);
+}
+
+function containsAnyWord(value: string, words: string[]): boolean {
+  const tokens = new Set(tokenizeLower(value));
+  for (const word of words) {
+    if (tokens.has(word.toLowerCase())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function containsAnyPhrase(value: string, phrases: string[]): boolean {
+  const normalized = collapseWhitespace(value).toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  for (const phrase of phrases) {
+    if (normalized.includes(phrase.toLowerCase())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+interface ParsedSlashCommand {
+  name: string;
+  args: string[];
+}
+
+function parseSlashCommand(message: string): ParsedSlashCommand | null {
+  const normalized = collapseWhitespace(message);
+  if (!normalized.startsWith("/")) {
+    return null;
+  }
+  const withoutPrefix = normalized.slice(1).trim();
+  if (!withoutPrefix) {
+    return null;
+  }
+  const parts = withoutPrefix
+    .split(" ")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (parts.length === 0) {
+    return null;
+  }
+  return {
+    name: (parts[0] ?? "").toLowerCase(),
+    args: parts.slice(1)
+  };
+}
+
+function isHexChar(value: string): boolean {
+  const code = value.charCodeAt(0);
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 70) ||
+    (code >= 97 && code <= 102)
+  );
+}
+
+function isLikelyUuid(value: string): boolean {
+  if (value.length !== 36) {
+    return false;
+  }
+  const dashPositions = new Set([8, 13, 18, 23]);
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index] ?? "";
+    if (dashPositions.has(index)) {
+      if (char !== "-") {
+        return false;
+      }
+      continue;
+    }
+    if (!isHexChar(char)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 function isFollowUpContinuationMessage(message: string): boolean {
-  const trimmed = message.trim();
+  const trimmed = collapseWhitespace(message);
   if (!trimmed) {
     return false;
   }
-  if (FOLLOW_UP_CONTINUATION_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+  const normalized = trimmed.toLowerCase();
+  if (FOLLOW_UP_CONTINUATION_EXACT_PHRASES.has(normalized)) {
     return true;
   }
-  return trimmed.length <= 24 && /\b(again|retry|proceed|continue)\b/i.test(trimmed);
+  if (trimmed.length > 24) {
+    return false;
+  }
+  return containsAnyWord(trimmed, ["again", "retry", "proceed", "continue", "decide"])
+    || containsAnyPhrase(trimmed, ["your call", "up to you"]);
 }
 
 function isSubstantiveObjective(text: string | undefined): text is string {
@@ -158,14 +306,14 @@ function resolveTurnObjective(
     };
   }
 
-  const normalizedMessage = message.replace(/\s+/g, " ").trim().toLowerCase();
+  const normalizedMessage = collapseWhitespace(message).toLowerCase();
   const recentUserTurn = [...(sessionContext?.recentTurns ?? [])]
     .reverse()
     .find((turn) => {
       if (turn.role !== "user") {
         return false;
       }
-      const content = turn.content.replace(/\s+/g, " ").trim();
+      const content = collapseWhitespace(turn.content);
       if (!isSubstantiveObjective(content)) {
         return false;
       }
@@ -199,82 +347,37 @@ function resolveTurnObjective(
 }
 
 function looksLikeExecutableLeadRequest(message: string): boolean {
-  const normalized = message.toLowerCase();
-  const hasLeadIntent = /\b(find|get|list|collect|source|prospect)\b/.test(normalized);
-  const hasLeadEntity = /\bleads?\b|\bmsp\b|systems?\s+integrator|\bcontacts?\b/.test(normalized);
-  const hasCount = /\b\d{1,3}\b/.test(normalized);
+  const hasLeadIntent = containsAnyWord(message, ["find", "get", "list", "collect", "source", "prospect"]);
+  const hasLeadEntity = containsAnyWord(message, ["lead", "leads", "msp", "contact", "contacts"])
+    || containsAnyPhrase(message, ["systems integrator"]);
+  const hasCount = tokenizeLower(message).some((token) => Number.isFinite(Number.parseInt(token, 10)));
   return hasLeadIntent && hasLeadEntity && hasCount;
 }
 
 function detectTurnMode(message: string): AlfredTurnMode {
-  const normalized = message.toLowerCase();
-  const hasRunId = Boolean(extractRunIdFromMessage(message));
-  const diagnosticMarkers = [
-    /\bwhy\b/,
-    /\bwhat happened\b/,
-    /\bexplain\b/,
-    /\bdebug\b/,
-    /\banaly[sz]e\b/,
-    /\beval(uate)?\b/,
-    /\brun timeline\b/,
-    /\btool calls?\b/,
-    /\btokens?\b/,
-    /\bfailed?\b/,
-    /\bissue\b/
-  ];
-  const executeMarkers = [
-    /\bfind\b/,
-    /\bcollect\b/,
-    /\bgenerate\b/,
-    /\bcreate\b/,
-    /\bwrite\b/,
-    /\bbuild\b/,
-    /\brerun\b/,
-    /\bretry\b/,
-    /\bproceed\b/,
-    /\bgo ahead\b/,
-    /\bdo it\b/,
-    /\bexecute\b/,
-    /\brun again\b/
-  ];
-  const forceExecuteMarkers = [/\brerun\b/, /\bretry\b/, /\brun again\b/, /\bexecute\b/, /\bgo ahead\b/, /\bdo it\b/];
-  const hasDiagnosticMarker = diagnosticMarkers.some((pattern) => pattern.test(normalized));
-  const hasExecuteMarker = executeMarkers.some((pattern) => pattern.test(normalized));
-  const hasForceExecuteMarker = forceExecuteMarkers.some((pattern) => pattern.test(normalized));
-  if (hasRunId && hasDiagnosticMarker && !hasForceExecuteMarker) {
-    return "diagnostic";
+  const command = parseSlashCommand(message);
+  if (!command) {
+    return "execute";
   }
-  if (hasDiagnosticMarker && !hasForceExecuteMarker) {
-    return "diagnostic";
-  }
-  if (normalized.startsWith("why ") || normalized.startsWith("what ") || normalized.startsWith("how ")) {
-    if (!hasForceExecuteMarker) {
-      return "diagnostic";
-    }
-  }
-  if (!hasExecuteMarker && /\bdiagnos(e|is)|analysis|explain\b/.test(normalized)) {
+  if (command.name === "diagnose" || command.name === "debug" || command.name === "run-diagnostics") {
     return "diagnostic";
   }
   return "execute";
 }
 
 function detectExecutionPermission(message: string): AlfredExecutionPermission {
-  const normalized = message.toLowerCase();
-  const planOnlyMarkers = [
-    /\bdo not execute\b/,
-    /\bdon't execute\b/,
-    /\bwithout executing\b/,
-    /\bdo not run\b/,
-    /\bdon't run\b/,
-    /\bplan only\b/,
-    /\bno execution\b/,
-    /\bbefore doing anything\b/
-  ];
-  return planOnlyMarkers.some((pattern) => pattern.test(normalized)) ? "plan_only" : "execute";
+  const command = parseSlashCommand(message);
+  if (!command) {
+    return "execute";
+  }
+  if (command.name === "plan" || command.name === "dry-run") {
+    return "plan_only";
+  }
+  return "execute";
 }
 
 function buildPlanOnlyResponse(plan: AlfredPlannerOutput, message: string): string {
-  const cleanedObjective = message.replace(/\s+/g, " ").trim();
+  const cleanedObjective = collapseWhitespace(message);
   const lines = [
     "Execution permission is plan-only. I will not execute tools or delegate agents in this turn.",
     `Objective interpreted: ${cleanedObjective.slice(0, 220)}`
@@ -296,11 +399,25 @@ function buildPlanOnlyResponse(plan: AlfredPlannerOutput, message: string): stri
   return lines.join("\n");
 }
 
-const RUN_ID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
-
 function extractRunIdFromMessage(message: string): string | null {
-  const match = message.match(RUN_ID_PATTERN);
-  return match?.[0] ?? null;
+  const command = parseSlashCommand(message);
+  if (!command) {
+    return null;
+  }
+  for (const arg of command.args) {
+    const trimmed = trimPunctuationEdges(arg);
+    if (isLikelyUuid(trimmed)) {
+      return trimmed;
+    }
+    const separatorIndex = trimmed.indexOf("=");
+    if (separatorIndex > 0) {
+      const valuePart = trimPunctuationEdges(trimmed.slice(separatorIndex + 1));
+      if (isLikelyUuid(valuePart)) {
+        return valuePart;
+      }
+    }
+  }
+  return null;
 }
 
 const ALFRED_PLANNER_OUTPUT_JSON_SCHEMA = {
@@ -442,6 +559,18 @@ function formatSessionContextBlock(sessionContext?: SessionPromptContext): strin
   if (artifacts?.length) {
     lines.push(`- Last artifacts: ${artifacts.join(", ")}`);
   }
+  if (sessionContext.recentOutputs?.length) {
+    const renderedOutputs = sessionContext.recentOutputs
+      .slice(-3)
+      .map((output) => {
+        const artifactSuffix = output.artifactPath ? ` | artifact: ${output.artifactPath}` : "";
+        return `- Recent output [${output.kind}/${output.availability}]: ${output.title} | ${output.summary}${artifactSuffix}`;
+      });
+    lines.push(...renderedOutputs);
+  }
+  if (sessionContext.activeThreadSummary) {
+    lines.push(`- Active thread summary: ${sessionContext.activeThreadSummary}`);
+  }
   if (sessionContext.sessionSummary) {
     lines.push(`- Session summary: ${sessionContext.sessionSummary}`);
   }
@@ -542,12 +671,13 @@ function buildAlfredLeadBriefSystemPrompt(sessionContext?: SessionPromptContext)
 }
 
 function fallbackLeadExecutionBrief(message: string): LeadExecutionBrief {
-  const normalizedMessage = message.replace(/\s+/g, " ").trim().slice(0, 400);
-  const emailRequired = /\bemail(s)?\b/i.test(message);
+  const normalizedMessage = collapseWhitespace(message).slice(0, 400);
+  const emailRequired = containsAnyWord(message, ["email", "emails"]);
+  const requestedLeadCount = parseLeadCountFromMessage(message) ?? 20;
   return {
-    requestedLeadCount: parseRequestedLeadCount(message),
+    requestedLeadCount,
     emailRequired,
-    outputFormat: /\bcsv\b/i.test(message) ? "csv" : null,
+    outputFormat: containsAnyWord(message, ["csv"]) ? "csv" : null,
     objectiveBrief: {
       objectiveSummary: normalizedMessage || "Collect lead candidates matching the current user request.",
       companyType: null,
@@ -681,7 +811,7 @@ function buildDiagnosticResponse(run: RunRecord, events: RunEvent[]): string {
   const stopReason = getAgentStopReason(events);
   const lines: string[] = [
     `Run diagnosis for ${run.runId}:`,
-    `- Request: ${run.message.replace(/\s+/g, " ").trim().slice(0, 220)}`,
+    `- Request: ${collapseWhitespace(run.message).slice(0, 220)}`,
     `- Status: ${run.status}${elapsedMs !== null ? ` (elapsed ${Math.round(elapsedMs / 1000)}s)` : ""}`,
     `- LLM usage: ${
       run.llmUsage
@@ -697,7 +827,7 @@ function buildDiagnosticResponse(run: RunRecord, events: RunEvent[]): string {
     lines.push(`- Artifacts: ${run.artifactPaths.join(", ")}`);
   }
   if (run.assistantText) {
-    lines.push(`- Final assistant summary: ${run.assistantText.replace(/\s+/g, " ").trim().slice(0, 280)}`);
+    lines.push(`- Final assistant summary: ${collapseWhitespace(run.assistantText).slice(0, 280)}`);
   }
   return lines.join("\n");
 }
@@ -717,47 +847,91 @@ function buildCompletionCriteria(message: string, leadExecutionBrief?: LeadExecu
     return criteria;
   }
 
-  return [`Answer the current turn directly and honestly: ${message.replace(/\s+/g, " ").trim().slice(0, 240)}`];
+  return [`Answer the current turn directly and honestly: ${collapseWhitespace(message).slice(0, 240)}`];
 }
 
 function detectObjectiveTaskType(message: string, leadExecutionBrief?: LeadExecutionBrief | null): AlfredTaskType {
   if (leadExecutionBrief) {
     return "lead_generation";
   }
-  const normalized = message.toLowerCase();
-  if (/\b(research|news|blog|article|draft|writeup|sources?|citations?)\b/.test(normalized)) {
+  if (
+    containsAnyWord(message, [
+      "research",
+      "news",
+      "blog",
+      "article",
+      "draft",
+      "writeup",
+      "source",
+      "sources",
+      "citation",
+      "citations"
+    ])
+  ) {
     return "general";
   }
   return "general";
 }
 
+function parseFirstPositiveInt(token: string): number | null {
+  const normalized = trimPunctuationEdges(token);
+  if (!normalized) {
+    return null;
+  }
+  for (const ch of normalized) {
+    const code = ch.charCodeAt(0);
+    if (code < 48 || code > 57) {
+      return null;
+    }
+  }
+  const parsed = Number.parseInt(normalized, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed;
+}
+
+function parseLeadCountFromMessage(message: string): number | null {
+  const tokens = tokenizeLower(message);
+  for (let index = 0; index < tokens.length - 1; index += 1) {
+    const count = parseFirstPositiveInt(tokens[index] ?? "");
+    if (!count) {
+      continue;
+    }
+    const next = tokens[index + 1] ?? "";
+    if (next === "lead" || next === "leads") {
+      return count;
+    }
+  }
+  return null;
+}
+
 function deriveHardConstraints(message: string): string[] {
   const constraints: string[] = [];
-  const normalized = message.toLowerCase();
-  const leadCountMatch = normalized.match(/\b(\d{1,3})\s+leads?\b/);
-  if (leadCountMatch?.[1]) {
-    constraints.push(`Target lead count is ${leadCountMatch[1]}.`);
+  const leadCount = parseLeadCountFromMessage(message);
+  if (leadCount) {
+    constraints.push(`Target lead count is ${leadCount}.`);
   }
-  if (/\btexas\b/.test(normalized)) {
+  if (containsAnyWord(message, ["texas"])) {
     constraints.push("Geography includes Texas.");
   }
-  if (/\busa\b|\bunited states\b|\bus\b/.test(normalized)) {
+  if (containsAnyWord(message, ["usa", "us"]) || containsAnyPhrase(message, ["united states"])) {
     constraints.push("Geography includes USA.");
   }
-  if (/\bemail(s)?\b/.test(normalized)) {
+  if (containsAnyWord(message, ["email", "emails"])) {
     constraints.push("Emails are required in the output.");
   }
-  if (/\bcsv\b/.test(normalized)) {
+  if (containsAnyWord(message, ["csv"])) {
     constraints.push("Deliverable must include CSV output.");
   }
-  const wordRange = normalized.match(/\b(\d{2,4})\s*-\s*(\d{2,4})\s*words?\b/);
-  if (wordRange?.[1] && wordRange?.[2]) {
-    constraints.push(`Word range should be ${wordRange[1]}-${wordRange[2]}.`);
+  const targetWordCount = extractTargetWordCount(message);
+  if (targetWordCount) {
+    constraints.push(`Target word count is approximately ${targetWordCount}.`);
   }
-  if (/\b(cite|cited|citations?|sources?)\b/.test(normalized)) {
+  if (containsAnyWord(message, ["cite", "cited", "citation", "citations", "source", "sources"])) {
     constraints.push("Citations/sources are required.");
   }
-  if (/\bx\b|\btwitter\b/.test(normalized)) {
+  if (containsAnyWord(message, ["x", "twitter"])) {
     constraints.push("Include X/Twitter coverage when available.");
   }
   const outputPath = extractRequestedOutputPath(message);
@@ -768,23 +942,34 @@ function deriveHardConstraints(message: string): string[] {
 }
 
 function normalizeRequestedOutputPath(pathValue: string): string {
-  return pathValue.trim().replace(/[).,;:!?]+$/, "");
+  let normalized = pathValue.trim();
+  const trailing = ").,;:!?";
+  while (normalized.length > 0 && trailing.includes(normalized[normalized.length - 1] ?? "")) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized;
 }
 
 function extractRequestedOutputPath(message: string): string | null {
-  const direct = message.match(/\b(?:to|at)\s+(workspace\/[^\s"'`]+)/i);
-  if (direct?.[1]) {
-    return normalizeRequestedOutputPath(direct[1]);
-  }
-  const inline = message.match(/\bworkspace\/[^\s"'`]+/i);
-  if (inline?.[0]) {
-    return normalizeRequestedOutputPath(inline[0]);
+  const tokens = collapseWhitespace(message)
+    .split(" ")
+    .map((token) => token.trim())
+    .filter(Boolean);
+  for (const token of tokens) {
+    const normalizedToken = normalizeRequestedOutputPath(token);
+    if (normalizedToken.toLowerCase().startsWith("workspace/")) {
+      return normalizedToken;
+    }
   }
   return null;
 }
 
 function normalizePathForCompare(pathValue: string): string {
-  return pathValue.replace(/\\/g, "/").replace(/^\/+/, "").trim().toLowerCase();
+  let normalized = pathValue.split("\\").join("/").trim().toLowerCase();
+  while (normalized.startsWith("/")) {
+    normalized = normalized.slice(1);
+  }
+  return normalized;
 }
 
 function buildObjectiveContract(message: string, leadExecutionBrief?: LeadExecutionBrief | null): AlfredObjectiveContract {
@@ -806,18 +991,17 @@ function buildObjectiveContract(message: string, leadExecutionBrief?: LeadExecut
     };
   }
 
-  const normalized = message.toLowerCase();
   const requiredDeliverable =
-    /\bblog\b|\bpost\b/.test(normalized)
+    containsAnyWord(message, ["blog", "post"])
       ? "Deliver the requested blog draft with citations."
-      : `Provide a complete response for: ${message.replace(/\s+/g, " ").trim().slice(0, 180)}`;
+      : `Provide a complete response for: ${collapseWhitespace(message).slice(0, 180)}`;
   const doneCriteria = [
-    `Answer the current turn directly and honestly: ${message.replace(/\s+/g, " ").trim().slice(0, 240)}`
+    `Answer the current turn directly and honestly: ${collapseWhitespace(message).slice(0, 240)}`
   ];
-  if (/\b(cite|cited|citations?|sources?)\b/.test(normalized)) {
+  if (containsAnyWord(message, ["cite", "cited", "citation", "citations", "source", "sources"])) {
     doneCriteria.push("Include explicit source citations for factual claims.");
   }
-  if (/\bblog\b|\bpost\b/.test(normalized)) {
+  if (containsAnyWord(message, ["blog", "post"])) {
     doneCriteria.push("Return the complete draft text in the requested format.");
   }
   return {
@@ -830,19 +1014,28 @@ function buildObjectiveContract(message: string, leadExecutionBrief?: LeadExecut
 }
 
 function extractTargetWordCount(message: string): number | null {
-  const rangeMatch = message.match(/\b(\d{2,4})\s*[-–]\s*(\d{2,4})\s*words?\b/i);
-  if (rangeMatch?.[1] && rangeMatch?.[2]) {
-    const lower = Number.parseInt(rangeMatch[1], 10);
-    const upper = Number.parseInt(rangeMatch[2], 10);
-    if (Number.isFinite(lower) && Number.isFinite(upper) && lower > 0 && upper > 0) {
-      return Math.round((lower + upper) / 2);
+  const tokens = tokenizeLower(message);
+  for (let index = 0; index < tokens.length - 1; index += 1) {
+    const current = tokens[index] ?? "";
+    const next = tokens[index + 1] ?? "";
+    if (next !== "word" && next !== "words") {
+      continue;
     }
-  }
-  const singleMatch = message.match(/\b(\d{2,4})\s*words?\b/i);
-  if (singleMatch?.[1]) {
-    const parsed = Number.parseInt(singleMatch[1], 10);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed;
+    const normalizedCurrent = current.split("–").join("-");
+    if (normalizedCurrent.includes("-")) {
+      const parts = normalizedCurrent.split("-");
+      if (parts.length === 2) {
+        const lower = parseFirstPositiveInt(parts[0] ?? "");
+        const upper = parseFirstPositiveInt(parts[1] ?? "");
+        if (lower && upper) {
+          return Math.round((lower + upper) / 2);
+        }
+      }
+      continue;
+    }
+    const single = parseFirstPositiveInt(current);
+    if (single) {
+      return single;
     }
   }
   return null;
@@ -858,13 +1051,12 @@ function buildSpecialistTaskContract(args: {
   if (agentName !== "research_agent") {
     return undefined;
   }
-  const normalized = args.message.toLowerCase();
   const requiresDraft =
-    /\b(blog|post|article|draft|write)\b/.test(normalized)
-    || /\bdraft\b/i.test(args.objectiveContract.requiredDeliverable);
+    containsAnyWord(args.message, ["blog", "post", "article", "draft", "write"])
+    || containsAnyWord(args.objectiveContract.requiredDeliverable, ["draft"]);
   const requiresCitations =
-    /\b(cite|cited|citations?|sources?)\b/.test(normalized)
-    || args.objectiveContract.hardConstraints.some((item) => /citation|source/i.test(item));
+    containsAnyWord(args.message, ["cite", "cited", "citation", "citations", "source", "sources"])
+    || args.objectiveContract.hardConstraints.some((item) => containsAnyWord(item, ["citation", "source"]));
   return {
     requiredDeliverable: args.objectiveContract.requiredDeliverable,
     requiresDraft,
@@ -930,11 +1122,26 @@ function countBracketCitations(value: string | null | undefined): number {
   if (!value) {
     return 0;
   }
-  const matches = value.matchAll(/\[(\d+)\]/g);
   const unique = new Set<string>();
-  for (const match of matches) {
-    if (match[1]) {
-      unique.add(match[1]);
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== "[") {
+      continue;
+    }
+    let cursor = index + 1;
+    let digits = "";
+    while (cursor < value.length) {
+      const current = value[cursor] ?? "";
+      const code = current.charCodeAt(0);
+      if (code >= 48 && code <= 57) {
+        digits += current;
+        cursor += 1;
+        continue;
+      }
+      break;
+    }
+    if (digits.length > 0 && value[cursor] === "]") {
+      unique.add(digits);
+      index = cursor;
     }
   }
   return unique.size;
@@ -944,8 +1151,31 @@ function countUrlCitations(value: string | null | undefined): number {
   if (!value) {
     return 0;
   }
-  const matches = value.match(/https?:\/\/[^\s)>\]]+/gi) ?? [];
-  const unique = new Set(matches.map((item) => item.trim()));
+  const unique = new Set<string>();
+  const stopChars = new Set([" ", "\n", "\t", "\r", ")", ">", "]"]);
+  let index = 0;
+  while (index < value.length) {
+    const httpIndex = value.indexOf("http://", index);
+    const httpsIndex = value.indexOf("https://", index);
+    let start = -1;
+    if (httpIndex >= 0 && httpsIndex >= 0) {
+      start = Math.min(httpIndex, httpsIndex);
+    } else {
+      start = Math.max(httpIndex, httpsIndex);
+    }
+    if (start < 0) {
+      break;
+    }
+    let cursor = start;
+    while (cursor < value.length && !stopChars.has(value[cursor] ?? "")) {
+      cursor += 1;
+    }
+    const url = value.slice(start, cursor).trim();
+    if (url) {
+      unique.add(url);
+    }
+    index = cursor + 1;
+  }
   return unique.size;
 }
 
@@ -953,10 +1183,7 @@ function countWords(text: string | null | undefined): number {
   if (!text) {
     return 0;
   }
-  return text
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean).length;
+  return tokenizeLower(text).length;
 }
 
 function inferResearchFactsFromRunRecord(
@@ -1160,8 +1387,8 @@ function buildAlfredTurnState(args: {
     }
   } else {
     const targetWordCount = extractTargetWordCount(args.message);
-    const requiresDraft = /blog draft|draft text|blog|article|write/i.test(args.objectiveContract.requiredDeliverable);
-    const requiresCitations = args.objectiveContract.hardConstraints.some((item) => /citation|source/i.test(item));
+    const requiresDraft = containsAnyWord(args.objectiveContract.requiredDeliverable, ["blog", "draft", "article", "write"]);
+    const requiresCitations = args.objectiveContract.hardConstraints.some((item) => containsAnyWord(item, ["citation", "source"]));
     const minimumDraftWords = targetWordCount
       ? Math.max(220, Math.floor(targetWordCount * 0.75))
       : 400;
@@ -1272,41 +1499,29 @@ async function runCompletionEvaluator(args: {
 }
 
 function looksLikeCitation(text: string): boolean {
-  return /https?:\/\/\S+/i.test(text) || /\b(source|citation|references?)\b/i.test(text);
+  return text.includes("http://")
+    || text.includes("https://")
+    || containsAnyWord(text, ["source", "citation", "citations", "reference", "references"]);
 }
 
 function looksLikeClarificationResponse(text: string): boolean {
-  const normalized = text.toLowerCase();
+  const normalized = collapseWhitespace(text).toLowerCase();
+  const clarificationSignals = [
+    "clarify",
+    "clarification",
+    "confirm",
+    "which",
+    "what",
+    "please provide",
+    "please confirm",
+    "could you"
+  ];
+  const proceedSignals = ["proceed", "proceeding", "starting", "working on", "running", "retrying", "i will"];
   return (
-    /\bclarify|clarification|confirm|which|what|please provide|please confirm|could you\b/.test(normalized) ||
-    ((/\bproceed|proceeding|starting|working on|running|retrying|i will\b/.test(normalized) &&
-      normalized.length <= 180)) ||
+    containsAnyPhrase(normalized, clarificationSignals) ||
+    ((containsAnyPhrase(normalized, proceedSignals) && normalized.length <= 180)) ||
     normalized.includes("?")
   );
-}
-
-function deriveResearchClarificationQuestion(message: string): string | null {
-  const normalized = message.toLowerCase();
-  const isResearchOrWritingAsk =
-    /\b(research|write|draft|blog|article|post|news|newsletter)\b/.test(normalized);
-  if (!isResearchOrWritingAsk) {
-    return null;
-  }
-  const hasAutonomyGrant =
-    /\b(you decide|whatever you decide|your call|up to you|surprise me|pick for me)\b/.test(normalized);
-  if (hasAutonomyGrant) {
-    return null;
-  }
-
-  const hasTimeframe = /\b(today|yesterday|this week|this month|last \d+|last week|last month|20\d{2})\b/.test(normalized);
-  const hasLength = /\b\d{3,4}\s*(?:-|to)\s*\d{3,4}\s*words?\b|\b\d{3,4}\s*words?\b/.test(normalized);
-  const hasScopeFocus = /\b(geopolitics?|humanitarian|technology|ai|policy|market|regulation|security)\b/.test(normalized);
-
-  if (hasTimeframe && (hasLength || hasScopeFocus)) {
-    return null;
-  }
-
-  return "Before I start, what should I optimize for: strategic/geopolitical analysis, humanitarian impact, or technology/AI angle? You can also say 'you decide' and I will proceed.";
 }
 
 function extractLeadCountHint(value: unknown): number {
@@ -1319,12 +1534,7 @@ function extractLeadCountHint(value: unknown): number {
   if (!text) {
     return 0;
   }
-  const match = text.match(/(\d{1,3})\s+leads?\b/i);
-  if (!match?.[1]) {
-    return 0;
-  }
-  const parsed = Number.parseInt(match[1], 10);
-  return Number.isFinite(parsed) ? parsed : 0;
+  return parseLeadCountFromMessage(text) ?? 0;
 }
 
 function evaluateCompletionContractGate(args: {
@@ -1350,10 +1560,10 @@ function evaluateCompletionContractGate(args: {
         reason: `contract_not_satisfied: lead count ${factualCount}/${requested}`
       };
     }
-    if (args.turnState.objectiveContract.hardConstraints.some((item) => /email/i.test(item))) {
+    if (args.turnState.objectiveContract.hardConstraints.some((item) => containsAnyWord(item, ["email", "emails"]))) {
       const emailCovered =
         args.turnState.facts.collectedEmailCount >= Math.max(1, requested) ||
-        /\bemail\b/i.test(JSON.stringify(args.latestResult ?? {}));
+        containsAnyWord(JSON.stringify(args.latestResult ?? {}), ["email", "emails"]);
       if (!emailCovered) {
         return {
           allowed: false,
@@ -1365,7 +1575,7 @@ function evaluateCompletionContractGate(args: {
   }
 
   const criticalMissingRequirement = args.turnState.missingRequirements.find((item) =>
-    /requested output saved|artifact|more leads|email coverage|required/i.test(item.toLowerCase())
+    containsAnyPhrase(item.toLowerCase(), ["requested output saved", "artifact", "more leads", "email coverage", "required"])
   );
   if (criticalMissingRequirement) {
     return {
@@ -1374,7 +1584,7 @@ function evaluateCompletionContractGate(args: {
     };
   }
 
-  const requiresCitations = args.objectiveContract.hardConstraints.some((item) => /citation|source/i.test(item));
+  const requiresCitations = args.objectiveContract.hardConstraints.some((item) => containsAnyWord(item, ["citation", "source"]));
   if (requiresCitations) {
     const evidenceText = [
       args.evaluation.responseText ?? "",
@@ -1393,7 +1603,7 @@ function evaluateCompletionContractGate(args: {
     }
   }
 
-  const requiresDraft = /blog draft|draft text|blog/i.test(args.objectiveContract.requiredDeliverable);
+  const requiresDraft = containsAnyWord(args.objectiveContract.requiredDeliverable, ["blog", "draft"]);
   if (requiresDraft) {
     const targetWordCount = extractTargetWordCount(args.turnState.turnObjective);
     const minimumDraftWords = targetWordCount
@@ -1664,27 +1874,6 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       assistantText: diagnosticText,
       artifactPaths: targetRun?.artifactPaths
     };
-  }
-
-  if (executionPermission === "execute") {
-    const clarificationQuestion = deriveResearchClarificationQuestion(turnObjective);
-    if (clarificationQuestion) {
-      await options.runStore.appendEvent({
-        runId: options.runId,
-        sessionId: options.sessionId,
-        phase: "thought",
-        eventType: "alfred_clarification_requested",
-        payload: {
-          source: "pre_execute_gate",
-          question: clarificationQuestion
-        },
-        timestamp: nowIso()
-      });
-      return {
-        status: "completed",
-        assistantText: clarificationQuestion
-      };
-    }
   }
 
   for (let iteration = 1; iteration <= options.maxIterations; iteration += 1) {

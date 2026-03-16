@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { RunOutcome } from "../types.js";
+import type { RunOutcome, SessionOutputAvailability } from "../types.js";
 import * as openAiClient from "../services/openAiClient.js";
 import { composeSystemPrompt } from "../prompts/composePrompt.js";
 import { ALFRED_MASTER_PROMPT_VERSION, ALFRED_MASTER_SYSTEM_PROMPT } from "../prompts/master/alfred.system.js";
@@ -1694,6 +1694,33 @@ function buildSearchRetryProfile(progress: SpecialistProgressState, consecutiveS
   };
 }
 
+function deriveSpecialistOutputAvailability(args: {
+  contract: AgentTaskContract;
+  progress: SpecialistProgressState;
+  responseText: string | null;
+  activeWorkState: ActiveWorkStateSnapshot;
+  artifactCount: number;
+}): SessionOutputAvailability {
+  if (args.artifactCount > 0) {
+    return "body_available";
+  }
+  const responseWords = countWords(args.responseText ?? "");
+  const draftWords = Math.max(args.progress.draftWordCount, responseWords);
+  if (args.contract.requiresDraft) {
+    if (draftWords >= 180) {
+      return "body_available";
+    }
+  } else if (responseWords >= 80) {
+    return "body_available";
+  }
+  const hasRecoverableMetadata =
+    args.activeWorkState.evidenceRecords.length > 0
+    || args.progress.sourceUrls.size > 0
+    || args.progress.fetchedPageCount > 0
+    || (args.activeWorkState.unresolvedItems.length > 0 && draftWords > 0);
+  return hasRecoverableMetadata ? "metadata_only" : "missing";
+}
+
 function evaluateSpecialistContractGate(args: {
   contract: AgentTaskContract;
   progress: SpecialistProgressState;
@@ -1703,6 +1730,13 @@ function evaluateSpecialistContractGate(args: {
   const unmet: string[] = [];
   const responseWords = countWords(args.responseText ?? "");
   const responseCitationCount = extractUrls(args.responseText ?? "").length;
+  const outputAvailability = deriveSpecialistOutputAvailability({
+    contract: args.contract,
+    progress: args.progress,
+    responseText: args.responseText,
+    activeWorkState: args.activeWorkState,
+    artifactCount: 0
+  });
   const hasAnyEvidence =
     args.activeWorkState.evidenceRecords.length > 0
     || args.progress.sourceUrls.size > 0
@@ -1722,6 +1756,9 @@ function evaluateSpecialistContractGate(args: {
       !args.activeWorkState.synthesisState.readyForSynthesis
     ) {
       unmet.push("synthesis_not_ready");
+    }
+    if (outputAvailability !== "body_available") {
+      unmet.push("output_body_unavailable");
     }
   }
   if (args.contract.requiresCitations) {
@@ -1745,6 +1782,7 @@ function buildResearchFailureSummary(args: {
   artifactCount: number;
   partialResultReturned: boolean;
   activeWorkState: ActiveWorkStateSnapshot;
+  outputAvailability: SessionOutputAvailability;
 }): string {
   const progress = args.progress;
   const observations = args.observations;
@@ -1752,10 +1790,13 @@ function buildResearchFailureSummary(args: {
   const errors = progress.errorSamples.length > 0 ? progress.errorSamples.join(" | ") : "none";
   const unresolved = args.activeWorkState.unresolvedItems.slice(0, 4).join(" | ") || "none";
   return [
-    args.partialResultReturned
-      ? "I reached guardrails, so I am returning the best partial draft/evidence collected so far."
-      : "I couldn't finish a publish-ready draft within this run budget.",
+    args.outputAvailability === "body_available"
+      ? "I reached guardrails, so I am returning the best reusable body collected so far."
+      : args.outputAvailability === "metadata_only"
+        ? "I reached guardrails with recoverable research metadata, but not a reusable final body."
+        : "I couldn't finish a publish-ready draft within this run budget.",
     `Progress so far: ${progress.sourceUrls.size} sources discovered, ${progress.fetchedPageCount} pages fetched, ${progress.draftWordCount} draft words, ${progress.citationCount} citations.`,
+    `Output availability: ${args.outputAvailability}.`,
     `Synthesis state: ${args.activeWorkState.synthesisState.status}. ${args.activeWorkState.synthesisState.summary}`,
     (args.activeWorkState.synthesisState.completionGaps?.length ?? 0) > 0
       ? `Completion gaps: ${args.activeWorkState.synthesisState.completionGaps?.slice(0, 4).join(" | ")}.`
@@ -2262,7 +2303,14 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
             activeWorkState: {
               unresolvedItems: activeWorkState.unresolvedItems,
               evidenceRecordCount: activeWorkState.evidenceRecords.length,
-              synthesisState: activeWorkState.synthesisState
+              synthesisState: activeWorkState.synthesisState,
+              outputAvailability: deriveSpecialistOutputAvailability({
+                contract: taskContract,
+                progress,
+                responseText: plan.responseText,
+                activeWorkState,
+                artifactCount: toolContext.state.artifacts.length
+              })
             }
           },
           timestamp: nowIso()
@@ -2937,13 +2985,15 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     responseText: null,
     activeWorkState: finalActiveWorkState
   });
+  const outputAvailability = deriveSpecialistOutputAvailability({
+    contract: taskContract,
+    progress,
+    responseText: null,
+    activeWorkState: finalActiveWorkState,
+    artifactCount: toolContext.state.artifacts.length
+  });
   const partialResultReturned =
-    options.skillName === "research_agent"
-    && (
-      toolContext.state.artifacts.length > 0
-      || progress.draftWordCount >= 180
-      || progress.citationCount >= Math.max(1, taskContract.minimumCitationCount)
-    );
+    options.skillName === "research_agent" && outputAvailability !== "missing";
   const assistantText =
     options.skillName === "research_agent" && !unmetContract.satisfied
       ? buildResearchFailureSummary({
@@ -2951,7 +3001,8 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
           observations,
           artifactCount: toolContext.state.artifacts.length,
           partialResultReturned,
-          activeWorkState: finalActiveWorkState
+          activeWorkState: finalActiveWorkState,
+          outputAvailability
         })
       : lastSuccessfulExecution
         ? buildSpecialistResultAssistantText(options.skillName, lastSuccessfulExecution)
@@ -2970,6 +3021,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       searchTimeoutCount: progress.searchTimeoutCount,
       sourceUrlCount: progress.sourceUrls.size,
       fetchedPageCount: progress.fetchedPageCount,
+      outputAvailability,
       unmetContract: unmetContract.unmet,
       activeWorkState: {
         unresolvedItems: finalActiveWorkState.unresolvedItems,

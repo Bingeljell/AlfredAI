@@ -208,6 +208,7 @@ Implementation status:
 - Forced fetch-to-synthesis phase jumps have been removed, so specialist progression is no longer hard-switched into writing just because a fetch threshold was crossed.
 - Assembly and low-budget fallback guards now require both evidence readiness and a viable writer time window, which keeps the runtime from routing into doomed write passes when there is not enough budget left for a real synthesis attempt.
 - Search-only replans are now mechanically corrected when runtime state already says `fetch` is the next unresolved step, and planner timeouts during `discovery_complete_fetch_pending` can recover directly into a fetch/evidence action instead of burning another iteration on shortlist churn.
+- Specialist stop/failure paths now emit explicit output availability state (`body_available`, `metadata_only`, `missing`) so convergence outcomes are inspectable and finalization logic no longer treats all partials as equivalent.
 
 ### Phase 5: Writer Readiness Contract
 
@@ -234,7 +235,7 @@ Implementation status:
 - Writer-evidence rerouting, revise-vs-retrieve retries, and low-budget finalize decisions now consume that shared readiness state instead of duplicating scattered threshold logic.
 - Writer readiness now includes `timeBudgetReady`, `outputContractReady`, and a task-shape-specific minimum writer window so specialist/runtime code can reason about whether a write pass is mechanically viable before invoking the writer.
 - Low-confidence placeholder drafts from failed low-budget or no-output passes are no longer persisted as fresh artifacts by default; explicit output paths still preserve overwrite protection and complete-draft downgrade protection.
-- Remaining work in this phase is to keep tightening final-response paths so placeholder or low-evidence drafts cannot masquerade as complete outcomes.
+- Final response/failure paths now use explicit output availability state, so placeholder or low-evidence outcomes cannot masquerade as reusable completed drafts.
 - Synthesis-phase search loops can now be rerouted into an assembly pass once evidence readiness is satisfied, instead of waiting to hit a low-budget emergency fallback.
 
 ### Phase 6: Remaining Heuristic Ownership

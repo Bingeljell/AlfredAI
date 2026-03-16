@@ -355,7 +355,7 @@ test("runSpecialistToolLoop triggers loop-shape guard after repeated search-only
 
   const outcome = await runSpecialistToolLoop({
     runStore,
-    searchManager: new FakeSearchManager() as never,
+    searchManager: new FakeSearchManagerWithResults() as never,
     workspaceDir: workspace,
     message: "Research this topic",
     runId: run.runId,
@@ -403,6 +403,13 @@ test("runSpecialistToolLoop triggers loop-shape guard after repeated search-only
   const updatedRun = await runStore.getRun(run.runId);
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
   assert.ok(events.some((event) => event.eventType === "specialist_loop_guard_triggered"));
+  assert.ok(
+    events.some(
+      (event) =>
+        event.eventType === "specialist_stop"
+        && (event.payload as { outputAvailability?: string }).outputAvailability === "metadata_only"
+    )
+  );
 });
 
 test("runSpecialistToolLoop emits phase-transition hint before search-only guard for research tasks", async () => {

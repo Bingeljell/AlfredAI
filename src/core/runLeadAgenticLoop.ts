@@ -3,7 +3,7 @@ import type { LlmUsage, LlmUsageTotals, PolicyMode, RunOutcome, ToolCallRecord }
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import { applyToolAllowlist, discoverLeadAgentTools } from "../agent/tools/registry.js";
-import type { LeadAgentDefaults, LeadAgentState, LeadAgentToolContext } from "../agent/types.js";
+import type { AgentSynthesisState, LeadAgentDefaults, LeadAgentState, LeadAgentToolContext } from "../agent/types.js";
 import { parseRequestedLeadCount } from "../tools/lead/requestIntent.js";
 import { runOpenAiStructuredChatWithDiagnostics } from "../services/openAiClient.js";
 import { LlmBudgetManager } from "../tools/lead/llmBudget.js";
@@ -1773,6 +1773,12 @@ export async function runLeadAgenticLoop(options: LeadAgentRuntimeOptions): Prom
   const targetLeadCount = options.leadExecutionBrief?.requestedLeadCount ?? parseRequestedLeadCount(options.message);
   const startMs = Date.now();
   const deadlineAtMs = startMs + options.maxDurationMs;
+  const initialSynthesisState: AgentSynthesisState = {
+    status: "not_ready",
+    summary: "No active synthesis state yet.",
+    missingEvidence: [],
+    readyForSynthesis: false
+  };
   const state: LeadAgentState = {
     leads: [],
     artifacts: [],
@@ -1780,7 +1786,13 @@ export async function runLeadAgenticLoop(options: LeadAgentRuntimeOptions): Prom
     fetchedPages: [],
     shortlistedUrls: [],
     executionBrief: options.leadExecutionBrief,
-    researchSourceCards: []
+    researchSourceCards: [],
+    assumptions: [],
+    unresolvedItems: [],
+    activeWorkItems: [],
+    candidateSets: [],
+    evidenceRecords: [],
+    synthesisState: initialSynthesisState
   };
   const emailRequestedByUser = isEmailRequired({
     message: options.message,
@@ -1834,6 +1846,30 @@ export async function runLeadAgenticLoop(options: LeadAgentRuntimeOptions): Prom
     state.researchSourceCards = cards;
   };
   const getResearchSourceCards: LeadAgentToolContext["getResearchSourceCards"] = () => state.researchSourceCards ?? [];
+  const setAssumptions: LeadAgentToolContext["setAssumptions"] = (assumptions) => {
+    state.assumptions = assumptions;
+  };
+  const getAssumptions: LeadAgentToolContext["getAssumptions"] = () => state.assumptions ?? [];
+  const setUnresolvedItems: LeadAgentToolContext["setUnresolvedItems"] = (items) => {
+    state.unresolvedItems = items;
+  };
+  const getUnresolvedItems: LeadAgentToolContext["getUnresolvedItems"] = () => state.unresolvedItems ?? [];
+  const setActiveWorkItems: LeadAgentToolContext["setActiveWorkItems"] = (items) => {
+    state.activeWorkItems = items;
+  };
+  const getActiveWorkItems: LeadAgentToolContext["getActiveWorkItems"] = () => state.activeWorkItems ?? [];
+  const setCandidateSets: LeadAgentToolContext["setCandidateSets"] = (sets) => {
+    state.candidateSets = sets;
+  };
+  const getCandidateSets: LeadAgentToolContext["getCandidateSets"] = () => state.candidateSets ?? [];
+  const setEvidenceRecords: LeadAgentToolContext["setEvidenceRecords"] = (records) => {
+    state.evidenceRecords = records;
+  };
+  const getEvidenceRecords: LeadAgentToolContext["getEvidenceRecords"] = () => state.evidenceRecords ?? [];
+  const setSynthesisState: LeadAgentToolContext["setSynthesisState"] = (synthesisState) => {
+    state.synthesisState = synthesisState;
+  };
+  const getSynthesisState: LeadAgentToolContext["getSynthesisState"] = () => state.synthesisState;
 
   const toolContext: LeadAgentToolContext = {
     runId: options.runId,
@@ -1858,7 +1894,19 @@ export async function runLeadAgenticLoop(options: LeadAgentRuntimeOptions): Prom
     setShortlistedUrls,
     getShortlistedUrls,
     setResearchSourceCards,
-    getResearchSourceCards
+    getResearchSourceCards,
+    setAssumptions,
+    getAssumptions,
+    setUnresolvedItems,
+    getUnresolvedItems,
+    setActiveWorkItems,
+    getActiveWorkItems,
+    setCandidateSets,
+    getCandidateSets,
+    setEvidenceRecords,
+    getEvidenceRecords,
+    setSynthesisState,
+    getSynthesisState
   };
   const plannerBudget = new LlmBudgetManager(options.plannerMaxCalls);
   const observations: LeadAgentObservation[] = [];

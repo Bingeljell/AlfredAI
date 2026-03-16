@@ -4,7 +4,12 @@ import * as openAiClient from "../services/openAiClient.js";
 import { composeSystemPrompt } from "../prompts/composePrompt.js";
 import { ALFRED_MASTER_PROMPT_VERSION, ALFRED_MASTER_SYSTEM_PROMPT } from "../prompts/master/alfred.system.js";
 import type { AgentSkillRunOptions, AgentTaskContract } from "../agent/skills/types.js";
-import type { LeadAgentState, LeadAgentToolContext, ResearchSourceCard } from "../agent/types.js";
+import type {
+  AgentSynthesisState,
+  LeadAgentState,
+  LeadAgentToolContext,
+  ResearchSourceCard
+} from "../agent/types.js";
 import {
   applyToolAllowlist,
   discoverLeadAgentTools,
@@ -1289,6 +1294,12 @@ function buildResearchFailureSummary(args: {
 }
 
 function createToolContext(options: SpecialistToolLoopOptions, deadlineAtMs: number): LeadAgentToolContext {
+  const initialSynthesisState: AgentSynthesisState = {
+    status: "not_ready",
+    summary: "No active synthesis state yet.",
+    missingEvidence: [],
+    readyForSynthesis: false
+  };
   const state: LeadAgentState = {
     leads: [],
     artifacts: [],
@@ -1296,7 +1307,13 @@ function createToolContext(options: SpecialistToolLoopOptions, deadlineAtMs: num
     fetchedPages: [],
     shortlistedUrls: [],
     executionBrief: options.leadExecutionBrief,
-    researchSourceCards: []
+    researchSourceCards: [],
+    assumptions: [],
+    unresolvedItems: [],
+    activeWorkItems: [],
+    candidateSets: [],
+    evidenceRecords: [],
+    synthesisState: initialSynthesisState
   };
 
   return {
@@ -1348,7 +1365,31 @@ function createToolContext(options: SpecialistToolLoopOptions, deadlineAtMs: num
     setResearchSourceCards: (cards) => {
       state.researchSourceCards = cards;
     },
-    getResearchSourceCards: () => state.researchSourceCards ?? []
+    getResearchSourceCards: () => state.researchSourceCards ?? [],
+    setAssumptions: (assumptions) => {
+      state.assumptions = assumptions;
+    },
+    getAssumptions: () => state.assumptions ?? [],
+    setUnresolvedItems: (items) => {
+      state.unresolvedItems = items;
+    },
+    getUnresolvedItems: () => state.unresolvedItems ?? [],
+    setActiveWorkItems: (items) => {
+      state.activeWorkItems = items;
+    },
+    getActiveWorkItems: () => state.activeWorkItems ?? [],
+    setCandidateSets: (sets) => {
+      state.candidateSets = sets;
+    },
+    getCandidateSets: () => state.candidateSets ?? [],
+    setEvidenceRecords: (records) => {
+      state.evidenceRecords = records;
+    },
+    getEvidenceRecords: () => state.evidenceRecords ?? [],
+    setSynthesisState: (synthesisState) => {
+      state.synthesisState = synthesisState;
+    },
+    getSynthesisState: () => state.synthesisState
   };
 }
 

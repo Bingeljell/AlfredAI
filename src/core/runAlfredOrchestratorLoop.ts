@@ -8,7 +8,7 @@ import { ALFRED_MASTER_PROMPT_VERSION, ALFRED_MASTER_SYSTEM_PROMPT } from "../pr
 import type { LeadAgentRuntimeOptions } from "./runLeadAgenticLoop.js";
 import { runAgentLoop } from "./runAgentLoop.js";
 import { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
-import type { LeadAgentDefaults, LeadAgentState, LeadAgentToolContext } from "../agent/types.js";
+import type { AgentSynthesisState, LeadAgentDefaults, LeadAgentState, LeadAgentToolContext } from "../agent/types.js";
 import { discoverLeadAgentTools } from "../agent/tools/registry.js";
 import { redactValue } from "../utils/redact.js";
 import { listAgentSkills } from "../agent/skills/registry.js";
@@ -2006,13 +2006,25 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     toolAllowlist: skill.toolAllowlist ?? []
   }));
 
+  const initialSynthesisState: AgentSynthesisState = {
+    status: "not_ready",
+    summary: "No active synthesis state yet.",
+    missingEvidence: [],
+    readyForSynthesis: false
+  };
   const alfredState: LeadAgentState = {
     leads: [],
     artifacts: [],
     requestedLeadCount: 0,
     fetchedPages: [],
     shortlistedUrls: [],
-    researchSourceCards: []
+    researchSourceCards: [],
+    assumptions: [],
+    unresolvedItems: [],
+    activeWorkItems: [],
+    candidateSets: [],
+    evidenceRecords: [],
+    synthesisState: initialSynthesisState
   };
   const addLeads: LeadAgentToolContext["addLeads"] = (incoming) => {
     let addedCount = 0;
@@ -2046,6 +2058,30 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     alfredState.researchSourceCards = cards;
   };
   const getResearchSourceCards: LeadAgentToolContext["getResearchSourceCards"] = () => alfredState.researchSourceCards ?? [];
+  const setAssumptions: LeadAgentToolContext["setAssumptions"] = (assumptions) => {
+    alfredState.assumptions = assumptions;
+  };
+  const getAssumptions: LeadAgentToolContext["getAssumptions"] = () => alfredState.assumptions ?? [];
+  const setUnresolvedItems: LeadAgentToolContext["setUnresolvedItems"] = (items) => {
+    alfredState.unresolvedItems = items;
+  };
+  const getUnresolvedItems: LeadAgentToolContext["getUnresolvedItems"] = () => alfredState.unresolvedItems ?? [];
+  const setActiveWorkItems: LeadAgentToolContext["setActiveWorkItems"] = (items) => {
+    alfredState.activeWorkItems = items;
+  };
+  const getActiveWorkItems: LeadAgentToolContext["getActiveWorkItems"] = () => alfredState.activeWorkItems ?? [];
+  const setCandidateSets: LeadAgentToolContext["setCandidateSets"] = (sets) => {
+    alfredState.candidateSets = sets;
+  };
+  const getCandidateSets: LeadAgentToolContext["getCandidateSets"] = () => alfredState.candidateSets ?? [];
+  const setEvidenceRecords: LeadAgentToolContext["setEvidenceRecords"] = (records) => {
+    alfredState.evidenceRecords = records;
+  };
+  const getEvidenceRecords: LeadAgentToolContext["getEvidenceRecords"] = () => alfredState.evidenceRecords ?? [];
+  const setSynthesisState: LeadAgentToolContext["setSynthesisState"] = (synthesisState) => {
+    alfredState.synthesisState = synthesisState;
+  };
+  const getSynthesisState: LeadAgentToolContext["getSynthesisState"] = () => alfredState.synthesisState;
 
   const toolContext: LeadAgentToolContext = {
     runId: options.runId,
@@ -2069,7 +2105,19 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     setShortlistedUrls,
     getShortlistedUrls,
     setResearchSourceCards,
-    getResearchSourceCards
+    getResearchSourceCards,
+    setAssumptions,
+    getAssumptions,
+    setUnresolvedItems,
+    getUnresolvedItems,
+    setActiveWorkItems,
+    getActiveWorkItems,
+    setCandidateSets,
+    getCandidateSets,
+    setEvidenceRecords,
+    getEvidenceRecords,
+    setSynthesisState,
+    getSynthesisState
   };
 
   const observations: Array<{ iteration: number; summary: string; outcome: string }> = [];

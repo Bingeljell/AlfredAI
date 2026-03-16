@@ -15,6 +15,65 @@ export interface ResearchSourceCard {
   sourceTool: string;
 }
 
+export type AgentMetadataValue = string | number | boolean | null;
+
+export interface AgentWorkAssumption {
+  id: string;
+  statement: string;
+  source: "user" | "model" | "tool" | "runtime";
+  confidence: "low" | "medium" | "high";
+}
+
+export interface AgentActiveWorkItem {
+  id: string;
+  kind: "task" | "candidate_set" | "evidence" | "draft" | "artifact" | "generic";
+  label: string;
+  summary: string;
+  status: "pending" | "active" | "ready" | "blocked" | "completed";
+  candidateSetIds?: string[];
+  evidenceRecordIds?: string[];
+  metadata?: Record<string, AgentMetadataValue>;
+}
+
+export interface AgentCandidateEntry {
+  id: string;
+  label: string;
+  summary: string;
+  status: "candidate" | "supported" | "selected" | "rejected" | "unknown";
+  evidenceRecordIds?: string[];
+  metadata?: Record<string, AgentMetadataValue>;
+}
+
+export interface AgentCandidateSet {
+  id: string;
+  label: string;
+  objective?: string;
+  status: "open" | "narrowing" | "ready" | "completed";
+  items: AgentCandidateEntry[];
+  metadata?: Record<string, AgentMetadataValue>;
+}
+
+export interface AgentEvidenceRecord {
+  id: string;
+  kind: "search_result" | "fetched_page" | "source_card" | "draft" | "artifact" | "generic";
+  summary: string;
+  source: "search" | "fetch" | "writer" | "tool" | "user" | "memory" | "runtime";
+  toolName?: string;
+  url?: string;
+  artifactPath?: string;
+  supports?: string[];
+  confidence: "low" | "medium" | "high" | "unknown";
+  metadata?: Record<string, AgentMetadataValue>;
+}
+
+export interface AgentSynthesisState {
+  status: "not_ready" | "emerging" | "ready" | "partial" | "complete";
+  summary: string;
+  missingEvidence: string[];
+  readyForSynthesis: boolean;
+  metadata?: Record<string, AgentMetadataValue>;
+}
+
 export interface LeadAgentDefaults {
   searchMaxResults: number;
   subReactMaxPages: number;
@@ -32,6 +91,12 @@ export interface LeadAgentState {
   shortlistedUrls?: string[];
   executionBrief?: LeadExecutionBrief;
   researchSourceCards?: ResearchSourceCard[];
+  assumptions?: AgentWorkAssumption[];
+  unresolvedItems?: string[];
+  activeWorkItems?: AgentActiveWorkItem[];
+  candidateSets?: AgentCandidateSet[];
+  evidenceRecords?: AgentEvidenceRecord[];
+  synthesisState?: AgentSynthesisState;
 }
 
 export interface LeadAgentToolContext {
@@ -58,6 +123,18 @@ export interface LeadAgentToolContext {
   getShortlistedUrls?: () => string[];
   setResearchSourceCards?: (cards: ResearchSourceCard[]) => void;
   getResearchSourceCards?: () => ResearchSourceCard[];
+  setAssumptions?: (assumptions: AgentWorkAssumption[]) => void;
+  getAssumptions?: () => AgentWorkAssumption[];
+  setUnresolvedItems?: (items: string[]) => void;
+  getUnresolvedItems?: () => string[];
+  setActiveWorkItems?: (items: AgentActiveWorkItem[]) => void;
+  getActiveWorkItems?: () => AgentActiveWorkItem[];
+  setCandidateSets?: (sets: AgentCandidateSet[]) => void;
+  getCandidateSets?: () => AgentCandidateSet[];
+  setEvidenceRecords?: (records: AgentEvidenceRecord[]) => void;
+  getEvidenceRecords?: () => AgentEvidenceRecord[];
+  setSynthesisState?: (state: AgentSynthesisState) => void;
+  getSynthesisState?: () => AgentSynthesisState | undefined;
 }
 
 export interface LeadAgentToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {

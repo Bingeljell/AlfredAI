@@ -51,6 +51,7 @@ This section reflects what is actually implemented today.
 - The contract now behaves as the canonical turn contract for the run:
   - downstream execution receives the same deliverable contract
   - specialist fallback paths no longer infer draft/citation semantics from raw prompt keywords when no explicit task contract is supplied
+- For simple general ranked-list/list/comparison/brief tasks that do not require long-form drafting, Alfred now keeps execution in its own loop and rewrites planner delegation to `research_agent` into direct retrieval actions.
 - Alfred planner responses now carry explicit `responseKind`:
   - `final`
   - `clarification`
@@ -157,6 +158,19 @@ Delivered:
 Remaining:
 
 - none material for this phase
+
+### Slice 2: Execution Loop Simplification
+
+Status: in progress
+
+Delivered so far:
+
+- Alfred now prevents unnecessary delegation for simple general research/list tasks by converting `research_agent` delegation into direct tool execution in Alfred's own loop.
+
+Remaining:
+
+- continue reducing duplicate semantic planning for other simple research/synthesis shapes
+- decide which remaining task classes still justify delegation
 
 ### Phase 3: Generic Active Work State
 

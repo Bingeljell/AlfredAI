@@ -634,7 +634,7 @@ test("runAlfredOrchestratorLoop treats model interpretation as the semantic sour
   const runStore = new RunStore(workspace);
   const run = await runStore.createRun(
     "session-1",
-    "Write a 900 word article with citations about games for kids.",
+    "Write a 900 word article with citations about games for kids. Save to workspace/alfred/artifacts/games.md.",
     "running"
   );
 
@@ -707,7 +707,7 @@ test("runAlfredOrchestratorLoop treats model interpretation as the semantic sour
     runStore,
     searchManager: new FakeSearchManager() as unknown as SearchManager,
     workspaceDir: workspace,
-    message: "Write a 900 word article with citations about games for kids.",
+    message: "Write a 900 word article with citations about games for kids. Save to workspace/alfred/artifacts/games.md.",
     runId: run.runId,
     sessionId: "session-1",
     openAiApiKey: "test-key",
@@ -741,6 +741,7 @@ test("runAlfredOrchestratorLoop treats model interpretation as the semantic sour
   assert.equal(delegatedInput?.taskContract?.requiresCitations, false);
   assert.equal(delegatedInput?.taskContract?.minimumCitationCount, 0);
   assert.equal(delegatedInput?.taskContract?.targetWordCount, null);
+  assert.equal(delegatedInput?.taskContract?.requestedOutputPath, "workspace/alfred/artifacts/games.md");
   assert.equal(delegatedInput?.taskContract?.preferredOutputShape, "ranked_list");
   assert.deepEqual(delegatedInput?.taskContract?.assumptions, ["No board games unless explicitly requested."]);
 });
@@ -848,6 +849,122 @@ test("runAlfredOrchestratorLoop respects planner choice without forcing delegati
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
   assert.ok(events.some((event) => event.eventType === "alfred_clarification_requested"));
   assert.ok(!events.some((event) => event.eventType === "alfred_plan_adjusted"));
+});
+
+test("runAlfredOrchestratorLoop keeps simple ranked-list research tasks in Alfred loop", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-simple-research-direct");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun(
+    "session-1",
+    "Give me a ranked list of recent kid-friendly video games.",
+    "running"
+  );
+
+  let delegated = false;
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_turn_interpretation") {
+      return {
+        result: {
+          thought: "This is a concise ranked-list research task.",
+          groundedObjective: "Give me a ranked list of recent kid-friendly video games.",
+          taskType: "general" as const,
+          requiredDeliverable: "Return a concise ranked list of recent kid-friendly video games.",
+          hardConstraints: ["Video games only.", "Ranked list format."],
+          doneCriteria: ["Return a ranked list directly.", "Do not delegate unless the task becomes materially more complex."],
+          assumptions: [],
+          requiresDraft: false,
+          requiresCitations: false,
+          targetWordCount: null,
+          requestedOutputPath: null,
+          clarificationNeeded: false,
+          clarificationQuestion: null
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      return {
+        result: {
+          thought: "Delegate to research_agent.",
+          actionType: "delegate_agent" as const,
+          responseKind: null,
+          delegateAgent: "research_agent",
+          delegateBrief: "Research and compile the ranked list.",
+          toolName: null,
+          toolInputJson: null,
+          responseText: null
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_completion_evaluation") {
+      return {
+        result: {
+          thought: "The direct search result is enough for this routing test.",
+          shouldRespond: true,
+          responseText: "Handled directly in Alfred loop.",
+          continueReason: null,
+          confidence: 0.9
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message: "Give me a ranked list of recent kid-friendly video games.",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in simple research direct test");
+    },
+    maxIterations: 3,
+    maxDurationMs: 60_000,
+    maxToolCalls: 3,
+    maxParallelTools: 1,
+    plannerMaxCalls: 3,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner,
+    agentLoopRunner: async () => {
+      delegated = true;
+      return {
+        status: "completed",
+        assistantText: "Delegated."
+      };
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.equal(outcome.assistantText, "Handled directly in Alfred loop.");
+  assert.equal(delegated, false);
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  const adjustedEvent = events.find(
+    (event) =>
+      event.eventType === "alfred_plan_adjusted"
+      && (event.payload as { reason?: string }).reason === "simple_research_task_direct_execution"
+  );
+  assert.ok(adjustedEvent);
+  const toolCall = updatedRun?.toolCalls.find((call) => call.toolName === "search");
+  assert.ok(toolCall);
 });
 
 test("runAlfredOrchestratorLoop exposes full runtime catalogs to planner", async () => {
@@ -1784,12 +1901,19 @@ test("runAlfredOrchestratorLoop rejects stale recent-output grounding for a fres
   });
 
   assert.equal(outcome.status, "completed");
-  assert.equal(delegatedInput?.taskContract?.requestedOutputPath, null);
+  assert.equal(delegatedInput, undefined);
 
   const updatedRun = await runStore.getRun(run.runId);
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
   const resolvedEvent = events.find((event) => event.eventType === "alfred_turn_objective_resolved");
   assert.ok(!resolvedEvent);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.eventType === "alfred_plan_adjusted"
+        && (event.payload as { reason?: string }).reason === "simple_research_task_direct_execution"
+    )
+  );
 });
 
 test("runAlfredOrchestratorLoop can recover session outputs from durable run history", async () => {

@@ -21,7 +21,8 @@ Every slice below must be judged against that rule.
   - canonical turn contract introduced
   - turn interpretation now owns delegated contract semantics when available
   - specialist fallback contract no longer regex-infers draft/citation intent from raw prompt text
-- Slice 2: `next`
+- Slice 2: `in progress`
+  - simple ranked-list research tasks now stay in Alfred's loop via direct execution override instead of defaulting to `research_agent`
 - Slice 3: `pending`
 - Slice 4: `pending`
 - Slice 5: `pending`
@@ -55,7 +56,7 @@ Exit criteria met:
 ## Slice 2 - Execution Loop Simplification
 
 Status:
-- `next`
+- `in progress`
 
 Objective:
 - remove duplicate semantic planning between Alfred orchestrator and research specialist for simple plaintext tasks
@@ -110,6 +111,9 @@ Exit criteria:
 - simple research/list tasks no longer require a second semantic planner
 - no semantic disagreement between Alfred and specialist for those tasks
 - run traces show fewer planning layers and fewer LLM calls for the same task class
+
+Current progress:
+- Alfred now rewrites `delegate_agent: research_agent` into direct tool execution for simple general ranked-list/list/comparison/brief shapes that do not require long-form drafting or artifact persistence.
 
 Risks:
 - deleting delegation too aggressively and harming cases where specialist state still helps

@@ -110,6 +110,25 @@ function setHtmlIfChanged(element, nextHtml) {
   }
 }
 
+function hasActiveTextSelectionWithin(container) {
+  const selection = window.getSelection?.();
+  if (!selection || selection.isCollapsed) {
+    return false;
+  }
+  const text = selection.toString().trim();
+  if (!text) {
+    return false;
+  }
+  const anchorNode = selection.anchorNode;
+  const focusNode = selection.focusNode;
+  const anchorElement = anchorNode instanceof Element ? anchorNode : anchorNode?.parentElement;
+  const focusElement = focusNode instanceof Element ? focusNode : focusNode?.parentElement;
+  return Boolean(
+    (anchorElement && container.contains(anchorElement))
+    || (focusElement && container.contains(focusElement))
+  );
+}
+
 function pretty(value, maxChars) {
   const text = JSON.stringify(value, null, 2);
   if (!maxChars || text.length <= maxChars) {
@@ -1214,6 +1233,9 @@ els.sessionList.addEventListener("click", async (event) => {
 });
 
 els.chatHistory.addEventListener("click", async (event) => {
+  if (hasActiveTextSelectionWithin(els.chatHistory)) {
+    return;
+  }
   const loadButton = event.target.closest("[data-open-run]");
   const exportButton = event.target.closest("[data-export-run]");
   const card = event.target.closest("[data-run-id]");

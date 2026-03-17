@@ -239,6 +239,7 @@
   - Specialist runtime is now less semantic and more contract-driven: writer schema-repair/default inputs rebuild from the canonical contract, assembly/finalize behavior no longer keys off `research_agent` skill-name checks, and fallback specialist setup now degrades to a minimal generic contract unless an explicit task contract is provided.
   - March 17 refactor target is now implemented for the current runtime boundary: Alfred owns general-turn semantics through one turn contract and one local execution loop, writer is a plain generation tool, outer completion-evaluator indirection is gone, specialist helpers are contract/mechanics-driven, and Alfred-local general research now has mechanical search-to-fetch convergence instead of repeated broad-search replans.
   - Turn-contract hardening now blocks over-literal semantic drift from interpretation output: `markdown` no longer becomes a fake output-path obligation, and per-item source URL requirements no longer auto-upgrade into formal citation gates.
+  - Workspace chat text selection is now stable during copy/paste: selecting text inside chat bubbles no longer triggers chat-card reloads, and message/thinking text is explicitly selectable in the browser UI.
   - Additional resiliency and production hardening tasks remain for later iterations.
 
 ## Remaining Follow-ups

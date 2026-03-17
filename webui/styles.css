@@ -492,6 +492,13 @@ h3 {
   max-width: min(95%, 980px);
 }
 
+.message-body,
+.thinking-line,
+.message-meta {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .chat-turn .message-role {
   font-family: var(--mono);
   font-size: 12px;

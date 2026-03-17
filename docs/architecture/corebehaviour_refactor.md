@@ -47,7 +47,10 @@ This section reflects what is actually implemented today.
 ### Turn semantics
 
 - Execute-mode turns now go through a structured `turn_interpretation` model call in [runAlfredOrchestratorLoop.ts](/Users/nikhil/Projects/Alfredv1/src/core/runAlfredOrchestratorLoop.ts).
-- Alfred builds an immutable `objectiveContract` from grounded turn interpretation rather than relying only on prompt heuristics.
+- Alfred now builds an immutable `objectiveContract` from grounded turn interpretation rather than re-deriving semantics from the raw user message when interpretation is available.
+- The contract now behaves as the canonical turn contract for the run:
+  - downstream execution receives the same deliverable contract
+  - specialist fallback paths no longer infer draft/citation semantics from raw prompt keywords when no explicit task contract is supplied
 - Alfred planner responses now carry explicit `responseKind`:
   - `final`
   - `clarification`
@@ -135,10 +138,12 @@ Delivered:
 - structured turn interpretation for execute-mode plaintext turns
 - immutable turn contract built from grounded interpretation
 - clarification now model-signaled instead of punctuation-signaled
+- downstream delegated research contracts now preserve interpretation-owned draft/citation/word-count/path semantics instead of re-deriving them from the raw message
+- specialist fallback contracts no longer regex-infer draft/citation intent from prompt text
 
 Remaining:
 
-- remove more fallback prompt heuristics where they still influence task setup
+- remove more fallback prompt heuristics where they still influence task setup when model interpretation is unavailable
 
 ### Phase 2: Explicit Planner Response Kind
 

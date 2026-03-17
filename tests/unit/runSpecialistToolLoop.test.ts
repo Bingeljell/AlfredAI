@@ -163,6 +163,21 @@ test("runSpecialistToolLoop enforces research contract before allowing respond",
     skillName: "research_agent",
     skillDescription: "Research skill",
     skillSystemPrompt: "Do research",
+    taskContract: {
+      requiredDeliverable: "Produce a complete research-backed draft response.",
+      requiresAssembly: true,
+      requiresDraft: true,
+      requiresCitations: true,
+      minimumCitationCount: 2,
+      doneCriteria: [
+        "Gather source evidence from search/fetch outputs.",
+        "Return full draft text (not only status).",
+        "Include at least 2 citation links."
+      ],
+      requestedOutputPath: null,
+      targetWordCount: 900,
+      clarificationAllowed: false
+    },
     toolAllowlist: ["search", "run_diagnostics"],
     structuredChatRunner: async <T>() =>
       ({
@@ -226,6 +241,21 @@ test("runSpecialistToolLoop blocks unsupported long-form respond attempts withou
     skillName: "research_agent",
     skillDescription: "Research skill",
     skillSystemPrompt: "Do research",
+    taskContract: {
+      requiredDeliverable: "Produce a complete research-backed draft response.",
+      requiresAssembly: true,
+      requiresDraft: true,
+      requiresCitations: true,
+      minimumCitationCount: 2,
+      doneCriteria: [
+        "Gather source evidence from search/fetch outputs.",
+        "Return full draft text (not only status).",
+        "Include at least 2 citation links."
+      ],
+      requestedOutputPath: null,
+      targetWordCount: 900,
+      clarificationAllowed: false
+    },
     toolAllowlist: ["search"],
     structuredChatRunner: async <T>() =>
       ({
@@ -250,6 +280,73 @@ test("runSpecialistToolLoop blocks unsupported long-form respond attempts withou
   const unmet = (blockedEvent?.payload as { unmet?: string[] } | undefined)?.unmet ?? [];
   assert.ok(unmet.includes("supporting_evidence_missing"));
   assert.ok(unmet.includes("synthesis_not_ready"));
+});
+
+test("runSpecialistToolLoop fallback contract does not infer draft semantics from raw message text", async () => {
+  const workspace = await createTempWorkspace("specialist-fallback-contract-neutral");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun(
+    "session-1",
+    "Write a 900 word cited article about AI.",
+    "running"
+  );
+
+  const outcome = await runSpecialistToolLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as never,
+    workspaceDir: workspace,
+    message: "Write a 900 word cited article about AI.",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in fallback-contract test");
+    },
+    maxIterations: 1,
+    maxDurationMs: 60_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    skillName: "research_agent",
+    skillDescription: "Research skill",
+    skillSystemPrompt: "Do research",
+    toolAllowlist: ["search"],
+    structuredChatRunner: async <T>() =>
+      ({
+        result: {
+          thought: "I can answer now.",
+          actionType: "respond",
+          singleTool: null,
+          singleInputJson: null,
+          parallelActions: null,
+          responseText: "Here is a short summary."
+        }
+      }) as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>
+  });
+
+  assert.equal(outcome.status, "completed");
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  const startedEvent = events.find((event) => event.eventType === "specialist_loop_started");
+  const taskContract = (startedEvent?.payload as { taskContract?: Record<string, unknown> } | undefined)?.taskContract;
+  assert.ok(taskContract);
+  assert.equal(taskContract?.requiresDraft, false);
+  assert.equal(taskContract?.requiresCitations, false);
+  assert.equal(taskContract?.targetWordCount, null);
+  assert.equal(taskContract?.preferredOutputShape, null);
 });
 
 test("runSpecialistToolLoop treats persisted non-writer artifacts as metadata-only for assembly tasks", async () => {

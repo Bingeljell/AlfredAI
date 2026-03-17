@@ -1423,47 +1423,27 @@ function buildSpecialistResultAssistantText(
 }
 
 function buildSpecialistTaskContract(options: Pick<SpecialistToolLoopOptions, "skillName" | "message">): AgentTaskContract {
-  const normalized = options.message.toLowerCase();
   const isResearchSkill = options.skillName === "research_agent";
-  const requiresDraft = isResearchSkill && /\b(blog|post|article|draft|write)\b/.test(normalized);
-  const requiresCitations = isResearchSkill && /\b(cite|cited|citations?|sources?)\b/.test(normalized);
-  const minimumCitationCount = requiresCitations ? 2 : 0;
-  const targetWordCount = (() => {
-    const rangeMatch = options.message.match(/\b(\d{2,4})\s*[-–]\s*(\d{2,4})\s*words?\b/i);
-    if (rangeMatch?.[1] && rangeMatch?.[2]) {
-      const lower = Number.parseInt(rangeMatch[1], 10);
-      const upper = Number.parseInt(rangeMatch[2], 10);
-      if (Number.isFinite(lower) && Number.isFinite(upper) && lower > 0 && upper > 0) {
-        return Math.round((lower + upper) / 2);
-      }
-    }
-    const singleMatch = options.message.match(/\b(\d{2,4})\s*words?\b/i);
-    if (singleMatch?.[1]) {
-      const parsed = Number.parseInt(singleMatch[1], 10);
-      if (Number.isFinite(parsed) && parsed > 0) {
-        return parsed;
-      }
-    }
-    return null;
-  })();
   const requestedOutputPath = extractOutputPathFromObjective(options.message);
 
   if (isResearchSkill) {
     return {
-      requiredDeliverable: requiresDraft
-        ? "Produce a complete research-backed draft response."
-        : "Produce a concise research synthesis response.",
+      requiredDeliverable: `Satisfy the delegated research objective without changing its deliverable shape: ${options.message.trim().split(/\s+/).join(" ").slice(0, 220)}`,
       requiresAssembly: true,
-      requiresDraft,
-      requiresCitations,
-      minimumCitationCount,
+      requiresDraft: false,
+      requiresCitations: false,
+      minimumCitationCount: 0,
       doneCriteria: [
         "Gather source evidence from search/fetch outputs.",
-        requiresDraft ? "Return full draft text (not only status)." : "Return synthesized findings.",
-        requiresCitations ? `Include at least ${minimumCitationCount} citation links.` : "Citations preferred when available."
+        "Return a research-backed response that matches the delegated objective.",
+        "Do not mutate the deliverable shape from the delegated objective."
       ],
       requestedOutputPath,
-      targetWordCount,
+      targetWordCount: null,
+      assumptions: [],
+      blockingUnknowns: [],
+      requiredFields: [],
+      preferredOutputShape: null,
       clarificationAllowed: false
     };
   }
@@ -1476,7 +1456,11 @@ function buildSpecialistTaskContract(options: Pick<SpecialistToolLoopOptions, "s
     minimumCitationCount: 0,
     doneCriteria: ["Return a complete response for the delegated objective."],
     requestedOutputPath,
-    targetWordCount,
+    targetWordCount: null,
+    assumptions: [],
+    blockingUnknowns: [],
+    requiredFields: [],
+    preferredOutputShape: null,
     clarificationAllowed: true
   };
 }

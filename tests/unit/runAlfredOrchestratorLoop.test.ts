@@ -26,6 +26,25 @@ function buildDefaultTurnInterpretation(options: { messages?: Array<{ role: stri
   const normalized = String(groundedObjective);
   const requiresDraft = /\b(blog|post|article|draft|write)\b/i.test(normalized);
   const requiresCitations = /\b(cite|citation|citations|source|sources)\b/i.test(normalized);
+  const targetWordCount = (() => {
+    const rangeMatch = normalized.match(/\b(\d{2,4})\s*[-–]\s*(\d{2,4})\s*word/i);
+    if (rangeMatch?.[1] && rangeMatch?.[2]) {
+      const lower = Number.parseInt(rangeMatch[1], 10);
+      const upper = Number.parseInt(rangeMatch[2], 10);
+      if (Number.isFinite(lower) && Number.isFinite(upper) && lower > 0 && upper > 0) {
+        return Math.round((lower + upper) / 2);
+      }
+    }
+    const singleMatch = normalized.match(/\b(\d{2,4})\s*word/i);
+    if (singleMatch?.[1]) {
+      const parsed = Number.parseInt(singleMatch[1], 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+    return null;
+  })();
+  const requestedOutputPathMatch = normalized.match(/\bworkspace\/\S+/i);
   const requiredDeliverable = requiresDraft
     ? "Deliver the requested blog draft with citations."
     : `Provide a complete response for: ${normalized.slice(0, 180)}`;
@@ -46,8 +65,8 @@ function buildDefaultTurnInterpretation(options: { messages?: Array<{ role: stri
     assumptions: [],
     requiresDraft,
     requiresCitations,
-    targetWordCount: null,
-    requestedOutputPath: null,
+    targetWordCount,
+    requestedOutputPath: requestedOutputPathMatch?.[0] ?? null,
     clarificationNeeded: false,
     clarificationQuestion: null
   };
@@ -608,6 +627,122 @@ test("runAlfredOrchestratorLoop passes unified taskContract when delegating rese
     ?.taskContract;
   assert.ok(delegatedPayload);
   assert.equal(delegatedPayload?.targetWordCount, 900);
+});
+
+test("runAlfredOrchestratorLoop treats model interpretation as the semantic source of truth for delegated contract", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-contract-authority");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun(
+    "session-1",
+    "Write a 900 word article with citations about games for kids.",
+    "running"
+  );
+
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_turn_interpretation") {
+      return {
+        result: {
+          thought: "The user wants a concise ranked list, not a long-form article.",
+          groundedObjective: "Provide a concise ranked list of recent kid-friendly games.",
+          taskType: "general" as const,
+          requiredDeliverable: "Return a concise ranked list of recent kid-friendly video games.",
+          hardConstraints: ["Video games only.", "Maximum 10 items."],
+          doneCriteria: ["Return a concise ranked list with up to 10 items.", "Do not widen scope beyond video games."],
+          assumptions: ["No board games unless explicitly requested."],
+          requiresDraft: false,
+          requiresCitations: false,
+          targetWordCount: null,
+          requestedOutputPath: null,
+          clarificationNeeded: false,
+          clarificationQuestion: null
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      return {
+        result: {
+          thought: "Delegate to research_agent.",
+          actionType: "delegate_agent" as const,
+          responseKind: null,
+          delegateAgent: "research_agent",
+          delegateBrief: "Research and assemble the requested ranked list.",
+          toolName: null,
+          toolInputJson: null,
+          responseText: null
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_completion_evaluation") {
+      return {
+        result: {
+          thought: "Delegated output is sufficient.",
+          shouldRespond: true,
+          responseText: "Done.",
+          continueReason: null,
+          confidence: 0.9
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  let delegatedInput: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["agentLoopRunner"]> extends (
+    options: infer TOptions
+  ) => Promise<unknown>
+    ? TOptions | undefined
+    : never;
+  const agentLoopRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["agentLoopRunner"]> = async (options) => {
+    delegatedInput = options;
+    return {
+      status: "completed",
+      assistantText: "Ranked list completed."
+    };
+  };
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message: "Write a 900 word article with citations about games for kids.",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in contract-authority test");
+    },
+    maxIterations: 3,
+    maxDurationMs: 60_000,
+    maxToolCalls: 3,
+    maxParallelTools: 1,
+    plannerMaxCalls: 3,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner,
+    agentLoopRunner
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.equal(delegatedInput?.taskContract?.requiredDeliverable, "Return a concise ranked list of recent kid-friendly video games.");
+  assert.equal(delegatedInput?.taskContract?.requiresDraft, false);
+  assert.equal(delegatedInput?.taskContract?.requiresCitations, false);
+  assert.equal(delegatedInput?.taskContract?.minimumCitationCount, 0);
+  assert.equal(delegatedInput?.taskContract?.targetWordCount, null);
+  assert.equal(delegatedInput?.taskContract?.preferredOutputShape, "ranked_list");
+  assert.deepEqual(delegatedInput?.taskContract?.assumptions, ["No board games unless explicitly requested."]);
 });
 
 test("runAlfredOrchestratorLoop respects planner choice without forcing delegation", async () => {

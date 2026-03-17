@@ -15,6 +15,41 @@ export type SessionOutputKind =
 
 export type SessionOutputAvailability = "body_available" | "metadata_only" | "missing";
 
+export type TurnOutputShape =
+  | "article"
+  | "ranked_list"
+  | "comparison"
+  | "brief"
+  | "memo"
+  | "email"
+  | "outline"
+  | "social_post"
+  | "notes"
+  | "rewrite"
+  | "generic"
+  | "list"
+  | "table"
+  | "csv";
+
+export interface TurnContract {
+  taskType: "lead_generation" | "general";
+  groundedObjective: string;
+  requiredDeliverable: string;
+  hardConstraints: string[];
+  softPreferences: string[];
+  doneCriteria: string[];
+  assumptions: string[];
+  blockingUnknowns: string[];
+  preferredOutputShape: TurnOutputShape | null;
+  requiredFields: string[];
+  requiresDraft: boolean;
+  requiresCitations: boolean;
+  targetWordCount: number | null;
+  requestedOutputPath: string | null;
+  clarificationNeeded: boolean;
+  clarificationQuestion: string | null;
+}
+
 export interface SessionOutputRecord {
   id: string;
   kind: SessionOutputKind;

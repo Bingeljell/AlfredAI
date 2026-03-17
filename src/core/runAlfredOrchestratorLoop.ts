@@ -1,5 +1,14 @@
 import { z } from "zod";
-import type { PolicyMode, RunEvent, RunOutcome, RunRecord, SessionOutputRecord, SessionPromptContext } from "../types.js";
+import type {
+  PolicyMode,
+  RunEvent,
+  RunOutcome,
+  RunRecord,
+  SessionOutputRecord,
+  SessionPromptContext,
+  TurnContract,
+  TurnOutputShape
+} from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import * as openAiClient from "../services/openAiClient.js";
@@ -102,18 +111,7 @@ interface AlfredActionSnapshot {
   summary: string;
 }
 
-interface AlfredObjectiveContract {
-  taskType: AlfredTaskType;
-  requiredDeliverable: string;
-  hardConstraints: string[];
-  softPreferences: string[];
-  doneCriteria: string[];
-  assumptions: string[];
-  requiresDraft: boolean;
-  requiresCitations: boolean;
-  targetWordCountHint: number | null;
-  requestedOutputPathHint: string | null;
-}
+type AlfredObjectiveContract = TurnContract;
 
 interface AlfredTurnState {
   turnObjective: string;
@@ -1255,6 +1253,88 @@ function deriveHardConstraints(message: string): string[] {
   return constraints;
 }
 
+function inferPreferredOutputShape(args: {
+  interpretation?: AlfredTurnInterpretationOutput | null;
+  leadExecutionBrief?: LeadExecutionBrief | null;
+  message: string;
+}): TurnOutputShape | null {
+  const requiredDeliverable = collapseWhitespace(args.interpretation?.requiredDeliverable ?? "").toLowerCase();
+  const objective = collapseWhitespace(args.interpretation?.groundedObjective ?? args.message).toLowerCase();
+  const combined = `${requiredDeliverable}\n${objective}`;
+  if (args.leadExecutionBrief?.outputFormat === "csv" || combined.includes("csv")) {
+    return "csv";
+  }
+  if (combined.includes("table")) {
+    return "table";
+  }
+  if (combined.includes("ranked list") || combined.includes("shortlist") || combined.includes("top ") || combined.includes("list")) {
+    return "ranked_list";
+  }
+  if (combined.includes("compare") || combined.includes("comparison")) {
+    return "comparison";
+  }
+  if (combined.includes("memo")) {
+    return "memo";
+  }
+  if (combined.includes("brief")) {
+    return "brief";
+  }
+  if (args.interpretation?.requiresDraft) {
+    return "article";
+  }
+  return null;
+}
+
+function buildFallbackObjectiveContract(args: {
+  message: string;
+  leadExecutionBrief?: LeadExecutionBrief | null;
+  groundedSource: AlfredTurnGroundingOutput["source"];
+  explicitRequestedOutputPath: string | null;
+}): AlfredObjectiveContract {
+  const taskType: AlfredTaskType = args.leadExecutionBrief ? "lead_generation" : "general";
+  const hardConstraints = deriveHardConstraints(args.message);
+  const targetWordCount = extractTargetWordCount(args.message);
+  const requestedOutputPath = args.groundedSource === "message" ? args.explicitRequestedOutputPath : args.explicitRequestedOutputPath;
+  const requiresCitations = hardConstraints.some((item) => containsAnyWord(item, ["citation", "source"]));
+  const requiresDraft = containsAnyWord(args.message, ["blog", "post", "article", "draft", "write"]);
+  const requiredDeliverable = args.leadExecutionBrief
+    ? (
+      args.leadExecutionBrief.outputFormat === "csv"
+        ? `Produce ${args.leadExecutionBrief.requestedLeadCount} lead records and write them to CSV.`
+        : `Produce ${args.leadExecutionBrief.requestedLeadCount} lead records.`
+    )
+    : `Provide a complete response for: ${collapseWhitespace(args.message).slice(0, 180)}`;
+  const doneCriteria = args.leadExecutionBrief
+    ? buildCompletionCriteria(args.message, args.leadExecutionBrief)
+    : [
+      `Answer the current turn directly and honestly: ${collapseWhitespace(args.message).slice(0, 240)}`,
+      ...(requiresCitations ? ["Include explicit source citations for factual claims."] : []),
+      ...(requiresDraft ? ["Return the complete draft text in the requested format."] : [])
+    ];
+  return {
+    taskType,
+    groundedObjective: args.message,
+    requiredDeliverable,
+    hardConstraints,
+    softPreferences: [],
+    doneCriteria: dedupeStrings(doneCriteria),
+    assumptions: [],
+    blockingUnknowns: [],
+    preferredOutputShape: inferPreferredOutputShape({
+      interpretation: null,
+      leadExecutionBrief: args.leadExecutionBrief,
+      message: args.message
+    }),
+    requiredFields: [],
+    requiresDraft,
+    requiresCitations,
+    targetWordCount,
+    requestedOutputPath,
+    clarificationNeeded: false,
+    clarificationQuestion: null
+  };
+}
+
 function sanitizeCarryoverStringsForFreshTurn(args: {
   values: string[];
   groundedSource: AlfredTurnGroundingOutput["source"];
@@ -1322,11 +1402,17 @@ function buildObjectiveContract(
   groundedSource: AlfredTurnGroundingOutput["source"] = "message",
   originalMessage?: string
 ): AlfredObjectiveContract {
-  const taskType = detectObjectiveTaskType(message, leadExecutionBrief);
-  const hardConstraints = deriveHardConstraints(message);
-  const targetWordCountHint = interpretation?.targetWordCount ?? extractTargetWordCount(message);
   const explicitRequestedOutputPath = extractRequestedOutputPath(originalMessage ?? message);
-  const requestedOutputPathHint = groundedSource === "message"
+  if (!interpretation) {
+    return buildFallbackObjectiveContract({
+      message,
+      leadExecutionBrief,
+      groundedSource,
+      explicitRequestedOutputPath
+    });
+  }
+
+  const requestedOutputPath = groundedSource === "message"
     ? explicitRequestedOutputPath
     : (interpretation?.requestedOutputPath ?? explicitRequestedOutputPath);
   const interpretedHardConstraints = sanitizeCarryoverStringsForFreshTurn({
@@ -1344,62 +1430,36 @@ function buildObjectiveContract(
     groundedSource,
     explicitRequestedOutputPath
   });
-  const requiresCitations = interpretation?.requiresCitations
-    ?? hardConstraints.some((item) => containsAnyWord(item, ["citation", "source"]));
-  const requiresDraft = interpretation?.requiresDraft
-    ?? containsAnyWord(message, ["blog", "post", "article", "draft", "write"]);
-  const assumptions = interpretedAssumptions;
-
-  if (leadExecutionBrief) {
-    const requiredDeliverable =
-      leadExecutionBrief.outputFormat === "csv"
-        ? `Produce ${leadExecutionBrief.requestedLeadCount} lead records and write them to CSV.`
-        : `Produce ${leadExecutionBrief.requestedLeadCount} lead records.`;
-    const doneCriteria = buildCompletionCriteria(message, leadExecutionBrief);
-    return {
-      taskType: interpretation?.taskType ?? taskType,
-      requiredDeliverable,
-      hardConstraints: dedupeStrings([
-        ...hardConstraints,
-        ...interpretedHardConstraints
-      ]),
-      softPreferences: [],
-      doneCriteria: dedupeStrings([
-        ...doneCriteria,
-        ...interpretedDoneCriteria
-      ]),
-      assumptions,
-      requiresDraft,
-      requiresCitations,
-      targetWordCountHint,
-      requestedOutputPathHint
-    };
-  }
-
-  const requiredDeliverable = interpretation?.requiredDeliverable
-    ?? (
-      containsAnyWord(message, ["blog", "post"])
-        ? "Deliver the requested blog draft with citations."
-        : `Provide a complete response for: ${collapseWhitespace(message).slice(0, 180)}`
-    );
-  const defaultDoneCriteria = [
-    `Answer the current turn directly and honestly: ${collapseWhitespace(message).slice(0, 240)}`,
-    ...(requiresCitations ? ["Include explicit source citations for factual claims."] : []),
-    ...(requiresDraft ? ["Return the complete draft text in the requested format."] : [])
-  ];
   return {
-    taskType: interpretation?.taskType ?? taskType,
-    requiredDeliverable,
-    hardConstraints: interpretedHardConstraints.length
-      ? dedupeStrings(interpretedHardConstraints)
-      : hardConstraints,
+    taskType: leadExecutionBrief ? "lead_generation" : interpretation.taskType,
+    groundedObjective: interpretation.groundedObjective,
+    requiredDeliverable: leadExecutionBrief
+      ? (
+        leadExecutionBrief.outputFormat === "csv"
+          ? `Produce ${leadExecutionBrief.requestedLeadCount} lead records and write them to CSV.`
+          : `Produce ${leadExecutionBrief.requestedLeadCount} lead records.`
+      )
+      : interpretation.requiredDeliverable,
+    hardConstraints: dedupeStrings(interpretedHardConstraints),
     softPreferences: [],
-    doneCriteria: dedupeStrings(interpretedDoneCriteria.length ? interpretedDoneCriteria : defaultDoneCriteria),
-    assumptions,
-    requiresDraft,
-    requiresCitations,
-    targetWordCountHint,
-    requestedOutputPathHint
+    doneCriteria: dedupeStrings(interpretedDoneCriteria),
+    assumptions: interpretedAssumptions,
+    blockingUnknowns:
+      interpretation.clarificationNeeded && interpretation.clarificationQuestion
+        ? [interpretation.clarificationQuestion]
+        : [],
+    preferredOutputShape: inferPreferredOutputShape({
+      interpretation,
+      leadExecutionBrief,
+      message
+    }),
+    requiredFields: [],
+    requiresDraft: interpretation.requiresDraft,
+    requiresCitations: interpretation.requiresCitations,
+    targetWordCount: interpretation.targetWordCount,
+    requestedOutputPath,
+    clarificationNeeded: interpretation.clarificationNeeded,
+    clarificationQuestion: interpretation.clarificationQuestion
   };
 }
 
@@ -1433,7 +1493,6 @@ function extractTargetWordCount(message: string): number | null {
 
 function buildSpecialistTaskContract(args: {
   agentName: string;
-  message: string;
   objectiveContract: AlfredObjectiveContract;
   requestedOutputPath: string | null;
 }): AgentTaskContract | undefined {
@@ -1450,9 +1509,13 @@ function buildSpecialistTaskContract(args: {
     requiresCitations,
     minimumCitationCount: requiresCitations ? 2 : 0,
     doneCriteria: args.objectiveContract.doneCriteria,
-    requestedOutputPath: args.requestedOutputPath ?? args.objectiveContract.requestedOutputPathHint,
-    targetWordCount: args.objectiveContract.targetWordCountHint,
-    clarificationAllowed: false
+    requestedOutputPath: args.requestedOutputPath ?? args.objectiveContract.requestedOutputPath,
+    targetWordCount: args.objectiveContract.targetWordCount,
+    clarificationAllowed: false,
+    assumptions: args.objectiveContract.assumptions,
+    blockingUnknowns: args.objectiveContract.blockingUnknowns,
+    requiredFields: args.objectiveContract.requiredFields,
+    preferredOutputShape: args.objectiveContract.preferredOutputShape
   };
 }
 
@@ -1726,7 +1789,7 @@ function buildAlfredTurnState(args: {
   lastAction: AlfredActionSnapshot | null;
   runRecord?: RunRecord;
 }): AlfredTurnState {
-  const requestedOutputPath = args.objectiveContract.requestedOutputPathHint;
+  const requestedOutputPath = args.objectiveContract.requestedOutputPath;
   const canonicalLeadBrief = args.leadExecutionBrief ?? args.leadState.executionBrief ?? null;
   const inferredFacts = inferLeadFactsFromRunRecord(args.runRecord);
   const collectedLeadCount = Math.max(args.leadState.leads.length, inferredFacts.collectedLeadCount);
@@ -1774,7 +1837,7 @@ function buildAlfredTurnState(args: {
       }
     }
   } else {
-    const targetWordCount = args.objectiveContract.targetWordCountHint;
+    const targetWordCount = args.objectiveContract.targetWordCount;
     const requiresDraft = args.objectiveContract.requiresDraft;
     const requiresCitations = args.objectiveContract.requiresCitations;
     const minimumDraftWords = targetWordCount
@@ -1973,7 +2036,7 @@ function evaluateCompletionContractGate(args: {
 
   const requiresDraft = args.objectiveContract.requiresDraft;
   if (requiresDraft) {
-    const targetWordCount = args.objectiveContract.targetWordCountHint;
+    const targetWordCount = args.objectiveContract.targetWordCount;
     const minimumDraftWords = targetWordCount
       ? Math.max(220, Math.floor(targetWordCount * 0.75))
       : 400;
@@ -2222,7 +2285,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     resolvedTurnObjective.source,
     options.message
   );
-  const requestedOutputPath = objectiveContract.requestedOutputPathHint;
+  const requestedOutputPath = objectiveContract.requestedOutputPath;
   scratchpad.currentObjectiveContract = objectiveContract;
   if (initialLeadBrief) {
     scratchpad.currentLeadExecutionBrief = initialLeadBrief;
@@ -2673,7 +2736,6 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       const delegatedMessage = (plan.delegateBrief ?? turnObjective).slice(0, 1200);
       const delegatedTaskContract = buildSpecialistTaskContract({
         agentName,
-        message: turnObjective,
         objectiveContract,
         requestedOutputPath
       });

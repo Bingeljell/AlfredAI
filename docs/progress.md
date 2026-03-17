@@ -13,6 +13,7 @@
 
 ## Current Status
 
+- 2026-03-17: Slice 1 of the March 17 refactor is now in progress in code: turn interpretation is authoritative for the canonical turn contract when available, delegated research task contracts preserve interpretation-owned semantics, and specialist fallback contracts no longer regex-infer draft/citation intent from raw prompt text.
 - 2026-03-17: Added [docs/architecture/corebehaviour_refactor_plan_17March.md](/Users/nikhil/Projects/Alfredv1/docs/architecture/corebehaviour_refactor_plan_17March.md) as the replacement architecture plan to remove duplicate semantic control layers and move Alfred toward one turn contract, one execution loop, one semantic validator, and tools/skills that own mechanics rather than semantics.
 
 - **Phase 0**: Completed

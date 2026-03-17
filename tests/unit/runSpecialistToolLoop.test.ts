@@ -1445,6 +1445,51 @@ test("phase lock uses discovered URLs for discovery->fetch handoff when availabl
   assert.equal(input.useStoredUrls, undefined);
 });
 
+test("phase lock rewrites repeated file reads into fetch when fetch is already pending", () => {
+  const urls = Array.from({ length: 4 }, (_, index) => `https://example.com/game/${index + 1}`);
+  const progress = {
+    successfulToolCalls: 1,
+    sourceUrls: new Set<string>(urls),
+    fetchedPageCount: 0,
+    draftWordCount: 0,
+    citationCount: 0,
+    searchTimeoutCount: 0,
+    errorSamples: [],
+    lastWriterOutputAvailability: null,
+    lastWriterDeliverableStatus: null,
+    lastWriterProcessCommentaryDetected: false
+  };
+
+  const decision = shouldForcePhaseTransition({
+    contract: {
+      requiredDeliverable: "Draft",
+      requiresAssembly: true,
+      requiresDraft: true,
+      requiresCitations: true,
+      minimumCitationCount: 2,
+      doneCriteria: []
+    },
+    progress,
+    actions: [
+      {
+        tool: "file_read",
+        inputJson: JSON.stringify({
+          path: "workspace/alfred/sessions/session-1/outputs/run-prev-memo.md"
+        })
+      }
+    ],
+    availableToolNames: new Set(["file_read", "web_fetch"]),
+    objective: "Research family-friendly PC games and verify the list",
+    currentPhase: "fetch",
+    phaseTransitionHint: "discovery_complete_fetch_pending"
+  });
+
+  assert.equal(decision.reason, "phase_lock_forced_transition_read_to_fetch");
+  assert.equal(decision.forced?.[0]?.tool, "web_fetch");
+  const input = JSON.parse(decision.forced?.[0]?.inputJson ?? "{}") as { urls?: string[] };
+  assert.deepEqual(input.urls, urls);
+});
+
 test("runSpecialistToolLoop defaults missing single-action input for known tools", async () => {
   const workspace = await createTempWorkspace("specialist-single-input-default");
   const runStore = new RunStore(workspace);

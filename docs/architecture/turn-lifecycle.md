@@ -93,6 +93,7 @@ Code:
 26. Execute-mode plaintext turns go through structured `turn_interpretation`.
 27. Alfred builds an immutable `objectiveContract` for the turn.
 28. If `groundedSource=message`, stale prior artifact obligations are stripped unless explicitly referenced in the current turn.
+29. If session grounding tries to bind a fresh substantive request onto a stale prior artifact path/memo that the user did not actually reference, runtime demotes that grounding back to `source=message`.
 
 Code:
 
@@ -100,15 +101,15 @@ Code:
 
 ## 6) Alfred orchestrator loop
 
-29. Alfred initializes turn state and emits:
+30. Alfred initializes turn state and emits:
    - `alfred_loop_started`
    - `alfred_objective_contract_created`
    - `alfred_turn_state_updated`
-30. Runtime determines:
+31. Runtime determines:
    - `turnMode`: `diagnostic` or `execute`
    - `executionPermission`: `execute` or `plan_only`
-31. Diagnostic turns return run-analysis output without executing specialists/tools.
-32. Execute turns enter the bounded planner loop.
+32. Diagnostic turns return run-analysis output without executing specialists/tools.
+33. Execute turns enter the bounded planner loop.
 
 Planner context includes:
 
@@ -138,9 +139,9 @@ Code:
 
 ## 7) Alfred response and completion handling
 
-33. If Alfred chooses `respond`, runtime checks turn completion against the immutable contract.
-34. If the response is insufficient, Alfred emits contract-block telemetry and continues iterating.
-35. Clarification is only valid when planner explicitly marks `responseKind=clarification`.
+34. If Alfred chooses `respond`, runtime checks turn completion against the immutable contract.
+35. If the response is insufficient, Alfred emits contract-block telemetry and continues iterating.
+36. Clarification is only valid when planner explicitly marks `responseKind=clarification`.
 
 Code:
 

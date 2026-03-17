@@ -390,7 +390,7 @@ function buildAlfredTurnGroundingSystemPrompt(sessionContext?: SessionPromptCont
     {
       label: "Directives",
       content:
-        "Use the current user turn as the primary source of truth. If it clearly refers to a prior session output or earlier task, rewrite the objective into one grounded objective that combines the prior work with the current request. Prefer `recent_output` when the user is acting on an existing artifact or draft. Do not invent unavailable body text; if only metadata exists, keep the grounded objective truthful about that limitation. If the current turn already stands alone, return `source=message` and preserve it closely."
+        "Use the current user turn as the primary source of truth. If it clearly refers to a prior session output or earlier task, rewrite the objective into one grounded objective that combines the prior work with the current request. Prefer `recent_output` only when the user is unmistakably acting on existing prior work. A fresh standalone request for a new deliverable should remain `source=message` even if older session outputs look topically related. Do not invent unavailable body text; if only metadata exists, keep the grounded objective truthful about that limitation. If the current turn already stands alone, return `source=message` and preserve it closely."
     },
     {
       label: "Session Context",
@@ -463,6 +463,28 @@ async function resolveTurnObjectiveWithSessionGrounding(args: {
     ...diagnostic,
     fallback
   };
+}
+
+function shouldRejectRecentOutputGrounding(args: {
+  message: string;
+  result: AlfredTurnGroundingOutput | null | undefined;
+}): boolean {
+  if (!args.result || args.result.source !== "recent_output") {
+    return false;
+  }
+  if (!isSubstantiveObjective(args.message) || isFollowUpContinuationMessage(args.message)) {
+    return false;
+  }
+  if (extractRequestedOutputPath(args.message)) {
+    return false;
+  }
+  const normalizedMessage = collapseWhitespace(args.message).toLowerCase();
+  const normalizedObjective = collapseWhitespace(args.result.groundedObjective).toLowerCase();
+  const injectsArtifactPath = normalizedObjective.includes("workspace/") && !normalizedMessage.includes("workspace/");
+  const injectsPriorArtifactBinding =
+    /(based on|using|from)\s+(the\s+)?(existing|saved|prior|previous|workspace)\s+(draft|memo|artifact|output)/i.test(args.result.groundedObjective)
+    && !/(based on|using|from)\s+(the\s+)?(existing|saved|prior|previous)\s+(draft|memo|artifact|output)/i.test(args.message);
+  return injectsArtifactPath || injectsPriorArtifactBinding;
 }
 
 function buildAlfredTurnInterpretationSystemPrompt(args: {
@@ -2004,10 +2026,22 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   if (turnGrounding.usage) {
     await options.runStore.addLlmUsage(options.runId, turnGrounding.usage, 1);
   }
-  const resolvedTurnObjective = turnGrounding.result
+  const normalizedTurnGroundingResult =
+    shouldRejectRecentOutputGrounding({
+      message: options.message,
+      result: turnGrounding.result
+    })
+      ? {
+          thought: "Fresh standalone turn should not be bound to stale recent output context.",
+          source: "message" as const,
+          groundedObjective: options.message,
+          referencedOutputId: null
+        }
+      : turnGrounding.result;
+  const resolvedTurnObjective = normalizedTurnGroundingResult
     ? {
-        objective: turnGrounding.result.groundedObjective,
-        source: turnGrounding.result.source
+        objective: normalizedTurnGroundingResult.groundedObjective,
+        source: normalizedTurnGroundingResult.source
       }
     : turnGrounding.fallback;
   const turnObjective = resolvedTurnObjective.objective;
@@ -2025,7 +2059,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     await options.runStore.addLlmUsage(options.runId, turnInterpretation.usage, 1);
   }
   const interpretedTurn = turnInterpretation?.result ?? null;
-  const resolvedSessionOutput = findSessionOutputById(runtimeSessionContext, turnGrounding.result?.referencedOutputId);
+  const resolvedSessionOutput = findSessionOutputById(runtimeSessionContext, normalizedTurnGroundingResult?.referencedOutputId);
   const resolvedSessionOutputBodyPreview = await loadSessionOutputBodyPreview({
     workspaceDir: options.workspaceDir,
     output: resolvedSessionOutput,

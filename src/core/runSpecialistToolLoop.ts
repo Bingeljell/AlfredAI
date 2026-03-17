@@ -360,8 +360,40 @@ export function shouldForcePhaseTransition(args: {
   phaseTransitionHint: SpecialistPhaseTransitionHint;
 }): { forced: Array<{ tool: string; inputJson: string }> | null; reason: string | null } {
   const isSearchOnly = args.actions.length > 0 && args.actions.every((item) => SEARCH_FAMILY_TOOLS.has(item.tool));
+  const isReadOrSearchOnly =
+    args.actions.length > 0 &&
+    args.actions.every((item) => item.tool === "file_read" || SEARCH_FAMILY_TOOLS.has(item.tool));
   if (!isSearchOnly) {
-    return { forced: null, reason: null };
+    if (
+      !isReadOrSearchOnly
+      || !(args.contract.requiresAssembly === true || args.contract.requiresDraft || args.contract.requiresCitations)
+      || !(args.currentPhase === "fetch" || args.phaseTransitionHint === "discovery_complete_fetch_pending")
+      || args.progress.sourceUrls.size === 0
+      || args.progress.fetchedPageCount > 0
+      || !args.availableToolNames.has("web_fetch")
+    ) {
+      return { forced: null, reason: null };
+    }
+    const fetchUrls = selectFetchUrlsForHandoff(args.progress.sourceUrls, 12);
+    return {
+      forced: [
+        {
+          tool: "web_fetch",
+          inputJson: fetchUrls.length > 0
+            ? JSON.stringify({
+                urls: fetchUrls,
+                maxPages: Math.min(10, fetchUrls.length),
+                browseConcurrency: 3
+              })
+            : JSON.stringify({
+                query: deriveObjectiveQuery(args.objective),
+                maxPages: 10,
+                browseConcurrency: 3
+              })
+        }
+      ],
+      reason: "phase_lock_forced_transition_read_to_fetch"
+    };
   }
 
   if (

@@ -68,6 +68,7 @@ This section reflects what is actually implemented today.
 - Alfred can recover durable recent outputs from prior runs and merge them into runtime session context.
 - If a prior output has a stored artifact and `availability=body_available`, Alfred can load a bounded body preview for planning.
 - Fresh standalone turns now keep a stricter boundary around stale artifacts: if grounding resolves to `source=message`, Alfred does not inherit prior output-path or artifact obligations unless the current turn explicitly references them.
+- Fresh substantive requests now also reject stale `recent_output` grounding when the grounded objective injects prior artifact bindings that were not actually asked for in the current turn.
 
 ### Specialist runtime cognition
 
@@ -91,6 +92,7 @@ This section reflects what is actually implemented today.
   - enough evidence to synthesize
   - not yet enough for final polish/citations/artifacts
 - When runtime state is clearly `fetch_pending`, search-only replans can be mechanically corrected into fetch/evidence actions.
+- When runtime state is clearly `fetch_pending`, repeated `file_read` or `file_read + search` plans can also be corrected into fetch/evidence actions instead of rereading the same stale artifact.
 - Planner timeouts during `discovery_complete_fetch_pending` can recover into fetch instead of burning another shortlist/search iteration.
 
 ### Writer readiness

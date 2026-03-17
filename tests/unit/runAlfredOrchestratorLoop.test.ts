@@ -1503,6 +1503,160 @@ test("runAlfredOrchestratorLoop does not carry stale artifact obligations into a
   );
 });
 
+test("runAlfredOrchestratorLoop rejects stale recent-output grounding for a fresh standalone request", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-reject-stale-grounding");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun(
+    "session-1",
+    "Please give me a list of up to 10 games that I can play with my kids aged 7 to 13.",
+    "running"
+  );
+
+  let delegatedInput: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["agentLoopRunner"]> extends (
+    options: infer TOptions
+  ) => Promise<unknown>
+    ? TOptions | undefined
+    : never;
+
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string; messages?: Array<{ role: string; content: string }> }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_turn_grounding") {
+      return {
+        result: {
+          thought: "Use the previous memo as the base.",
+          source: "recent_output" as const,
+          groundedObjective:
+            "Finalize the game list based on the existing draft memo at workspace/alfred/sessions/session-1/outputs/run-prev-memo.md.",
+          referencedOutputId: "run-prev:draft"
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_turn_interpretation") {
+      const payload = JSON.parse(options.messages?.[1]?.content ?? "{}") as { groundedObjective?: string; groundedSource?: string };
+      assert.equal(payload.groundedSource, "message");
+      assert.equal(
+        payload.groundedObjective,
+        "Please give me a list of up to 10 games that I can play with my kids aged 7 to 13."
+      );
+      return {
+        result: {
+          thought: "Interpret the fresh request directly.",
+          groundedObjective: "Please give me a list of up to 10 games that I can play with my kids aged 7 to 13.",
+          taskType: "general" as const,
+          requiredDeliverable: "Produce the requested recommendation list.",
+          hardConstraints: [],
+          doneCriteria: ["Return the requested list directly."],
+          assumptions: [],
+          requiresDraft: false,
+          requiresCitations: false,
+          targetWordCount: null,
+          requestedOutputPath: null,
+          clarificationNeeded: false,
+          clarificationQuestion: null
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      const payload = JSON.parse(options.messages?.[1]?.content ?? "{}") as {
+        turnObjective?: string;
+        resolvedSessionOutput?: unknown;
+      };
+      assert.equal(payload.turnObjective, "Please give me a list of up to 10 games that I can play with my kids aged 7 to 13.");
+      assert.equal(payload.resolvedSessionOutput ?? null, null);
+      return {
+        result: {
+          thought: "Delegate the fresh request.",
+          actionType: "delegate_agent" as const,
+          responseKind: null,
+          delegateAgent: "research_agent",
+          delegateBrief: "Research and compile the game list.",
+          toolName: null,
+          toolInputJson: null,
+          responseText: null
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_completion_evaluation") {
+      return {
+        result: {
+          thought: "Delegated result is enough for this regression test.",
+          shouldRespond: true,
+          responseText: "Delegated result accepted.",
+          continueReason: null,
+          confidence: 0.9
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  const agentLoopRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["agentLoopRunner"]> = async (options) => {
+    delegatedInput = options;
+    return {
+      status: "completed",
+      assistantText: "Research delegated.",
+      artifactPaths: []
+    };
+  };
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message: "Please give me a list of up to 10 games that I can play with my kids aged 7 to 13.",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in stale-grounding rejection test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 30_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner,
+    agentLoopRunner,
+    sessionContext: {
+      recentOutputs: [
+        {
+          id: "run-prev:draft",
+          kind: "draft",
+          runId: "run-prev",
+          createdAt: "2026-03-16T09:00:00.000Z",
+          title: "Old memo",
+          summary: "A failed planning memo from an earlier run.",
+          artifactPath: "workspace/alfred/sessions/session-1/outputs/run-prev-memo.md",
+          availability: "metadata_only"
+        }
+      ]
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.equal(delegatedInput?.taskContract?.requestedOutputPath, null);
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  const resolvedEvent = events.find((event) => event.eventType === "alfred_turn_objective_resolved");
+  assert.ok(!resolvedEvent);
+});
+
 test("runAlfredOrchestratorLoop can recover session outputs from durable run history", async () => {
   const workspace = await createTempWorkspace("alfred-orchestrator-durable-output-recovery");
   const runStore = new RunStore(workspace);

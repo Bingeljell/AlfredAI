@@ -574,7 +574,7 @@ export const toolDefinition: LeadAgentToolDefinition = {
       await maybeRecordUsage(context, result.usage);
       passCount = 1;
 
-      if (result.content && countWords(result.content) >= 60) {
+      if (result.content && countWords(result.content) >= 20) {
         providerUsed = result.providerUsed ?? result.provider;
         const content = clipWords(
           shouldIncludeReferences ? ensureReferencesSection(result.content, sourceIndex, "References") : result.content,
@@ -586,32 +586,33 @@ export const toolDefinition: LeadAgentToolDefinition = {
           summary: `Generated ${outputShape} deliverable.`,
           nextSteps: ["Verify factual claims", "Adjust style if needed", "Publish or share"]
         };
-        const mechanical = evaluateMechanicalQuality({
-          content: draft.content,
-          maxWords,
-          outputShape,
-          shouldIncludeReferences,
-          sourceIndex
-        });
-        deliverableStatus = mechanical.deliverableStatus;
-        processCommentaryDetected = mechanical.processCommentaryDetected;
-        if (mechanical.deliverableStatus === "complete") {
+        
+        const currentWordCount = countWords(content);
+        const minWords = Math.max(60, Math.round(maxWords * 0.3));
+        processCommentaryDetected = detectProcessCommentary(content);
+        
+        if (currentWordCount >= minWords && !processCommentaryDetected) {
           draftQuality = "complete";
+          deliverableStatus = "complete";
           fallbackUsed = false;
           fallbackReason = "none";
           failureMessage = null;
         } else {
-          fallbackReason = "draft_quality_incomplete";
-          failureMessage = mechanical.missing.join(" ") || failureMessage;
+          draftQuality = "placeholder";
+          deliverableStatus = currentWordCount >= 40 ? "partial" : "insufficient";
+          fallbackReason = processCommentaryDetected ? "process_commentary_detected" : "draft_too_short";
+          failureMessage = processCommentaryDetected 
+            ? "Generated content contains process commentary instead of the deliverable." 
+            : `Draft is too short (${currentWordCount}/${minWords} words).`;
         }
+
         await emitWriterStageEvent({
           context,
           stage: "generate",
           status: draftQuality === "complete" ? "completed" : "failed",
           payload: {
             provider: providerUsed,
-            wordCount: mechanical.wordCount,
-            citationCount: mechanical.citationCount,
+            wordCount: currentWordCount,
             draftQuality,
             deliverableStatus,
             outputShape,
@@ -636,6 +637,11 @@ export const toolDefinition: LeadAgentToolDefinition = {
             ...llmTimingPayload(result)
           }
         });
+        
+        // If it really failed to get anything, we should return an error result
+        if (!result.content || countWords(result.content) < 5) {
+           throw new Error(failureMessage || "Writer failed to generate content.");
+        }
       }
     } else {
       await emitWriterStageEvent({

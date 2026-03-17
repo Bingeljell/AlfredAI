@@ -878,7 +878,7 @@ function buildAlfredPlannerSystemPrompt(sessionContext?: SessionPromptContext): 
     {
       label: "Directives",
       content:
-        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. You have two capability catalogs at runtime: `availableTools` and `availableAgents`. Each tool includes `inputContract` with required fields, bounds, and an example payload: obey these strictly when choosing `toolInputJson` (for example, if `maxResults <= 15`, never exceed it). Choose strategy dynamically from the user ask and current evidence. You may execute directly with tools, delegate to a specialist agent, or respond if complete. Keep general-task execution in Alfred's loop; reserve specialist delegation for non-general work such as lead-generation or explicit local ops flows. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. If `resolvedSessionOutput` is present, treat it as a reusable session asset. If `bodyPreview` is present, you may use it for lightweight continuation or transformation. If `artifactPath` is present and the exact stored body matters, call `file_read` before responding or revising. When `actionType=respond`, set `responseKind` explicitly: use `final` for a completed answer, `clarification` only when blocking ambiguity genuinely requires user input, and `progress` for interim guidance/status. Respect execution permission: if `executionPermission` is `plan_only`, return `actionType=respond` with plan guidance and no execution. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
+        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. You have two capability catalogs at runtime: `availableTools` and `availableAgents`. Each tool includes `inputContract` with required fields, bounds, and an example payload: obey these strictly when choosing `toolInputJson` (for example, if `maxResults <= 15`, never exceed it). Choose strategy dynamically from the user ask and current evidence. You must execute general tasks (research, writing, lists, comparisons) directly using tools like `search`, `web_fetch`, and `writer_agent`; do not delegate general work to specialist agents. Reserve specialist delegation for non-general work such as lead-generation or explicit local ops flows. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. If `resolvedSessionOutput` is present, treat it as a reusable session asset. If `bodyPreview` is present, you may use it for lightweight continuation or transformation. If `artifactPath` is present and the exact stored body matters, call `file_read` before responding or revising. When `actionType=respond`, set `responseKind` explicitly: use `final` for a completed answer, `clarification` only when blocking ambiguity genuinely requires user input, and `progress` for interim guidance/status. Respect execution permission: if `executionPermission` is `plan_only`, return `actionType=respond` with plan guidance and no execution. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
     },
     {
       label: "Session Context",
@@ -1434,13 +1434,10 @@ function shouldKeepTaskInAlfredLoop(args: {
   agentName: string;
   objectiveContract: AlfredObjectiveContract;
 }): boolean {
-  if (args.agentName !== "research_agent") {
-    return false;
+  if (args.objectiveContract.taskType === "general") {
+    return true;
   }
-  if (args.objectiveContract.taskType !== "general") {
-    return false;
-  }
-  return true;
+  return false;
 }
 
 function buildDirectExecutionOverrideForDelegation(args: {
@@ -1562,19 +1559,12 @@ function deriveGeneralResearchState(runRecord: RunRecord | undefined): {
   };
 }
 
-export function buildAlfredMechanicalRecoveryPlan(args: {
-  plan: AlfredPlannerOutput;
+export function buildAlfredMechanicalRecoveryHint(args: {
   objectiveContract: AlfredObjectiveContract;
   runRecord: RunRecord | undefined;
   availableToolNames: Set<string>;
-}): { adjustedPlan: AlfredPlannerOutput; reason: string } | null {
+}): string | null {
   if (args.objectiveContract.taskType !== "general") {
-    return null;
-  }
-  if (args.plan.actionType !== "call_tool") {
-    return null;
-  }
-  if (args.plan.toolName !== "search" && args.plan.toolName !== "lead_search_shortlist") {
     return null;
   }
   const requiresAssembly =
@@ -1601,19 +1591,7 @@ export function buildAlfredMechanicalRecoveryPlan(args: {
     return null;
   }
 
-  return {
-    adjustedPlan: {
-      ...args.plan,
-      thought: `${args.plan.thought} (adjusted: enough candidate URLs discovered; transition to fetch)`,
-      toolName: "web_fetch",
-      toolInputJson: JSON.stringify({
-        urls: state.discoveredUrls.slice(0, 8),
-        maxPages: Math.min(8, state.discoveredUrls.length),
-        browseConcurrency: 3
-      })
-    },
-    reason: "general_task_fetch_transition"
-  };
+  return "Mechanical hint: You have discovered enough candidate URLs (5+). It is highly recommended to move to the 'web_fetch' phase to verify details and collect evidence before further searching.";
 }
 
 function filterPlannerVisibleAgents(args: {
@@ -1824,46 +1802,35 @@ function summarizeDelegationOutcome(args: {
   recentToolCalls: RunRecord["toolCalls"];
 }): string {
   const artifactsSeen = args.leadOutcome.artifactPaths?.length ?? args.runRecord?.artifactPaths?.length ?? 0;
-  if (args.agentName === "research_agent") {
-    const researchFacts = inferResearchFactsFromRunRecord(args.runRecord);
-    const draftLine =
-      researchFacts.draftWordCount > 0
-        ? `Draft words: ${researchFacts.draftWordCount}.`
-        : "No draft text produced yet.";
-    const citationLine =
-      researchFacts.citationCount > 0
-        ? `Citation markers: ${researchFacts.citationCount}.`
-        : "Citation markers: 0.";
-    const writerStateLine = researchFacts.writerFallback
-      ? `Writer fallback occurred${researchFacts.writerFailureReason ? ` (${researchFacts.writerFailureReason}).` : "."}`
-      : "Writer completed without fallback.";
-    const pathLine = researchFacts.outputPath
-      ? `Output path: ${researchFacts.outputPath}.`
-      : "No output file path was produced.";
+  const delegatedFacts = inferLeadFactsFromRunRecord(args.runRecord);
+  const researchFacts = inferResearchFactsFromRunRecord(args.runRecord);
+
+  const statusLine = `${args.agentName} status: ${args.leadOutcome.status}.`;
+  const artifactLine = artifactsSeen > 0 ? `Artifacts available: ${artifactsSeen}.` : "No artifacts were produced.";
+  const toolLine = `Recent tools: ${summarizeRecentToolCalls(args.recentToolCalls)}.`;
+
+  if (delegatedFacts.collectedLeadCount > 0) {
     return [
-      `${args.agentName} status: ${args.leadOutcome.status}.`,
-      `Fetched pages: ${researchFacts.fetchedPageCount}.`,
-      draftLine,
-      citationLine,
-      writerStateLine,
-      pathLine,
-      artifactsSeen > 0 ? `Artifacts available: ${artifactsSeen}.` : "No artifacts were produced.",
-      `Recent tools: ${summarizeRecentToolCalls(args.recentToolCalls)}.`
+      statusLine,
+      `Leads found: ${delegatedFacts.collectedLeadCount}.`,
+      delegatedFacts.collectedEmailCount > 0 ? `Emails found: ${delegatedFacts.collectedEmailCount}.` : "Email coverage is low.",
+      artifactLine,
+      toolLine
     ].join(" ");
   }
 
-  const delegatedFacts = inferLeadFactsFromRunRecord(args.runRecord);
-  return [
-    `${args.agentName} status: ${args.leadOutcome.status}.`,
-    delegatedFacts.collectedLeadCount > 0
-      ? `Leads found: ${delegatedFacts.collectedLeadCount}.`
-      : "No completed lead records yet.",
-    delegatedFacts.collectedEmailCount > 0
-      ? `Emails found: ${delegatedFacts.collectedEmailCount}.`
-      : "Email coverage is still low.",
-    artifactsSeen > 0 ? `Artifacts available: ${artifactsSeen}.` : "No artifacts were produced.",
-    `Recent tools: ${summarizeRecentToolCalls(args.recentToolCalls)}.`
-  ].join(" ");
+  if (researchFacts.draftWordCount > 0 || researchFacts.fetchedPageCount > 0) {
+    return [
+      statusLine,
+      `Fetched pages: ${researchFacts.fetchedPageCount}.`,
+      `Draft words: ${researchFacts.draftWordCount}.`,
+      `Citation markers: ${researchFacts.citationCount}.`,
+      artifactLine,
+      toolLine
+    ].join(" ");
+  }
+
+  return [statusLine, artifactLine, toolLine].join(" ");
 }
 
 function summarizeToolOutput(toolName: string, output: unknown): string {
@@ -2406,7 +2373,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     payload: {
       maxIterations: options.maxIterations,
       maxDurationMs: options.maxDurationMs,
-      availableAgents,
+      availableAgents: plannerVisibleAgents,
       availableTools: availableToolSpecs,
       promptStack: {
         master: ALFRED_MASTER_PROMPT_VERSION
@@ -2551,6 +2518,16 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       return leadOutcome;
     }
 
+    const mechanicalRecoveryHint = buildAlfredMechanicalRecoveryHint({
+      objectiveContract,
+      runRecord: latestRunRecord,
+      availableToolNames: new Set(availableToolSpecs.map((tool) => tool.name))
+    });
+    const reflectionHints: string[] = [];
+    if (mechanicalRecoveryHint) {
+      reflectionHints.push(mechanicalRecoveryHint);
+    }
+
     const plannerDiagnostic = await structuredChatRunner(
       {
         apiKey: options.openAiApiKey,
@@ -2583,6 +2560,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
               remainingMs: Math.max(0, deadlineAtMs - Date.now()),
               availableAgents: plannerVisibleAgents,
               availableTools: availableToolSpecs,
+              reflectionHints,
               resolvedSessionOutput: resolvedSessionOutput
                 ? {
                     id: resolvedSessionOutput.id,
@@ -2710,29 +2688,6 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           originalActionType,
           originalDelegateAgent,
           adjustedActionType: plan.actionType,
-          adjustedToolName: plan.toolName
-        },
-        timestamp: nowIso()
-      });
-    }
-    const mechanicalRecoveryPlan = buildAlfredMechanicalRecoveryPlan({
-      plan,
-      objectiveContract,
-      runRecord: latestRunRecord,
-      availableToolNames: new Set(availableToolSpecs.map((tool) => tool.name))
-    });
-    if (mechanicalRecoveryPlan) {
-      const originalToolName = plan.toolName;
-      plan = mechanicalRecoveryPlan.adjustedPlan;
-      await options.runStore.appendEvent({
-        runId: options.runId,
-        sessionId: options.sessionId,
-        phase: "thought",
-        eventType: "alfred_plan_adjusted",
-        payload: {
-          iteration,
-          reason: mechanicalRecoveryPlan.reason,
-          originalToolName,
           adjustedToolName: plan.toolName
         },
         timestamp: nowIso()

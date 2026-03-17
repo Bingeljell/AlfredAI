@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { RunStore } from "../../src/runs/runStore.js";
-import { runSpecialistToolLoop, shouldApplyAssemblyGuard, shouldForcePhaseTransition } from "../../src/core/runSpecialistToolLoop.js";
+import { runSpecialistToolLoop, shouldApplyAssemblyGuard, derivePhaseTransitionHint } from "../../src/core/runSpecialistToolLoop.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
 
 class FakeSearchManager {
@@ -1618,7 +1618,7 @@ test("phase lock uses discovered URLs for discovery->fetch handoff when availabl
     lastWriterProcessCommentaryDetected: false
   };
 
-  const decision = shouldForcePhaseTransition({
+  const hint = derivePhaseTransitionHint({
     contract: {
       requiredDeliverable: "Draft",
       requiresDraft: true,
@@ -1637,15 +1637,12 @@ test("phase lock uses discovered URLs for discovery->fetch handoff when availabl
     phaseTransitionHint: "discovery_complete_fetch_pending"
   });
 
-  assert.equal(decision.reason, "phase_lock_forced_transition_discovery_to_fetch");
-  assert.ok(Array.isArray(decision.forced));
-  assert.equal(decision.forced?.[0]?.tool, "web_fetch");
-  const input = JSON.parse(decision.forced?.[0]?.inputJson ?? "{}") as { urls?: string[]; useStoredUrls?: boolean };
-  assert.deepEqual(input.urls, urls.slice(0, 12));
-  assert.equal(input.useStoredUrls, undefined);
+  assert.ok(hint);
+  assert.ok(hint.includes("Mechanical hint"));
+  assert.ok(hint.includes("web_fetch"));
 });
 
-test("phase lock rewrites repeated file reads into fetch when fetch is already pending", () => {
+test("derivePhaseTransitionHint returns read-to-fetch hint when fetch is pending", () => {
   const urls = Array.from({ length: 4 }, (_, index) => `https://example.com/game/${index + 1}`);
   const progress = {
     successfulToolCalls: 1,
@@ -1660,7 +1657,7 @@ test("phase lock rewrites repeated file reads into fetch when fetch is already p
     lastWriterProcessCommentaryDetected: false
   };
 
-  const decision = shouldForcePhaseTransition({
+  const hint = derivePhaseTransitionHint({
     contract: {
       requiredDeliverable: "Draft",
       requiresAssembly: true,
@@ -1684,10 +1681,9 @@ test("phase lock rewrites repeated file reads into fetch when fetch is already p
     phaseTransitionHint: "discovery_complete_fetch_pending"
   });
 
-  assert.equal(decision.reason, "phase_lock_forced_transition_read_to_fetch");
-  assert.equal(decision.forced?.[0]?.tool, "web_fetch");
-  const input = JSON.parse(decision.forced?.[0]?.inputJson ?? "{}") as { urls?: string[] };
-  assert.deepEqual(input.urls, urls);
+  assert.ok(hint);
+  assert.ok(hint.includes("Mechanical hint"));
+  assert.ok(hint.includes("web_fetch"));
 });
 
 test("runSpecialistToolLoop does not promote memo citation URLs from file_read into fetch-phase source discovery", async () => {

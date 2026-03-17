@@ -453,7 +453,7 @@ function normalizeActionInputForSchemaRecovery(
   return inputJson;
 }
 
-export function shouldForcePhaseTransition(args: {
+export function derivePhaseTransitionHint(args: {
   contract: AgentTaskContract;
   progress: SpecialistProgressState;
   actions: Array<{ tool: string; inputJson: string }>;
@@ -461,11 +461,12 @@ export function shouldForcePhaseTransition(args: {
   objective: string;
   currentPhase: SpecialistPhase;
   phaseTransitionHint: SpecialistPhaseTransitionHint;
-}): { forced: Array<{ tool: string; inputJson: string }> | null; reason: string | null } {
+}): string | null {
   const isSearchOnly = args.actions.length > 0 && args.actions.every((item) => SEARCH_FAMILY_TOOLS.has(item.tool));
   const isReadOrSearchOnly =
     args.actions.length > 0 &&
     args.actions.every((item) => item.tool === "file_read" || SEARCH_FAMILY_TOOLS.has(item.tool));
+  
   if (!isSearchOnly) {
     if (
       !isReadOrSearchOnly
@@ -475,28 +476,9 @@ export function shouldForcePhaseTransition(args: {
       || args.progress.fetchedPageCount > 0
       || !args.availableToolNames.has("web_fetch")
     ) {
-      return { forced: null, reason: null };
+      return null;
     }
-    const fetchUrls = selectFetchUrlsForHandoff(args.progress.sourceUrls, 12);
-    return {
-      forced: [
-        {
-          tool: "web_fetch",
-          inputJson: fetchUrls.length > 0
-            ? JSON.stringify({
-                urls: fetchUrls,
-                maxPages: Math.min(10, fetchUrls.length),
-                browseConcurrency: 3
-              })
-            : JSON.stringify({
-                query: deriveObjectiveQuery(args.objective),
-                maxPages: 10,
-                browseConcurrency: 3
-              })
-        }
-      ],
-      reason: "phase_lock_forced_transition_read_to_fetch"
-    };
+    return "Mechanical hint: Discovery phase looks complete (URLs found). It is recommended to move to 'web_fetch' to verify details before further reading or searching.";
   }
 
   if (
@@ -506,29 +488,10 @@ export function shouldForcePhaseTransition(args: {
     args.progress.fetchedPageCount === 0 &&
     args.availableToolNames.has("web_fetch")
   ) {
-    const fetchUrls = selectFetchUrlsForHandoff(args.progress.sourceUrls, 12);
-    return {
-      forced: [
-        {
-          tool: "web_fetch",
-          inputJson: fetchUrls.length > 0
-            ? JSON.stringify({
-                urls: fetchUrls,
-                maxPages: Math.min(10, fetchUrls.length),
-                browseConcurrency: 3
-              })
-            : JSON.stringify({
-                query: deriveObjectiveQuery(args.objective),
-                maxPages: 10,
-                browseConcurrency: 3
-              })
-        }
-      ],
-      reason: "phase_lock_forced_transition_discovery_to_fetch"
-    };
+    return "Mechanical hint: Enough candidate URLs have been discovered. It is highly recommended to move to the 'web_fetch' phase to gather evidence before further searching.";
   }
 
-  return { forced: null, reason: null };
+  return null;
 }
 
 function deriveSpecialistPhase(
@@ -1799,7 +1762,7 @@ function updateSpecialistProgress(progress: SpecialistProgressState, result: Too
   }
 }
 
-function derivePhaseTransitionHint(
+function deriveMechanicalPhaseStatus(
   contract: AgentTaskContract,
   progress: SpecialistProgressState,
   artifactCount: number
@@ -2149,8 +2112,11 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       break;
     }
     const remainingMs = Math.max(0, deadlineAtMs - Date.now());
+    const reflectionHints: string[] = [];
+    let forcedActionsFromRespond: Array<{ tool: string; inputJson: string }> | null = null;
+
     const currentPhase = deriveSpecialistPhase(taskContract, progress, toolContext.state.artifacts.length);
-    const phaseTransitionHint = derivePhaseTransitionHint(taskContract, progress, toolContext.state.artifacts.length);
+    const phaseTransitionHint = deriveMechanicalPhaseStatus(taskContract, progress, toolContext.state.artifacts.length);
     const retryProfile = buildSearchRetryProfile(progress, consecutiveSearchOnlyIterations);
     const expectedToolFamily = expectedPhaseToolFamily(currentPhase, new Set(Array.from(availableTools.keys())));
     const sourceCardCount = toolContext.getResearchSourceCards?.().length ?? 0;
@@ -2283,6 +2249,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
                 lowValueIterationStreak,
                 recentEfficiency: recentEfficiency.slice(-3)
               },
+              reflectionHints,
               availableTools: Array.from(availableTools.values()).map((tool) => ({
                 name: tool.name,
                 description: tool.description,
@@ -2405,38 +2372,10 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       });
     }
 
-    let forcedActionsFromRespond: Array<{ tool: string; inputJson: string }> | null = null;
-    if (plan?.actionType === "respond") {
-      if (plan.responseKind === "clarification" && taskContract.clarificationAllowed !== true) {
-        const assemblyActions = buildAssemblyAction({
-          availableToolNames: new Set(Array.from(availableTools.keys())),
-          contract: taskContract,
-          objective: options.message,
-          requestedOutputPath
-        });
-        await options.runStore.appendEvent({
-          runId: options.runId,
-          sessionId: options.sessionId,
-          phase: "thought",
-          eventType: "specialist_plan_adjusted",
-          payload: {
-            skillName: options.skillName,
-            iteration,
-            reason: assemblyActions ? "specialist_clarification_locked" : "specialist_clarification_blocked",
-            responseKind: plan.responseKind,
-            synthesisReady: activeWorkState.synthesisState.readyForSynthesis
-          },
-          timestamp: nowIso()
-        });
-        if (assemblyActions && activeWorkState.synthesisState.readyForSynthesis) {
-          forcedActionsFromRespond = assemblyActions;
-        } else {
-          observations.push({
-            iteration,
-            summary: "clarification_blocked_by_contract"
-          });
-          continue;
-        }
+    if (plan?.actionType === "respond" && plan.responseKind === "clarification") {
+      const synthesisReady = activeWorkState.synthesisState.readyForSynthesis;
+      if (taskContract.clarificationAllowed !== true && synthesisReady) {
+        reflectionHints.push("Mechanical hint: You requested clarification, but synthesis appears ready based on current evidence. Consider whether you can proceed with the current material or whether the ambiguity is truly blocking.");
       }
     }
 
@@ -2524,11 +2463,11 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       );
 
     let actions = requestedActions
-      .map((action) => ({
+      .map((action: { tool: string; inputJson: string }) => ({
         tool: action.tool.trim(),
         inputJson: action.inputJson
       }))
-      .filter((action) => action.tool.length > 0 && typeof action.inputJson === "string" && action.inputJson.trim().length > 0)
+      .filter((action: { tool: string; inputJson: string }) => action.tool.length > 0 && typeof action.inputJson === "string" && action.inputJson.trim().length > 0)
       .slice(0, Math.max(1, options.maxParallelTools));
 
     if (
@@ -2554,7 +2493,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
 
     if (actions.length > 0 && schemaRecoveryTools.size > 0) {
       let adjustedCount = 0;
-      const adjustedActions = actions.map((action) => {
+      const adjustedActions = actions.map((action: { tool: string; inputJson: string }) => {
         if (!schemaRecoveryTools.has(action.tool)) {
           return action;
         }
@@ -2592,9 +2531,9 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       }
     }
 
-    if (actions.length > 0 && actions.some((action) => DRAFT_TOOL_NAMES.has(action.tool))) {
+    if (actions.length > 0 && actions.some((action: { tool: string; inputJson: string }) => DRAFT_TOOL_NAMES.has(action.tool))) {
       let adjustedCount = 0;
-      const normalizedActions = actions.map((action) => {
+      const normalizedActions = actions.map((action: { tool: string; inputJson: string }) => {
         const normalized = normalizeWriterActionForContract({
           action,
           contract: taskContract,
@@ -2781,33 +2720,17 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       }
     }
 
-    if (actions.length > 0) {
-      const phaseLock = shouldForcePhaseTransition({
-        contract: taskContract,
-        progress,
-        actions,
-        availableToolNames: new Set(Array.from(availableTools.keys())),
-        objective: options.message,
-        currentPhase,
-        phaseTransitionHint
-      });
-      if (phaseLock.forced && phaseLock.forced.length > 0) {
-        await options.runStore.appendEvent({
-          runId: options.runId,
-          sessionId: options.sessionId,
-          phase: "thought",
-          eventType: "specialist_plan_adjusted",
-          payload: {
-            skillName: options.skillName,
-            iteration,
-            reason: phaseLock.reason,
-            originalActionCount: actions.length,
-            adjustedActionCount: phaseLock.forced.length
-          },
-          timestamp: nowIso()
-        });
-        actions = phaseLock.forced;
-      }
+    const phaseTransitionHintValue = derivePhaseTransitionHint({
+      contract: taskContract,
+      progress,
+      actions,
+      availableToolNames: new Set(Array.from(availableTools.keys())),
+      objective: options.message,
+      currentPhase,
+      phaseTransitionHint
+    });
+    if (phaseTransitionHintValue) {
+      reflectionHints.push(phaseTransitionHintValue);
     }
 
     if (shouldApplyDiagnosticThrashGuard(actions, consecutiveHealthySearchStatusChecks)) {
@@ -2887,7 +2810,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
 
     const beforeSnapshot = captureProgressSnapshot(progress, toolContext.state.artifacts.length);
     const executions = await Promise.all(
-      actions.map(async (action): Promise<ToolExecutionResult> => {
+      actions.map(async (action: { tool: string; inputJson: string }): Promise<ToolExecutionResult> => {
         const envelope = await executeToolWithEnvelope({
           toolName: action.tool,
           inputJson: action.inputJson,
@@ -2980,7 +2903,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     });
     hydrateToolContextWorkState(toolContext, postActionActiveWorkState);
     const valueDelta = computeIterationValueDelta(beforeSnapshot, afterSnapshot);
-    const costScore = executions.reduce((sum, execution) => sum + execution.durationMs, 0) / 1000 + executions.length * 0.35;
+    const costScore = executions.reduce((sum: number, execution: ToolExecutionResult) => sum + execution.durationMs, 0) / 1000 + executions.length * 0.35;
     const efficiency = valueDelta / Math.max(1, costScore);
     recentEfficiency.push({
       iteration,
@@ -2997,9 +2920,9 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       lowValueIterationStreak = 0;
     }
 
-    const hadSearchFamilyAction = executions.some((item) => SEARCH_FAMILY_TOOLS.has(item.tool));
+    const hadSearchFamilyAction = executions.some((item: ToolExecutionResult) => SEARCH_FAMILY_TOOLS.has(item.tool));
     const hadDownstreamProgress = executions.some(
-      (item) => item.status === "ok" && DOWNSTREAM_PROGRESS_TOOLS.has(item.tool)
+      (item: ToolExecutionResult) => item.status === "ok" && DOWNSTREAM_PROGRESS_TOOLS.has(item.tool)
     );
     if (hadSearchFamilyAction && !hadDownstreamProgress) {
       consecutiveSearchOnlyIterations += 1;
@@ -3012,9 +2935,9 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
 
     toolCallsUsed += executions.length;
     const summary = formatObservationSummary(executions);
-    const allSucceeded = executions.length > 0 && executions.every((item) => item.status === "ok");
+    const allSucceeded = executions.length > 0 && executions.every((item: ToolExecutionResult) => item.status === "ok");
     const iterationSignature = executions
-      .map((item) => {
+      .map((item: ToolExecutionResult) => {
         if (item.status === "ok") {
           return `${item.tool}:ok:${truncateForPrompt(item.result, 220)}`;
         }
@@ -3057,7 +2980,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
             efficiency: Number(efficiency.toFixed(4)),
           lowValueIterationStreak
         },
-        results: executions.map((item) => ({
+        results: executions.map((item: ToolExecutionResult) => ({
           tool: item.tool,
           status: item.status,
           durationMs: item.durationMs,
@@ -3073,7 +2996,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       timestamp: nowIso()
     });
 
-    const postIterationTransitionHint = derivePhaseTransitionHint(taskContract, progress, toolContext.state.artifacts.length);
+    const postIterationTransitionHint = deriveMechanicalPhaseStatus(taskContract, progress, toolContext.state.artifacts.length);
     if (
       !phaseTransitionHintRaised &&
       consecutiveSearchOnlyIterations >= 2 &&

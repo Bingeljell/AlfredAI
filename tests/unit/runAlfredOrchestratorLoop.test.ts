@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
-import { buildAlfredMechanicalRecoveryPlan, runAlfredOrchestratorLoop } from "../../src/core/runAlfredOrchestratorLoop.js";
+import { buildAlfredMechanicalRecoveryHint, runAlfredOrchestratorLoop } from "../../src/core/runAlfredOrchestratorLoop.js";
 import { RunStore } from "../../src/runs/runStore.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
 import type { SearchManager } from "../../src/tools/search/searchManager.js";
@@ -1364,18 +1364,8 @@ test("runAlfredOrchestratorLoop hides research_agent from planner for simple dir
   assert.ok(outcome.status === "completed" || outcome.status === "failed");
 });
 
-test("buildAlfredMechanicalRecoveryPlan forces fetch after repeated general-task searches", () => {
-  const adjusted = buildAlfredMechanicalRecoveryPlan({
-    plan: {
-      thought: "Run another broad search.",
-      actionType: "call_tool",
-      responseKind: null,
-      delegateAgent: null,
-      delegateBrief: null,
-      toolName: "search",
-      toolInputJson: JSON.stringify({ query: "family friendly pc games", maxResults: 10 }),
-      responseText: null
-    },
+test("buildAlfredMechanicalRecoveryHint returns hint after repeated general-task searches", () => {
+  const hint = buildAlfredMechanicalRecoveryHint({
     objectiveContract: {
       taskType: "general",
       groundedObjective: "Find me 10 family-friendly multiplayer video games released in 2024, 2025, or announced for 2026.",
@@ -1407,6 +1397,7 @@ test("buildAlfredMechanicalRecoveryPlan forces fetch after repeated general-task
           toolName: "search",
           inputRedacted: { query: "q1", maxResults: 10 },
           outputRedacted: {
+            resultCount: 3,
             topResults: [
               { url: "https://example.com/1" },
               { url: "https://example.com/2" },
@@ -1421,6 +1412,7 @@ test("buildAlfredMechanicalRecoveryPlan forces fetch after repeated general-task
           toolName: "search",
           inputRedacted: { query: "q2", maxResults: 10 },
           outputRedacted: {
+            resultCount: 3,
             topResults: [
               { url: "https://example.com/4" },
               { url: "https://example.com/5" },
@@ -1431,15 +1423,14 @@ test("buildAlfredMechanicalRecoveryPlan forces fetch after repeated general-task
           status: "ok",
           timestamp: new Date().toISOString()
         }
-      ],
-      artifactPaths: []
-    },
+      ]
+    } as any,
     availableToolNames: new Set(["search", "web_fetch"])
   });
 
-  assert.ok(adjusted);
-  assert.equal(adjusted?.reason, "general_task_fetch_transition");
-  assert.equal(adjusted?.adjustedPlan.toolName, "web_fetch");
+  assert.ok(hint);
+  assert.ok(hint.includes("Mechanical hint"));
+  assert.ok(hint.includes("web_fetch"));
 });
 
 test("runAlfredOrchestratorLoop respects plan-only execution permission and does not execute", async () => {

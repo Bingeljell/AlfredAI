@@ -375,6 +375,9 @@ Current progress:
   - no fallback draft/citation/word-count inference from raw prompt text
   - no pre-interpretation keyword routing into lead execution
   - explicit requested output paths remain mechanical constraints only
+- turn-contract hardening now strips over-literal interpretation fields before they become runtime obligations:
+  - non-path format words like `markdown` no longer become `requestedOutputPath`
+  - per-item `source URL` requirements no longer auto-upgrade into formal citation gates
 - main-loop lead brief generation now activates only from model-owned `taskType=lead_generation` interpretation in the primary turn setup path
 - regression coverage now proves that missing turn interpretation yields a generic `general` contract instead of reconstructing article semantics from prompt text
 - specialist helper flow is now more contract-driven:

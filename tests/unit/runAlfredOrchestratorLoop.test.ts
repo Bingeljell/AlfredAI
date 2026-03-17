@@ -25,7 +25,7 @@ function buildDefaultTurnInterpretation(options: { messages?: Array<{ role: stri
   const groundedObjective = payload.groundedObjective ?? payload.currentMessage ?? "Handle the current turn.";
   const normalized = String(groundedObjective);
   const requiresDraft = /\b(blog|post|article|draft|write)\b/i.test(normalized);
-  const requiresCitations = /\b(cite|citation|citations|source|sources)\b/i.test(normalized);
+  const requiresCitations = /\b(cite|citation|citations|reference|references|footnote|footnotes)\b/i.test(normalized);
   const targetWordCount = (() => {
     const rangeMatch = normalized.match(/\b(\d{2,4})\s*[-–]\s*(\d{2,4})\s*word/i);
     if (rangeMatch?.[1] && rangeMatch?.[2]) {
@@ -955,6 +955,117 @@ test("runAlfredOrchestratorLoop respects planner choice without forcing delegati
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
   assert.ok(events.some((event) => event.eventType === "alfred_clarification_requested"));
   assert.ok(!events.some((event) => event.eventType === "alfred_plan_adjusted"));
+});
+
+test("runAlfredOrchestratorLoop sanitizes over-literal interpretation fields for markdown lists", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-contract-sanitization");
+  const runStore = new RunStore(workspace);
+  const message = [
+    "Find me 10 family-friendly multiplayer video games released in 2024, 2025, or announced for 2026 that are good for kids aged 7-13.",
+    "For each game include title, release year, platform availability, multiplayer type, why it is good for this age group, and one source URL.",
+    "Paste the final list here in markdown."
+  ].join("\n");
+  const run = await runStore.createRun("session-1", message, "running");
+
+  let plannerPayload: Record<string, unknown> | null = null;
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string; messages?: Array<{ role: string; content: string }> }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_turn_grounding") {
+      return {
+        result: {
+          thought: "Use the current request directly.",
+          source: "message" as const,
+          groundedObjective: message,
+          referencedOutputId: null
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_turn_interpretation") {
+      return {
+        result: {
+          thought: "Interpret the request, but with over-literal fields.",
+          groundedObjective: message,
+          taskType: "general" as const,
+          requiredDeliverable: "Provide the requested ranked list in markdown with one source URL per game.",
+          hardConstraints: [],
+          doneCriteria: ["Return the final list in markdown with one source URL per game."],
+          assumptions: [],
+          requiresDraft: false,
+          requiresCitations: true,
+          targetWordCount: null,
+          requestedOutputPath: "markdown",
+          clarificationNeeded: false,
+          clarificationQuestion: null
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      plannerPayload = JSON.parse(options.messages?.[1]?.content ?? "{}") as Record<string, unknown>;
+      return {
+        result: {
+          thought: "Reply directly for the regression.",
+          actionType: "respond" as const,
+          responseKind: "final" as const,
+          delegateAgent: null,
+          delegateBrief: null,
+          toolName: null,
+          toolInputJson: null,
+          responseText: "Stub response."
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message,
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in contract sanitization test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 60_000,
+    maxToolCalls: 1,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner,
+    agentLoopRunner: async () => {
+      throw new Error("agent loop should not run in contract sanitization test");
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.ok(plannerPayload);
+  const objectiveContract = ((plannerPayload as Record<string, unknown>).objectiveContract as Record<string, unknown> | undefined) ?? {};
+  assert.equal(objectiveContract.requestedOutputPath, null);
+  assert.equal(objectiveContract.requiresCitations, false);
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  const contractEvent = events.find((event) => event.eventType === "alfred_objective_contract_created");
+  const createdContract = (contractEvent?.payload as { objectiveContract?: Record<string, unknown> } | undefined)?.objectiveContract ?? {};
+  assert.equal(createdContract.requestedOutputPath, null);
+  assert.equal(createdContract.requiresCitations, false);
 });
 
 test("runAlfredOrchestratorLoop keeps simple ranked-list research tasks in Alfred loop", async () => {

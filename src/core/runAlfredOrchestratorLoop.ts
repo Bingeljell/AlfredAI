@@ -494,7 +494,7 @@ function buildAlfredTurnInterpretationSystemPrompt(args: {
     {
       label: "Directives",
       content:
-        "Use the current user turn as primary truth, while considering session context and recent conversation. Produce a grounded objective, deliverable, hard constraints, and done criteria that preserve explicit user requirements. Only set `clarificationNeeded=true` when missing information is genuinely blocking and assumptions would materially risk the outcome. If reasonable defaults or assumptions can unblock the work, set `clarificationNeeded=false`, proceed, and record those assumptions explicitly. If `groundedSource=message`, do not inherit prior output paths, artifact obligations, or draft-reuse requirements unless the current user turn explicitly names them."
+        "Use the current user turn as primary truth, while considering session context and recent conversation. Produce a grounded objective, deliverable, hard constraints, and done criteria that preserve explicit user requirements. Only set `clarificationNeeded=true` when missing information is genuinely blocking and assumptions would materially risk the outcome. If reasonable defaults or assumptions can unblock the work, set `clarificationNeeded=false`, proceed, and record those assumptions explicitly. If `groundedSource=message`, do not inherit prior output paths, artifact obligations, or draft-reuse requirements unless the current user turn explicitly names them. Only set `requestedOutputPath` when the user explicitly names a real filesystem path such as `workspace/...`, `/...`, or `C:\\...`; format words like `markdown`, `table`, `csv`, `here`, or `in chat` are not output paths. Only set `requiresCitations=true` when the user explicitly asks for citation-style support such as citations, footnotes, references, or source notes; a request to include one source URL per item is not by itself a formal citation requirement."
     },
     {
       label: "Session Context",
@@ -1237,6 +1237,21 @@ function normalizeRequestedOutputPath(pathValue: string): string {
   return normalized;
 }
 
+function looksLikeExplicitOutputPath(pathValue: string | null | undefined): boolean {
+  if (!pathValue) {
+    return false;
+  }
+  const normalized = normalizeRequestedOutputPath(pathValue);
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized.toLowerCase().startsWith("workspace/")
+    || normalized.startsWith("/")
+    || /^[A-Za-z]:[\\/]/.test(normalized)
+  );
+}
+
 function extractRequestedOutputPath(message: string): string | null {
   const tokens = collapseWhitespace(message)
     .split(" ")
@@ -1244,11 +1259,49 @@ function extractRequestedOutputPath(message: string): string | null {
     .filter(Boolean);
   for (const token of tokens) {
     const normalizedToken = normalizeRequestedOutputPath(token);
-    if (normalizedToken.toLowerCase().startsWith("workspace/")) {
+    if (looksLikeExplicitOutputPath(normalizedToken)) {
       return normalizedToken;
     }
   }
   return null;
+}
+
+function messageRequestsFormalCitations(message: string): boolean {
+  const normalized = collapseWhitespace(message).toLowerCase();
+  return /\b(citation|citations|footnote|footnotes|reference|references|source note|source notes)\b/.test(normalized);
+}
+
+function messageRequestsPerItemSources(message: string): boolean {
+  const normalized = collapseWhitespace(message).toLowerCase();
+  return (
+    /\bsource url\b/.test(normalized)
+    || /\burl\b/.test(normalized)
+    || /\blink\b/.test(normalized)
+    || /\bsource\b/.test(normalized)
+  );
+}
+
+function sanitizeInterpretationRequestedOutputPath(pathValue: string | null | undefined): string | null {
+  if (!looksLikeExplicitOutputPath(pathValue)) {
+    return null;
+  }
+  return normalizeRequestedOutputPath(pathValue ?? "");
+}
+
+function sanitizeInterpretationRequiresCitations(args: {
+  message: string;
+  interpretation?: AlfredTurnInterpretationOutput | null;
+}): boolean {
+  if (!args.interpretation?.requiresCitations) {
+    return false;
+  }
+  if (messageRequestsFormalCitations(args.message)) {
+    return true;
+  }
+  if (messageRequestsPerItemSources(args.message)) {
+    return false;
+  }
+  return false;
 }
 
 function normalizePathForCompare(pathValue: string): string {
@@ -1294,9 +1347,10 @@ function buildObjectiveContract(
     });
   }
 
+  const interpretedRequestedOutputPath = sanitizeInterpretationRequestedOutputPath(interpretation?.requestedOutputPath);
   const requestedOutputPath = groundedSource === "message"
     ? explicitRequestedOutputPath
-    : (interpretation?.requestedOutputPath ?? explicitRequestedOutputPath);
+    : (interpretedRequestedOutputPath ?? explicitRequestedOutputPath);
   const interpretedHardConstraints = sanitizeCarryoverStringsForFreshTurn({
     values: interpretation?.hardConstraints ?? [],
     groundedSource,
@@ -1337,7 +1391,10 @@ function buildObjectiveContract(
     }),
     requiredFields: [],
     requiresDraft: interpretation.requiresDraft,
-    requiresCitations: interpretation.requiresCitations,
+    requiresCitations: sanitizeInterpretationRequiresCitations({
+      message: originalMessage ?? message,
+      interpretation
+    }),
     targetWordCount: interpretation.targetWordCount,
     requestedOutputPath,
     clarificationNeeded: interpretation.clarificationNeeded,

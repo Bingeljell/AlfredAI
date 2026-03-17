@@ -238,6 +238,7 @@
   - Phase 6 cleanup is now in progress in code: Alfred's fallback objective contracts no longer reconstruct draft/citation/word-count semantics from raw prompt text when turn interpretation is unavailable, main-loop lead-brief creation now depends on model-owned `taskType=lead_generation`, and regression coverage proves missing interpretation falls back to a minimal generic contract plus explicit output-path mechanics only.
   - Specialist runtime is now less semantic and more contract-driven: writer schema-repair/default inputs rebuild from the canonical contract, assembly/finalize behavior no longer keys off `research_agent` skill-name checks, and fallback specialist setup now degrades to a minimal generic contract unless an explicit task contract is provided.
   - March 17 refactor target is now implemented for the current runtime boundary: Alfred owns general-turn semantics through one turn contract and one local execution loop, writer is a plain generation tool, outer completion-evaluator indirection is gone, specialist helpers are contract/mechanics-driven, and Alfred-local general research now has mechanical search-to-fetch convergence instead of repeated broad-search replans.
+  - Turn-contract hardening now blocks over-literal semantic drift from interpretation output: `markdown` no longer becomes a fake output-path obligation, and per-item source URL requirements no longer auto-upgrade into formal citation gates.
   - Additional resiliency and production hardening tasks remain for later iterations.
 
 ## Remaining Follow-ups

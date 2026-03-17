@@ -63,6 +63,9 @@ This section reflects what is actually implemented today.
   - `progress`
 - Planner clarification is no longer inferred from punctuation or text shape in the normal response path.
 - Alfred no longer calls a separate completion-evaluator model after successful tool or delegation steps; the same planner gets one reserved reassessment pass instead.
+- Over-literal interpretation fields are now sanitized before they harden into runtime obligations:
+  - format words like `markdown` no longer become fake output paths
+  - per-item source URL requirements no longer force formal citation completion gates by default
 
 ### Session memory and prior-output grounding
 

@@ -23,7 +23,10 @@ Every slice below must be judged against that rule.
   - specialist fallback contract no longer regex-infers draft/citation intent from raw prompt text
 - Slice 2: `in progress`
   - simple ranked-list research tasks now stay in Alfred's loop via direct execution override instead of defaulting to `research_agent`
-- Slice 3: `pending`
+- planner-visible agent catalog now hides `research_agent` for those simple direct-execution contracts, so the planner no longer treats delegation as an equal semantic path
+- Slice 3: `in progress`
+  - specialist writer actions are now normalized back to the immutable task contract before execution
+  - hardcoded `blog_post`/`memo` recovery defaults have been replaced with contract-derived generation inputs
 - Slice 4: `pending`
 - Slice 5: `pending`
 - Slice 6: `pending`
@@ -114,6 +117,7 @@ Exit criteria:
 
 Current progress:
 - Alfred now rewrites `delegate_agent: research_agent` into direct tool execution for simple general ranked-list/list/comparison/brief shapes that do not require long-form drafting or artifact persistence.
+- Alfred planner context now filters out `research_agent` for those same simple direct-execution shapes, keeping the planner's semantic choices aligned with the contract.
 
 Risks:
 - deleting delegation too aggressively and harming cases where specialist state still helps
@@ -127,7 +131,7 @@ Rollback boundary:
 ## Slice 3 - Writer Demotion
 
 Status:
-- `pending`
+- `in progress`
 
 Objective:
 - remove `writer` as a separate semantic workflow engine and turn it into contract-preserving generation mode
@@ -180,6 +184,11 @@ Exit criteria:
 - writer no longer acts like a second planner
 - all writer retries preserve the original deliverable shape
 - no `blog_post` fallback paths remain in runtime orchestration for non-article contracts
+
+Current progress:
+- specialist default writer inputs now derive from the immutable contract instead of hardcoded `blog_post`
+- assembly, retry, and low-budget finalize writer actions now rebuild their instructions/format hints from `preferredOutputShape`, required deliverable, done criteria, and required fields
+- planner-supplied writer actions are normalized back to the immutable contract before execution, so explicit `format: "blog_post"` payloads can no longer silently drift ranked-list/list/comparison contracts into article mode
 
 Risks:
 - losing some provider-fallback reliability during simplification

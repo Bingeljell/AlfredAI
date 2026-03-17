@@ -1591,6 +1591,16 @@ function buildDirectExecutionOverrideForDelegation(args: {
   return null;
 }
 
+function filterPlannerVisibleAgents(args: {
+  availableAgents: Array<{ name: string; description: string; toolAllowlist: string[] }>;
+  objectiveContract: AlfredObjectiveContract;
+}): Array<{ name: string; description: string; toolAllowlist: string[] }> {
+  return args.availableAgents.filter((agent) => !shouldKeepTaskInAlfredLoop({
+    agentName: agent.name,
+    objectiveContract: args.objectiveContract
+  }));
+}
+
 function findNumericField(source: unknown, keys: string[]): number | null {
   if (!source || typeof source !== "object") {
     return null;
@@ -2358,6 +2368,10 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     options.message
   );
   const requestedOutputPath = objectiveContract.requestedOutputPath;
+  const plannerVisibleAgents = filterPlannerVisibleAgents({
+    availableAgents,
+    objectiveContract
+  });
   scratchpad.currentObjectiveContract = objectiveContract;
   if (initialLeadBrief) {
     scratchpad.currentLeadExecutionBrief = initialLeadBrief;
@@ -2586,7 +2600,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
               turnState: refreshTurnState(),
               iteration,
               remainingMs: Math.max(0, deadlineAtMs - Date.now()),
-              availableAgents,
+              availableAgents: plannerVisibleAgents,
               availableTools: availableToolSpecs,
               resolvedSessionOutput: resolvedSessionOutput
                 ? {

@@ -1042,6 +1042,107 @@ test("runAlfredOrchestratorLoop exposes full runtime catalogs to planner", async
   assert.equal(outcome.assistantText, "Catalogs verified.");
 });
 
+test("runAlfredOrchestratorLoop hides research_agent from planner for simple direct-execution research tasks", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-simple-planner-agents");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun(
+    "session-1",
+    "Give me a ranked list of family-friendly PC games from 2025.",
+    "running"
+  );
+
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string; messages?: Array<{ role: string; content: string }> }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_turn_interpretation") {
+      return {
+        result: {
+          thought: "The user wants a concise ranked list.",
+          groundedObjective: "Give me a ranked list of family-friendly PC games from 2025.",
+          taskType: "general" as const,
+          requiredDeliverable: "Return a concise ranked recommendation list.",
+          hardConstraints: ["PC games only."],
+          doneCriteria: ["Return the list directly."],
+          assumptions: [],
+          requiresDraft: false,
+          requiresCitations: false,
+          targetWordCount: null,
+          requestedOutputPath: null,
+          clarificationNeeded: false,
+          clarificationQuestion: null
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      const plannerInput = JSON.parse(options.messages?.[1]?.content ?? "{}") as {
+        availableAgents?: Array<{ name?: string }>;
+      };
+      const agentNames = new Set((plannerInput.availableAgents ?? []).map((agent) => agent.name));
+      assert.ok(agentNames.has("lead_agent"));
+      assert.ok(agentNames.has("ops_agent"));
+      assert.ok(!agentNames.has("research_agent"));
+      return {
+        result: {
+          thought: "Use direct tool execution.",
+          actionType: "call_tool" as const,
+          delegateAgent: null,
+          delegateBrief: null,
+          toolName: "search",
+          toolInputJson: JSON.stringify({ query: "family-friendly PC games 2025", maxResults: 5 }),
+          responseText: null
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_completion_evaluation") {
+      return {
+        result: {
+          thought: "Continue is fine for this regression test.",
+          shouldRespond: false,
+          responseText: null,
+          continueReason: "Need more evidence.",
+          confidence: 0.5
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message: "Give me a ranked list of family-friendly PC games from 2025.",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in planner visibility test");
+    },
+    maxIterations: 1,
+    maxDurationMs: 30_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner
+  });
+
+  assert.ok(outcome.status === "completed" || outcome.status === "failed");
+});
+
 test("runAlfredOrchestratorLoop respects plan-only execution permission and does not execute", async () => {
   const workspace = await createTempWorkspace("alfred-orchestrator-plan-only");
   const runStore = new RunStore(workspace);

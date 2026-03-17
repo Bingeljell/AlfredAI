@@ -1349,6 +1349,88 @@ test("runSpecialistToolLoop prefers revise pass before retrieval when evidence a
   assert.ok(reviseGuardEvent);
 });
 
+test("runSpecialistToolLoop preserves ranked-list shape in writer retry inputs", async () => {
+  const workspace = await createTempWorkspace("specialist-writer-ranked-list-shape");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "Find recent family games and produce a ranked list", "running");
+
+  let plannerStep = 0;
+  const outcome = await runSpecialistToolLoop({
+    runStore,
+    searchManager: new FakeSearchManagerWithResults() as never,
+    workspaceDir: workspace,
+    message: "Find recent family games and produce a ranked list",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    taskContract: {
+      requiredDeliverable: "Produce a ranked recommendation list with concise evidence-backed entries.",
+      requiresAssembly: true,
+      requiresDraft: false,
+      requiresCitations: false,
+      minimumCitationCount: 0,
+      doneCriteria: ["Return a ranked list in list form.", "Do not turn the output into a generic article."],
+      assumptions: ["Keep the response concise."],
+      blockingUnknowns: [],
+      requiredFields: ["rank", "title", "reason"],
+      preferredOutputShape: "ranked_list",
+      requestedOutputPath: null,
+      targetWordCount: 500,
+      clarificationAllowed: false
+    },
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in this test");
+    },
+    maxIterations: 3,
+    maxDurationMs: 60_000,
+    maxToolCalls: 5,
+    maxParallelTools: 1,
+    plannerMaxCalls: 4,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    skillName: "research_agent",
+    skillDescription: "Research skill",
+    skillSystemPrompt: "Do research",
+    toolAllowlist: ["writer_agent"],
+    structuredChatRunner: async <T>() => {
+      plannerStep += 1;
+      return {
+        result: {
+          thought: "Draft now.",
+          actionType: "single",
+          singleTool: "writer_agent",
+          singleInputJson: JSON.stringify({
+            instruction: "Write the ranked list.",
+            maxWords: 500,
+            format: "blog_post"
+          }),
+          parallelActions: null,
+          responseText: null
+        }
+      } as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>;
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  const updatedRun = await runStore.getRun(run.runId);
+  const writerCalls = (updatedRun?.toolCalls ?? []).filter((call) => call.toolName === "writer_agent");
+  assert.equal(writerCalls.length >= 1, true);
+  const revisedInput = (writerCalls[0]?.inputRedacted ?? {}) as { format?: string; instruction?: string };
+  assert.equal(revisedInput.format, "notes");
+  assert.match(revisedInput.instruction ?? "", /Deliverable shape: ranked_list/i);
+  assert.match(revisedInput.instruction ?? "", /Do not change the deliverable shape/i);
+});
+
 test("runSpecialistToolLoop injects requested outputPath into writer actions when omitted by planner", async () => {
   const workspace = await createTempWorkspace("specialist-writer-outputpath-inject");
   const runStore = new RunStore(workspace);

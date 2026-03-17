@@ -52,6 +52,7 @@ This section reflects what is actually implemented today.
   - downstream execution receives the same deliverable contract
   - specialist fallback paths no longer infer draft/citation semantics from raw prompt keywords when no explicit task contract is supplied
 - For simple general ranked-list/list/comparison/brief tasks that do not require long-form drafting, Alfred now keeps execution in its own loop and rewrites planner delegation to `research_agent` into direct retrieval actions.
+- For those same simple direct-execution task shapes, the planner-visible agent catalog now hides `research_agent`, so Alfred does not advertise an unnecessary second semantic planner path when the contract already says to keep execution local.
 - Alfred planner responses now carry explicit `responseKind`:
   - `final`
   - `clarification`
@@ -114,6 +115,10 @@ This section reflects what is actually implemented today.
   - specialist loop records last writer output availability and deliverable status
   - assembly tasks only become `complete` when a reusable synthesized body exists
   - persisted artifacts from insufficient writer outputs remain `metadata_only` instead of being treated as finished bodies
+- Specialist generation inputs are now rebuilt from the immutable task contract before execution:
+  - hardcoded `blog_post` / `memo` recovery defaults are gone from assembly/retry/finalize call sites
+  - planner-supplied writer actions are normalized back to contract-derived shape hints and deliverable instructions
+  - ranked lists, comparisons, briefs, tables, and other non-article contracts now enter generation as contract-preserving `notes`-style outputs instead of article defaults
 
 ### Output availability contract
 
@@ -166,6 +171,7 @@ Status: in progress
 Delivered so far:
 
 - Alfred now prevents unnecessary delegation for simple general research/list tasks by converting `research_agent` delegation into direct tool execution in Alfred's own loop.
+- Alfred now also stops advertising `research_agent` to the planner for those same simple direct-execution research/list task shapes.
 
 Remaining:
 
@@ -215,6 +221,7 @@ Delivered:
 - no placeholder draft persistence as fresh output by default
 - finalization logic distinguishes reusable body vs metadata-only vs missing
 - writer core no longer defaults to `section plan -> section passes -> polish`; it now interprets deliverable shape, drafts directly in that shape, runs semantic review, and repairs process-commentary drafts into the requested final form when possible
+- specialist writer call sites now derive generation format/instructions from the immutable contract and normalize planner-provided writer payloads before execution
 
 Remaining:
 

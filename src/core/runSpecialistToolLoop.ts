@@ -111,6 +111,104 @@ interface WriterReadinessState {
   minimumRemainingMs: number;
 }
 
+function deriveWriterFormatHint(contract?: AgentTaskContract): "blog_post" | "email" | "memo" | "outline" | "social_post" | "notes" {
+  switch (contract?.preferredOutputShape ?? null) {
+    case "article":
+    case "rewrite":
+      return "blog_post";
+    case "email":
+      return "email";
+    case "memo":
+      return "memo";
+    case "outline":
+      return "outline";
+    case "social_post":
+      return "social_post";
+    case "ranked_list":
+    case "comparison":
+    case "brief":
+    case "notes":
+    case "generic":
+    case "list":
+    case "table":
+    case "csv":
+      return "notes";
+    default:
+      return contract?.requiresDraft ? "blog_post" : "notes";
+  }
+}
+
+function buildGenerationInstruction(args: {
+  baseInstruction: string;
+  contract?: AgentTaskContract;
+}): string {
+  const lines = [args.baseInstruction];
+  if (!args.contract) {
+    return lines.join(" ").trim();
+  }
+  lines.push(`Deliverable shape: ${args.contract.preferredOutputShape ?? "generic"}.`);
+  lines.push(`Required deliverable: ${args.contract.requiredDeliverable}`);
+  if (args.contract.requiredFields && args.contract.requiredFields.length > 0) {
+    lines.push(`Required fields: ${args.contract.requiredFields.join("; ")}.`);
+  }
+  if (args.contract.doneCriteria.length > 0) {
+    lines.push(`Done criteria: ${args.contract.doneCriteria.join(" ")}`);
+  }
+  if (args.contract.assumptions && args.contract.assumptions.length > 0) {
+    lines.push(`Assumptions to preserve: ${args.contract.assumptions.join(" ")}`);
+  }
+  lines.push("Do not change the deliverable shape, broaden scope, or turn this into a generic article/memo if the contract asks for a list, comparison, table, or brief.");
+  return lines.filter(Boolean).join(" ").trim();
+}
+
+function buildWriterToolInput(args: {
+  contract?: AgentTaskContract;
+  baseInstruction: string;
+  maxWords: number;
+  outputPath?: string | null;
+}): Record<string, unknown> {
+  const input: Record<string, unknown> = {
+    instruction: buildGenerationInstruction({
+      baseInstruction: args.baseInstruction,
+      contract: args.contract
+    }),
+    maxWords: args.maxWords,
+    format: deriveWriterFormatHint(args.contract)
+  };
+  if (args.outputPath) {
+    input.outputPath = args.outputPath;
+  }
+  return input;
+}
+
+function normalizeWriterActionForContract(args: {
+  action: { tool: string; inputJson: string };
+  contract: AgentTaskContract;
+  objective: string;
+  requestedOutputPath: string | null;
+}): { tool: string; inputJson: string } {
+  if (!DRAFT_TOOL_NAMES.has(args.action.tool)) {
+    return args.action;
+  }
+  const parsed = safeParseObject(args.action.inputJson);
+  const baseInstruction = asString(parsed?.instruction) ?? args.objective.slice(0, 1200);
+  const maxWords = typeof parsed?.maxWords === "number" && Number.isFinite(parsed.maxWords)
+    ? Math.max(80, Math.min(3000, Math.round(parsed.maxWords)))
+    : 950;
+  const outputPath = asString(parsed?.outputPath) ?? args.requestedOutputPath;
+  return {
+    ...args.action,
+    inputJson: JSON.stringify(
+      buildWriterToolInput({
+        contract: args.contract,
+        baseInstruction,
+        maxWords,
+        outputPath
+      })
+    )
+  };
+}
+
 function deriveWriterResultOutputAvailability(payload: Record<string, unknown>): SessionOutputAvailability {
   const deliverableStatus =
     payload.deliverableStatus === "complete" || payload.deliverableStatus === "partial" || payload.deliverableStatus === "insufficient"
@@ -498,7 +596,7 @@ function shouldApplyDiagnosticThrashGuard(
   return actions.length > 0 && actions.every((item) => DIAGNOSTIC_TOOLS.has(item.tool));
 }
 
-function defaultToolInputJson(tool: string, objective: string): string | null {
+function defaultToolInputJson(tool: string, objective: string, contract?: AgentTaskContract): string | null {
   const objectiveQuery = deriveObjectiveQuery(objective);
   switch (tool) {
     case "search_status":
@@ -512,7 +610,13 @@ function defaultToolInputJson(tool: string, objective: string): string | null {
       return JSON.stringify({ query: objectiveQuery, maxPages: 10, browseConcurrency: 3 });
     case "writer_agent":
     case "article_writer":
-      return JSON.stringify({ instruction: objective.slice(0, 1200), maxWords: 950, format: "blog_post" });
+      return JSON.stringify(
+        buildWriterToolInput({
+          contract,
+          baseInstruction: objective.slice(0, 1200),
+          maxWords: 950
+        })
+      );
     default:
       return null;
   }
@@ -642,13 +746,10 @@ function buildAssemblyAction(args: {
   if (!draftTool) {
     return null;
   }
-  const assemblyInput: Record<string, unknown> = {
-    instruction: [
-      `Assemble the current deliverable from the evidence already collected.`,
-      `Required deliverable: ${args.contract.requiredDeliverable}`,
-      args.contract.doneCriteria.length > 0
-        ? `Done criteria: ${args.contract.doneCriteria.join(" ")}`
-        : null,
+  const assemblyInput = buildWriterToolInput({
+    contract: args.contract,
+    baseInstruction: [
+      "Assemble the current deliverable from the evidence already collected.",
       "Do not restart discovery unless the current evidence is explicitly insufficient.",
       args.contract.requiresCitations
         ? "Include explicit source links for factual claims."
@@ -657,11 +758,8 @@ function buildAssemblyAction(args: {
     maxWords: args.contract.targetWordCount && args.contract.targetWordCount > 0
       ? Math.max(300, Math.min(1400, args.contract.targetWordCount))
       : 1100,
-    format: args.contract.requiresDraft ? "blog_post" : "memo"
-  };
-  if (args.requestedOutputPath) {
-    assemblyInput.outputPath = args.requestedOutputPath;
-  }
+    outputPath: args.requestedOutputPath
+  });
   return [
     {
       tool: draftTool,
@@ -737,6 +835,7 @@ function shouldApplyWriterRetryBudgetGuard(args: {
   availableToolNames: Set<string>;
   progress: SpecialistProgressState;
   objective: string;
+  contract: AgentTaskContract;
   writerReadiness: WriterReadinessState;
   sourceCardCount: number;
 }): {
@@ -768,15 +867,13 @@ function shouldApplyWriterRetryBudgetGuard(args: {
       args.actions.find((item) => DRAFT_TOOL_NAMES.has(item.tool))?.tool
       ?? (args.availableToolNames.has("article_writer") ? "article_writer" : "writer_agent");
     const outputPath = extractOutputPathFromObjective(args.objective);
-    const revisionInput: Record<string, unknown> = {
-      instruction:
-        "Revise and complete the draft using the evidence already collected. Improve structure and citations before requesting any new retrieval.",
+    const revisionInput = buildWriterToolInput({
+      contract: args.contract,
+      baseInstruction:
+        "Revise and complete the current deliverable using the evidence already collected. Improve structure, fidelity to the requested shape, and citations before requesting any new retrieval.",
       maxWords: 950,
-      format: "blog_post"
-    };
-    if (outputPath) {
-      revisionInput.outputPath = outputPath;
-    }
+      outputPath
+    });
     return {
       adjusted: [
         {
@@ -808,6 +905,7 @@ function shouldApplyLowBudgetFinalizeGuard(args: {
   actions: Array<{ tool: string; inputJson: string }>;
   availableToolNames: Set<string>;
   objective: string;
+  contract: AgentTaskContract;
   requestedOutputPath: string | null;
   targetWordCount?: number | null;
   progress: SpecialistProgressState;
@@ -860,17 +958,15 @@ function shouldApplyLowBudgetFinalizeGuard(args: {
     return { adjusted: null, reason: null, detail };
   }
   const outputPath = args.requestedOutputPath ?? extractOutputPathFromObjective(args.objective);
-  const revisionInput: Record<string, unknown> = {
-    instruction:
-      "Finalize the best possible draft now from existing evidence. Improve structure and include explicit source links. Do not start new discovery loops.",
+  const revisionInput = buildWriterToolInput({
+    contract: args.contract,
+    baseInstruction:
+      "Finalize the best possible deliverable now from existing evidence. Improve structure, fidelity to the requested shape, and include explicit source links when required. Do not start new discovery loops.",
     maxWords: args.targetWordCount && args.targetWordCount > 0
       ? Math.max(300, Math.min(1400, args.targetWordCount))
       : 950,
-    format: "blog_post"
-  };
-  if (outputPath) {
-    revisionInput.outputPath = outputPath;
-  }
+    outputPath
+  });
   return {
     adjusted: [
       {
@@ -2415,7 +2511,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
 
     const singleActionDefaultInput =
       plan?.actionType === "single" && plan.singleTool
-        ? defaultToolInputJson(plan.singleTool, options.message)
+        ? defaultToolInputJson(plan.singleTool, options.message, taskContract)
         : null;
     const shouldDefaultSingleInput =
       plan?.actionType === "single" &&
@@ -2509,6 +2605,38 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       }
     }
 
+    if (actions.length > 0 && actions.some((action) => DRAFT_TOOL_NAMES.has(action.tool))) {
+      let adjustedCount = 0;
+      const normalizedActions = actions.map((action) => {
+        const normalized = normalizeWriterActionForContract({
+          action,
+          contract: taskContract,
+          objective: options.message,
+          requestedOutputPath
+        });
+        if (normalized.inputJson !== action.inputJson) {
+          adjustedCount += 1;
+        }
+        return normalized;
+      });
+      if (adjustedCount > 0) {
+        await options.runStore.appendEvent({
+          runId: options.runId,
+          sessionId: options.sessionId,
+          phase: "thought",
+          eventType: "specialist_plan_adjusted",
+          payload: {
+            skillName: options.skillName,
+            iteration,
+            reason: "writer_actions_normalized_to_contract",
+            adjustedCount
+          },
+          timestamp: nowIso()
+        });
+        actions = normalizedActions;
+      }
+    }
+
     if (actions.length > 0) {
       const evidenceGap = shouldApplyEvidenceGapGuard({
         contract: taskContract,
@@ -2549,6 +2677,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         availableToolNames: new Set(Array.from(availableTools.keys())),
         progress,
         objective: options.message,
+        contract: taskContract,
         writerReadiness,
         sourceCardCount
       });
@@ -2609,6 +2738,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         actions,
         availableToolNames: new Set(Array.from(availableTools.keys())),
         objective: options.message,
+        contract: taskContract,
         requestedOutputPath,
         targetWordCount: taskContract.targetWordCount ?? null,
         progress,

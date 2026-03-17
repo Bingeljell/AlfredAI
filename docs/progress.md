@@ -13,6 +13,7 @@
 
 ## Current Status
 
+- 2026-03-17: Slice 2/3 moved forward in code: Alfred now hides `research_agent` from the planner for simple direct-execution research/list shapes, and specialist writer actions are normalized back to the immutable task contract before execution so explicit `blog_post` payloads can no longer silently drift ranked-list/list/comparison tasks into article mode.
 - 2026-03-17: Slice 2 has started in code: Alfred now keeps simple general ranked-list/list/comparison/brief research tasks in its own loop by rewriting `research_agent` delegation into direct tool execution, reducing duplicate semantic planning for those task shapes.
 - 2026-03-17: Added [docs/implementation/corebehaviour_execution_plan_17March.md](/Users/nikhil/Projects/Alfredv1/docs/implementation/corebehaviour_execution_plan_17March.md) as the surgical execution log for the refactor, mapping Slices 2–6 to exact files, functions, deletion targets, tests, risks, and exit criteria.
 - 2026-03-17: Slice 1 of the March 17 refactor is now in progress in code: turn interpretation is authoritative for the canonical turn contract when available, delegated research task contracts preserve interpretation-owned semantics, and specialist fallback contracts no longer regex-infer draft/citation intent from raw prompt text.

@@ -173,7 +173,8 @@ function buildWriterToolInput(args: {
       contract: args.contract
     }),
     maxWords: args.maxWords,
-    format: deriveWriterFormatHint(args.contract)
+    format: deriveWriterFormatHint(args.contract),
+    outputShapeHint: args.contract?.preferredOutputShape ?? undefined
   };
   if (args.outputPath) {
     input.outputPath = args.outputPath;

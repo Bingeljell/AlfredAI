@@ -233,7 +233,7 @@ test("runAlfredOrchestratorLoop skips clarification gate when user explicitly gr
   assert.equal(outcome.assistantText, "Proceeding with autonomous angle selection.");
 });
 
-test("runAlfredOrchestratorLoop responds after successful tool when completion evaluator says enough", async () => {
+test("runAlfredOrchestratorLoop replans and responds after a successful tool result", async () => {
   const workspace = await createTempWorkspace("alfred-orchestrator");
   const runStore = new RunStore(workspace);
   const run = await runStore.createRun("session-1", "Retry diagnostics for this run", "running");
@@ -244,7 +244,6 @@ test("runAlfredOrchestratorLoop responds after successful tool when completion e
   >(
     options: { schemaName: string }
   ): Promise<StructuredChatDiagnostic<T>> => {
-    plannerCalls += 1;
     if (options.schemaName === "alfred_lead_execution_brief") {
       return {
         result: {
@@ -271,32 +270,35 @@ test("runAlfredOrchestratorLoop responds after successful tool when completion e
     }
 
     if (options.schemaName === "alfred_orchestrator_plan") {
-      return {
-        result: {
-          thought: "Use diagnostics on the current run before replying.",
-          actionType: "call_tool" as const,
-          delegateAgent: null,
-          delegateBrief: null,
-          toolName: "run_diagnostics",
-          toolInputJson: JSON.stringify({ runId: run.runId }),
-          responseText: null
-        },
-        usage: {
-          promptTokens: 100,
-          completionTokens: 20,
-          totalTokens: 120
-        }
-      } as StructuredChatDiagnostic<T>;
-    }
-
-    if (options.schemaName === "alfred_completion_evaluation") {
+      plannerCalls += 1;
+      if (plannerCalls === 1) {
+        return {
+          result: {
+            thought: "Use diagnostics on the current run before replying.",
+            actionType: "call_tool" as const,
+            delegateAgent: null,
+            delegateBrief: null,
+            toolName: "run_diagnostics",
+            toolInputJson: JSON.stringify({ runId: run.runId }),
+            responseText: null
+          },
+          usage: {
+            promptTokens: 100,
+            completionTokens: 20,
+            totalTokens: 120
+          }
+        } as StructuredChatDiagnostic<T>;
+      }
       return {
         result: {
           thought: "The diagnostics output already answers the user.",
-          shouldRespond: true,
-          responseText: "Diagnostics summary ready.",
-          continueReason: null,
-          confidence: 0.91
+          actionType: "respond" as const,
+          responseKind: "final" as const,
+          delegateAgent: null,
+          delegateBrief: null,
+          toolName: null,
+          toolInputJson: null,
+          responseText: "Diagnostics summary ready."
         },
         usage: {
           promptTokens: 80,
@@ -350,7 +352,7 @@ test("runAlfredOrchestratorLoop responds after successful tool when completion e
   assert.ok(updatedRun?.toolCalls.some((call) => call.toolName === "run_diagnostics" && call.status === "ok"));
 
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
-  assert.ok(events.some((event) => event.eventType === "alfred_completion_evaluated"));
+  assert.ok(events.some((event) => event.eventType === "alfred_post_action_reassessment_pending"));
 });
 
 test("runAlfredOrchestratorLoop records delegation telemetry and passes scratchpad to delegated agent", async () => {
@@ -358,6 +360,7 @@ test("runAlfredOrchestratorLoop records delegation telemetry and passes scratchp
   const runStore = new RunStore(workspace);
   const run = await runStore.createRun("session-1", "Find leads", "running");
 
+  let plannerCalls = 0;
   const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
     T
   >(
@@ -393,38 +396,41 @@ test("runAlfredOrchestratorLoop records delegation telemetry and passes scratchp
         objectiveContract?: { requiredDeliverable?: string; doneCriteria?: string[] };
         turnState?: { turnObjective?: string; completionCriteria?: string[]; missingRequirements?: string[] };
       };
+      plannerCalls += 1;
       assert.ok(plannerInput.objectiveContract);
       assert.ok(typeof plannerInput.objectiveContract?.requiredDeliverable === "string");
       assert.ok(Array.isArray(plannerInput.objectiveContract?.doneCriteria));
       assert.equal(plannerInput.turnState?.turnObjective, "Find 3 leads with emails");
       assert.ok(Array.isArray(plannerInput.turnState?.completionCriteria));
       assert.ok(Array.isArray(plannerInput.turnState?.missingRequirements));
-      return {
-        result: {
-          thought: "Delegate to the lead specialist.",
-          actionType: "delegate_agent" as const,
-          delegateAgent: "lead_agent",
-          delegateBrief: "Find 3 leads with emails",
-          toolName: null,
-          toolInputJson: null,
-          responseText: null
-        },
-        usage: {
-          promptTokens: 90,
-          completionTokens: 18,
-          totalTokens: 108
-        }
-      } as StructuredChatDiagnostic<T>;
-    }
-
-    if (options.schemaName === "alfred_completion_evaluation") {
+      if (plannerCalls === 1) {
+        return {
+          result: {
+            thought: "Delegate to the lead specialist.",
+            actionType: "delegate_agent" as const,
+            delegateAgent: "lead_agent",
+            delegateBrief: "Find 3 leads with emails",
+            toolName: null,
+            toolInputJson: null,
+            responseText: null
+          },
+          usage: {
+            promptTokens: 90,
+            completionTokens: 18,
+            totalTokens: 108
+          }
+        } as StructuredChatDiagnostic<T>;
+      }
       return {
         result: {
           thought: "The delegated result is sufficient to answer the turn.",
-          shouldRespond: true,
-          responseText: "Delegated result accepted.",
-          continueReason: null,
-          confidence: 0.87
+          actionType: "respond" as const,
+          responseKind: "final" as const,
+          delegateAgent: null,
+          delegateBrief: null,
+          toolName: null,
+          toolInputJson: null,
+          responseText: "Delegated result accepted."
         },
         usage: {
           promptTokens: 70,
@@ -856,6 +862,7 @@ test("runAlfredOrchestratorLoop keeps simple ranked-list research tasks in Alfre
   );
 
   let delegated = false;
+  let plannerCalls = 0;
   const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
     T
   >(
@@ -881,27 +888,31 @@ test("runAlfredOrchestratorLoop keeps simple ranked-list research tasks in Alfre
       } as StructuredChatDiagnostic<T>;
     }
     if (options.schemaName === "alfred_orchestrator_plan") {
-      return {
-        result: {
-          thought: "Delegate to research_agent.",
-          actionType: "delegate_agent" as const,
-          responseKind: null,
-          delegateAgent: "research_agent",
-          delegateBrief: "Research and compile the ranked list.",
-          toolName: null,
-          toolInputJson: null,
-          responseText: null
-        }
-      } as StructuredChatDiagnostic<T>;
-    }
-    if (options.schemaName === "alfred_completion_evaluation") {
+      plannerCalls += 1;
+      if (plannerCalls === 1) {
+        return {
+          result: {
+            thought: "Delegate to research_agent.",
+            actionType: "delegate_agent" as const,
+            responseKind: null,
+            delegateAgent: "research_agent",
+            delegateBrief: "Research and compile the ranked list.",
+            toolName: null,
+            toolInputJson: null,
+            responseText: null
+          }
+        } as StructuredChatDiagnostic<T>;
+      }
       return {
         result: {
           thought: "The direct search result is enough for this routing test.",
-          shouldRespond: true,
-          responseText: "Handled directly in Alfred loop.",
-          continueReason: null,
-          confidence: 0.9
+          actionType: "respond" as const,
+          responseKind: "final" as const,
+          delegateAgent: null,
+          delegateBrief: null,
+          toolName: null,
+          toolInputJson: null,
+          responseText: "Handled directly in Alfred loop."
         }
       } as StructuredChatDiagnostic<T>;
     }

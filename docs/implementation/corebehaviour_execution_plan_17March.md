@@ -24,11 +24,11 @@ Every slice below must be judged against that rule.
 - Slice 2: `in progress`
   - general tasks now stay in Alfred's loop via direct execution override instead of defaulting to `research_agent`
   - planner-visible agent catalog now hides `research_agent` for general-task contracts, so the planner no longer treats delegation as an equal semantic path
-- Slice 3: `in progress`
+- Slice 3: `done`
   - specialist writer actions are now normalized back to the immutable task contract before execution
   - hardcoded `blog_post`/`memo` recovery defaults have been replaced with contract-derived generation inputs
-- Slice 4: `pending`
-- Slice 5: `pending`
+- Slice 4: `in progress`
+- Slice 5: `in progress`
 - Slice 6: `pending`
 
 ## Slice 1 - Contract Hardening
@@ -119,6 +119,8 @@ Current progress:
 - Alfred now rewrites `delegate_agent: research_agent` into direct tool execution for general-task contracts, not just simple ranked-list/list shapes.
 - Alfred planner context now filters out `research_agent` for general tasks entirely, keeping the planner's semantic choices aligned with the contract.
 - If a general-task follow-up already has a reusable session artifact, Alfred now prefers direct `file_read` handoff instead of defaulting to a fresh search.
+- `research_agent` has now been removed from the public agent registry and tool-policy surface, leaving only `lead_agent` and `ops_agent` as registered specialist skills.
+- Alfred no longer calls a second completion-evaluator model after successful actions; it reserves one final planner reassessment pass instead, keeping the main planner as the only semantic owner in the normal loop.
 
 Risks:
 - deleting delegation too aggressively and harming cases where specialist state still helps
@@ -132,7 +134,7 @@ Rollback boundary:
 ## Slice 3 - Writer Demotion
 
 Status:
-- `in progress`
+- `done`
 
 Objective:
 - remove `writer` as a separate semantic workflow engine and turn it into contract-preserving generation mode
@@ -190,6 +192,8 @@ Current progress:
 - specialist default writer inputs now derive from the immutable contract instead of hardcoded `blog_post`
 - assembly, retry, and low-budget finalize writer actions now rebuild their instructions/format hints from `preferredOutputShape`, required deliverable, done criteria, and required fields
 - planner-supplied writer actions are normalized back to the immutable contract before execution, so explicit `format: "blog_post"` payloads can no longer silently drift ranked-list/list/comparison contracts into article mode
+- `writer_agent` is now a plain generation tool: one bounded text-generation pass, mechanical quality checks, artifact persistence, and no writer-owned intent/review/repair sub-pipeline
+- writer coverage now validates direct tool behavior rather than the deleted multi-pass workflow
 
 Risks:
 - losing some provider-fallback reliability during simplification
@@ -204,7 +208,7 @@ Rollback boundary:
 ## Slice 4 - Single Semantic Validator
 
 Status:
-- `pending`
+- `in progress`
 
 Objective:
 - replace split completion authority with one validator against the canonical turn contract
@@ -251,6 +255,11 @@ Tests to add or update:
 - persisted artifact alone does not imply completion
 - correct output shape + required fields does satisfy completion
 - partial output produces honest partial response, not false success
+
+Current progress:
+- the outer completion-evaluator model call is now removed from Alfred's loop
+- successful tool/delegation steps now return to the same Alfred planner for one reserved reassessment pass instead of consulting a second semantic model
+- contract gating still exists as runtime integrity enforcement on final `respond` actions, but the duplicate post-action authority is gone
 
 Exit criteria:
 - one semantic completion authority only
@@ -396,6 +405,6 @@ For each, verify:
 
 ## Immediate Next Move
 
-The next coding slice is Slice 2.
+The next coding slice is Phase 6 cleanup on top of the now-simplified loop.
 
-Start by simplifying simple research/list tasks so Alfred can keep them in one semantic loop rather than delegating into a second semantic planner.
+Start by removing the remaining prompt-heuristic ownership from Alfred/specialist setup so final-answer acceptance and execution routing come from the immutable turn contract plus planner reasoning, not helper inference.

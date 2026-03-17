@@ -25,24 +25,6 @@ export function resolveLeadAgentToolAllowlist(): string[] {
   return [...LEAD_AGENT_TOOL_ALLOWLIST];
 }
 
-export const RESEARCH_AGENT_TOOL_ALLOWLIST = [
-  "search",
-  "search_status",
-  "recover_search",
-  "lead_search_shortlist",
-  "web_fetch",
-  "article_writer",
-  "writer_agent",
-  "doc_qa",
-  "file_read",
-  "file_write",
-  "file_edit"
-] as const;
-
-export function resolveResearchAgentToolAllowlist(): string[] {
-  return [...RESEARCH_AGENT_TOOL_ALLOWLIST];
-}
-
 export const OPS_AGENT_TOOL_ALLOWLIST = [
   "doc_qa",
   "file_list",

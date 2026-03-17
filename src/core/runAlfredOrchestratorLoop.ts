@@ -62,14 +62,6 @@ interface AlfredPlannerOutput {
   responseText: string | null;
 }
 
-interface AlfredCompletionEvaluation {
-  thought: string;
-  shouldRespond: boolean;
-  responseText: string | null;
-  continueReason: string | null;
-  confidence: number;
-}
-
 interface AlfredLeadBriefOutput {
   thought: string;
   requestedLeadCount: number;
@@ -661,27 +653,6 @@ const AlfredPlannerOutputSchema: z.ZodType<AlfredPlannerOutput> = z.object({
   responseText: z.string().min(1).max(4000).nullable()
 });
 
-const ALFRED_COMPLETION_EVALUATION_JSON_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    thought: { type: "string", minLength: 1, maxLength: 500 },
-    shouldRespond: { type: "boolean" },
-    responseText: { anyOf: [{ type: "string", minLength: 1, maxLength: 4000 }, { type: "null" }] },
-    continueReason: { anyOf: [{ type: "string", minLength: 1, maxLength: 500 }, { type: "null" }] },
-    confidence: { type: "number", minimum: 0, maximum: 1 }
-  },
-  required: ["thought", "shouldRespond", "responseText", "continueReason", "confidence"]
-} as const;
-
-const AlfredCompletionEvaluationSchema: z.ZodType<AlfredCompletionEvaluation> = z.object({
-  thought: z.string().min(1).max(500),
-  shouldRespond: z.boolean(),
-  responseText: z.string().min(1).max(4000).nullable(),
-  continueReason: z.string().min(1).max(500).nullable(),
-  confidence: z.number().min(0).max(1)
-});
-
 const ALFRED_LEAD_BRIEF_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -916,33 +887,6 @@ function buildAlfredPlannerSystemPrompt(sessionContext?: SessionPromptContext): 
       label: "Directives",
       content:
         "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. You have two capability catalogs at runtime: `availableTools` and `availableAgents`. Each tool includes `inputContract` with required fields, bounds, and an example payload: obey these strictly when choosing `toolInputJson` (for example, if `maxResults <= 15`, never exceed it). Choose strategy dynamically from the user ask and current evidence. You may execute directly with tools, delegate to a specialist agent, or respond if complete. Keep general-task execution in Alfred's loop; reserve specialist delegation for non-general work such as lead-generation or explicit local ops flows. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. If `resolvedSessionOutput` is present, treat it as a reusable session asset. If `bodyPreview` is present, you may use it for lightweight continuation or transformation. If `artifactPath` is present and the exact stored body matters, call `file_read` before responding or revising. When `actionType=respond`, set `responseKind` explicitly: use `final` for a completed answer, `clarification` only when blocking ambiguity genuinely requires user input, and `progress` for interim guidance/status. Respect execution permission: if `executionPermission` is `plan_only`, return `actionType=respond` with plan guidance and no execution. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
-    },
-    {
-      label: "Session Context",
-      content: formatSessionContextBlock(sessionContext)
-    },
-    {
-      label: "Recent Conversation",
-      content: formatRecentTurnsBlock(sessionContext)
-    }
-  ]);
-}
-
-function buildAlfredCompletionEvaluatorSystemPrompt(sessionContext?: SessionPromptContext): string {
-  return composeSystemPrompt([
-    {
-      label: `Persona ${ALFRED_MASTER_PROMPT_VERSION}`,
-      content: ALFRED_MASTER_SYSTEM_PROMPT
-    },
-    {
-      label: "Role",
-      content:
-        "You are Alfred's completion evaluator. Decide whether the latest successful action already provides enough evidence to answer the current user turn."
-    },
-    {
-      label: "Directives",
-      content:
-        "Respond `shouldRespond=true` only when the latest successful tool or delegated agent result is sufficient to answer the current turn with reasonable honesty and the immutable `turnState.objectiveContract` done criteria are satisfied. Use `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical checklist. If the result is partial, missing key evidence, or needs another action, set `shouldRespond=false` and explain exactly what is still missing. Keep this prompt-driven; do not invent facts beyond the observed result."
     },
     {
       label: "Session Context",
@@ -1491,13 +1435,13 @@ function extractTargetWordCount(message: string): number | null {
   return null;
 }
 
-function buildSpecialistTaskContract(args: {
+function buildDelegatedTaskContract(args: {
   agentName: string;
   objectiveContract: AlfredObjectiveContract;
   requestedOutputPath: string | null;
 }): AgentTaskContract | undefined {
   const agentName = args.agentName.trim().toLowerCase();
-  if (agentName !== "research_agent") {
+  if (agentName === "lead_agent") {
     return undefined;
   }
   const requiresDraft = args.objectiveContract.requiresDraft;
@@ -1511,7 +1455,7 @@ function buildSpecialistTaskContract(args: {
     doneCriteria: args.objectiveContract.doneCriteria,
     requestedOutputPath: args.requestedOutputPath ?? args.objectiveContract.requestedOutputPath,
     targetWordCount: args.objectiveContract.targetWordCount,
-    clarificationAllowed: false,
+    clarificationAllowed: agentName === "ops_agent" ? true : false,
     assumptions: args.objectiveContract.assumptions,
     blockingUnknowns: args.objectiveContract.blockingUnknowns,
     requiredFields: args.objectiveContract.requiredFields,
@@ -1995,50 +1939,6 @@ function buildAlfredTurnState(args: {
   };
 }
 
-async function runCompletionEvaluator(args: {
-  apiKey?: string;
-  structuredChatRunner: typeof openAiClient.runOpenAiStructuredChatWithDiagnostics;
-  message: string;
-  leadExecutionBrief?: LeadExecutionBrief;
-  iteration: number;
-  remainingMs: number;
-  turnState: AlfredTurnState;
-  recentObservations: Array<{ iteration: number; summary: string; outcome: string }>;
-  lastDelegationSummary: string;
-  actionSummary: string;
-  latestResult: unknown;
-  sessionContext?: SessionPromptContext;
-}): Promise<openAiClient.StructuredChatDiagnostic<AlfredCompletionEvaluation>> {
-  return args.structuredChatRunner(
-    {
-      apiKey: args.apiKey,
-      schemaName: "alfred_completion_evaluation",
-      jsonSchema: ALFRED_COMPLETION_EVALUATION_JSON_SCHEMA,
-      messages: [
-        {
-          role: "system",
-          content: buildAlfredCompletionEvaluatorSystemPrompt(args.sessionContext)
-        },
-        {
-          role: "user",
-          content: JSON.stringify({
-            turnObjective: args.message,
-            canonicalTaskBrief: args.leadExecutionBrief ?? null,
-            turnState: args.turnState,
-            iteration: args.iteration,
-            remainingMs: args.remainingMs,
-            actionSummary: args.actionSummary,
-            lastDelegationSummary: args.lastDelegationSummary,
-            recentObservations: args.recentObservations.slice(-5),
-            latestResult: truncateForPrompt(args.latestResult, 2600)
-          })
-        }
-      ]
-    },
-    AlfredCompletionEvaluationSchema
-  );
-}
-
 function looksLikeCitation(text: string): boolean {
   return text.includes("http://")
     || text.includes("https://")
@@ -2059,21 +1959,17 @@ function extractLeadCountHint(value: unknown): number {
 }
 
 function evaluateCompletionContractGate(args: {
-  evaluation: AlfredCompletionEvaluation;
   objectiveContract: AlfredObjectiveContract;
   turnState: AlfredTurnState;
+  proposedResponseText?: string | null;
   latestResult: unknown;
 }): CompletionGateDecision {
-  if (!args.evaluation.shouldRespond) {
-    return { allowed: true };
-  }
-
   if (args.turnState.taskType === "lead_generation") {
     const requested = args.turnState.facts.requestedLeadCount ?? 0;
     const factualCount = Math.max(
       args.turnState.facts.collectedLeadCount,
       extractLeadCountHint(args.latestResult),
-      extractLeadCountHint(args.evaluation.responseText ?? "")
+      extractLeadCountHint(args.proposedResponseText ?? "")
     );
     if (requested > 0 && factualCount < requested) {
       return {
@@ -2108,7 +2004,7 @@ function evaluateCompletionContractGate(args: {
   const requiresCitations = args.objectiveContract.requiresCitations;
   if (requiresCitations) {
     const evidenceText = [
-      args.evaluation.responseText ?? "",
+      args.proposedResponseText ?? "",
       typeof args.latestResult === "string" ? args.latestResult : JSON.stringify(args.latestResult ?? {})
     ].join("\n");
     const citationSignals = Math.max(
@@ -2130,7 +2026,7 @@ function evaluateCompletionContractGate(args: {
     const minimumDraftWords = targetWordCount
       ? Math.max(220, Math.floor(targetWordCount * 0.75))
       : 400;
-    const responseWordCount = countWords(args.evaluation.responseText);
+    const responseWordCount = countWords(args.proposedResponseText);
     const evidenceWordCount = Math.max(args.turnState.facts.draftWordCount, responseWordCount);
     if (evidenceWordCount < minimumDraftWords) {
       return {
@@ -2351,11 +2247,12 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   let plannerCallsUsed = 0;
   let toolCallsUsed = 0;
   let lastDelegationSummary = "No delegation attempted yet.";
-  let lastCompletionNote = "No completion evaluation yet.";
+  let lastCompletionNote = "No post-action reassessment yet.";
   let lastSuccessfulActionSummary: string | null = null;
   let lastAction: AlfredActionSnapshot | null = null;
   let latestRunRecord: RunRecord | undefined;
   let consecutivePlannerFailures = 0;
+  let allowFinalPlannerResponseIteration = false;
   const agentLoopRunner = options.agentLoopRunner ?? runAgentLoop;
   const scratchpad: Record<string, unknown> = {
     currentTurnObjective: turnObjective
@@ -2560,6 +2457,9 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     if (Date.now() >= deadlineAtMs) {
       break;
     }
+    if (plannerCallsUsed >= options.plannerMaxCalls && !allowFinalPlannerResponseIteration) {
+      break;
+    }
 
     if (!options.openAiApiKey) {
       const leadOutcome = await agentLoopRunner({
@@ -2635,6 +2535,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     );
 
     plannerCallsUsed += 1;
+    allowFinalPlannerResponseIteration = false;
     if (plannerDiagnostic.usage) {
       await options.runStore.addLlmUsage(options.runId, plannerDiagnostic.usage, 1);
     }
@@ -2785,15 +2686,9 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         responseKind === "final"
       ) {
         const respondGate = evaluateCompletionContractGate({
-          evaluation: {
-            thought: plan.thought,
-            shouldRespond: true,
-            responseText: plan.responseText,
-            continueReason: null,
-            confidence: 1
-          },
           objectiveContract,
           turnState: refreshTurnState(),
+          proposedResponseText: plan.responseText,
           latestResult: {
             planAction: "respond",
             responseText: plan.responseText
@@ -2854,7 +2749,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
       }
 
       const delegatedMessage = (plan.delegateBrief ?? turnObjective).slice(0, 1200);
-      const delegatedTaskContract = buildSpecialistTaskContract({
+      const delegatedTaskContract = buildDelegatedTaskContract({
         agentName,
         objectiveContract,
         requestedOutputPath
@@ -2982,93 +2877,20 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         return leadOutcome;
       }
 
-      if (plannerCallsUsed < options.plannerMaxCalls) {
-        const completionDiagnostic = await runCompletionEvaluator({
-          apiKey: options.openAiApiKey,
-          structuredChatRunner,
-          message: turnObjective,
-          leadExecutionBrief,
+      allowFinalPlannerResponseIteration = true;
+      lastCompletionNote = `Latest successful action is available for planner reassessment: delegate_agent:${agentName}.`;
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "thought",
+        eventType: "alfred_post_action_reassessment_pending",
+        payload: {
           iteration,
-          remainingMs: Math.max(0, deadlineAtMs - Date.now()),
-          turnState: delegatedTurnState,
-          recentObservations: observations,
-          lastDelegationSummary,
           actionSummary: `delegate_agent:${agentName}`,
-          latestResult: {
-            status: leadOutcome.status,
-            assistantText: leadOutcome.assistantText,
-            artifactPaths: leadOutcome.artifactPaths,
-            delegationEvidence
-          },
-          sessionContext: runtimeSessionContext
-        });
-        plannerCallsUsed += 1;
-        if (completionDiagnostic.usage) {
-          await options.runStore.addLlmUsage(options.runId, completionDiagnostic.usage, 1);
-        }
-        const completionResult = completionDiagnostic.result;
-        if (completionResult) {
-          const completionGate = evaluateCompletionContractGate({
-            evaluation: completionResult,
-            objectiveContract,
-            turnState: delegatedTurnState,
-            latestResult: {
-              status: leadOutcome.status,
-              assistantText: leadOutcome.assistantText,
-              artifactPaths: leadOutcome.artifactPaths,
-              delegationEvidence
-            }
-          });
-          if (!completionGate.allowed) {
-            completionResult.shouldRespond = false;
-            completionResult.continueReason = completionGate.reason ?? completionResult.continueReason;
-            await options.runStore.appendEvent({
-              runId: options.runId,
-              sessionId: options.sessionId,
-              phase: "thought",
-              eventType: "alfred_completion_contract_blocked",
-              payload: {
-                iteration,
-                actionSummary: `delegate_agent:${agentName}`,
-                reason: completionGate.reason ?? "contract_not_satisfied"
-              },
-              timestamp: nowIso()
-            });
-          }
-          lastCompletionNote = completionResult.shouldRespond
-            ? `Completion evaluator: respond now (${completionResult.confidence.toFixed(2)} confidence).`
-            : `Completion evaluator: continue gathering. ${completionResult.continueReason ?? completionResult.thought}`;
-          await options.runStore.appendEvent({
-            runId: options.runId,
-            sessionId: options.sessionId,
-            phase: "thought",
-            eventType: "alfred_completion_evaluated",
-            payload: {
-              iteration,
-              actionSummary: `delegate_agent:${agentName}`,
-              shouldRespond: completionResult.shouldRespond,
-              confidence: completionResult.confidence,
-              thought: completionResult.thought,
-              continueReason: completionResult.continueReason
-            },
-            timestamp: nowIso()
-          });
-          if (completionResult.shouldRespond) {
-            return {
-              status: "completed",
-              assistantText: completionResult.responseText ?? leadOutcome.assistantText ?? lastDelegationSummary,
-              artifactPaths: alfredState.artifacts.length > 0 ? [...alfredState.artifacts] : undefined
-            };
-          }
-          observations.push({
-            iteration,
-            summary: "completion_eval:continue",
-            outcome: (completionResult.continueReason ?? completionResult.thought).slice(0, 260)
-          });
-        } else if (completionDiagnostic.failureMessage) {
-          lastCompletionNote = `Completion evaluator failed: ${completionDiagnostic.failureMessage.slice(0, 180)}`;
-        }
-      }
+          turnState: delegatedTurnState
+        },
+        timestamp: nowIso()
+      });
 
       continue;
     }
@@ -3218,86 +3040,25 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         timestamp: nowIso()
       });
 
-      if (toolExecutedSuccessfully && plannerCallsUsed < options.plannerMaxCalls) {
-        const completionDiagnostic = await runCompletionEvaluator({
-          apiKey: options.openAiApiKey,
-          structuredChatRunner,
-          message: turnObjective,
-          leadExecutionBrief: undefined,
-          iteration,
-          remainingMs: Math.max(0, deadlineAtMs - Date.now()),
-          turnState: postToolTurnState,
-          recentObservations: observations,
-          lastDelegationSummary,
-          actionSummary: `call_tool:${toolName}`,
-          latestResult: latestToolOutput,
-          sessionContext: runtimeSessionContext
-        });
-        plannerCallsUsed += 1;
-        if (completionDiagnostic.usage) {
-          await options.runStore.addLlmUsage(options.runId, completionDiagnostic.usage, 1);
-        }
-        const completionResult = completionDiagnostic.result;
-        if (completionResult) {
-          const completionGate = evaluateCompletionContractGate({
-            evaluation: completionResult,
-            objectiveContract,
-            turnState: postToolTurnState,
-            latestResult: latestToolOutput
-          });
-          if (!completionGate.allowed) {
-            completionResult.shouldRespond = false;
-            completionResult.continueReason = completionGate.reason ?? completionResult.continueReason;
-            await options.runStore.appendEvent({
-              runId: options.runId,
-              sessionId: options.sessionId,
-              phase: "thought",
-              eventType: "alfred_completion_contract_blocked",
-              payload: {
-                iteration,
-                actionSummary: `call_tool:${toolName}`,
-                reason: completionGate.reason ?? "contract_not_satisfied"
-              },
-              timestamp: nowIso()
-            });
-          }
-          lastCompletionNote = completionResult.shouldRespond
-            ? `Completion evaluator: respond now (${completionResult.confidence.toFixed(2)} confidence).`
-            : `Completion evaluator: continue gathering. ${completionResult.continueReason ?? completionResult.thought}`;
-          await options.runStore.appendEvent({
-            runId: options.runId,
-            sessionId: options.sessionId,
-            phase: "thought",
-            eventType: "alfred_completion_evaluated",
-            payload: {
-              iteration,
-              actionSummary: `call_tool:${toolName}`,
-              shouldRespond: completionResult.shouldRespond,
-              confidence: completionResult.confidence,
-              thought: completionResult.thought,
-              continueReason: completionResult.continueReason
-            },
-            timestamp: nowIso()
-          });
-          if (completionResult.shouldRespond) {
-            return {
-              status: "completed",
-              assistantText: completionResult.responseText ?? JSON.stringify(latestToolOutput).slice(0, 1000),
-              artifactPaths: alfredState.artifacts.length > 0 ? [...alfredState.artifacts] : undefined
-            };
-          }
-          observations.push({
+      if (toolExecutedSuccessfully) {
+        allowFinalPlannerResponseIteration = true;
+        lastCompletionNote = `Latest successful action is available for planner reassessment: call_tool:${toolName}.`;
+        await options.runStore.appendEvent({
+          runId: options.runId,
+          sessionId: options.sessionId,
+          phase: "thought",
+          eventType: "alfred_post_action_reassessment_pending",
+          payload: {
             iteration,
-            summary: "completion_eval:continue",
-            outcome: (completionResult.continueReason ?? completionResult.thought).slice(0, 260)
-          });
-        } else if (completionDiagnostic.failureMessage) {
-          lastCompletionNote = `Completion evaluator failed: ${completionDiagnostic.failureMessage.slice(0, 180)}`;
-        }
+            actionSummary: `call_tool:${toolName}`,
+            turnState: postToolTurnState
+          },
+          timestamp: nowIso()
+        });
       }
     }
 
-    if (plannerCallsUsed >= options.plannerMaxCalls || toolCallsUsed >= options.maxToolCalls) {
+    if ((plannerCallsUsed >= options.plannerMaxCalls && !allowFinalPlannerResponseIteration) || toolCallsUsed >= options.maxToolCalls) {
       break;
     }
   }

@@ -47,8 +47,9 @@ const CONTRACT_MAP: Record<string, ToolInputContract> = {
     required: ["instruction"],
     bounds: ["instruction length <= 3000", "maxWords between 80 and 3000", "contextPaths <= 8"],
     exampleInput: {
-      instruction: "Write an 800-1000 word blog post with citations from fetched sources.",
-      format: "blog_post",
+      instruction: "Produce the final ranked list from the gathered evidence.",
+      format: "notes",
+      outputShapeHint: "ranked_list",
       maxWords: 950,
       outputPath: "workspace/alfred/artifacts/blog_test/latest.md"
     }

@@ -54,11 +54,13 @@ This section reflects what is actually implemented today.
 - General-task execution now stays in Alfred's loop: if planner tries to delegate a general task to `research_agent`, runtime rewrites that into direct tool execution instead.
 - For those same general-task contracts, the planner-visible agent catalog now hides `research_agent`, so Alfred no longer advertises an unnecessary second semantic planner path for normal general work.
 - When a general-task follow-up already has a reusable session artifact, Alfred now prefers direct `file_read` reuse over blindly restarting retrieval.
+- `research_agent` has now been removed from the public agent registry and tool-policy surface, so it is no longer a first-class runtime path competing with Alfred for general task semantics.
 - Alfred planner responses now carry explicit `responseKind`:
   - `final`
   - `clarification`
   - `progress`
 - Planner clarification is no longer inferred from punctuation or text shape in the normal response path.
+- Alfred no longer calls a separate completion-evaluator model after successful tool or delegation steps; the same planner gets one reserved reassessment pass instead.
 
 ### Session memory and prior-output grounding
 
@@ -120,6 +122,11 @@ This section reflects what is actually implemented today.
   - hardcoded `blog_post` / `memo` recovery defaults are gone from assembly/retry/finalize call sites
   - planner-supplied writer actions are normalized back to contract-derived shape hints and deliverable instructions
   - ranked lists, comparisons, briefs, tables, and other non-article contracts now enter generation as contract-preserving `notes`-style outputs instead of article defaults
+- `writer_agent` itself is now a plain generation tool:
+  - one bounded generation pass
+  - mechanical quality checks
+  - artifact persistence
+  - no writer-owned intent/review/repair stack
 
 ### Output availability contract
 
@@ -167,17 +174,17 @@ Remaining:
 
 ### Slice 2: Execution Loop Simplification
 
-Status: in progress
+Status: substantially implemented
 
 Delivered so far:
 
 - Alfred now prevents general-task delegation to `research_agent` by converting that planner action into direct tool execution inside Alfred's own loop.
 - Alfred now also stops advertising `research_agent` to the planner for general-task contracts.
 - Alfred can reuse existing session artifacts with direct `file_read` when a general-task follow-up already points to a reusable stored body.
+- `research_agent` is no longer registered as a public specialist skill, so the runtime no longer exposes a dead general-purpose delegation target.
 
 Remaining:
 
-- remove or retire the dead `research_agent` contract plumbing that no longer serves general-task execution
 - decide whether any non-general research-specialist responsibilities should survive as separate skills or move into Alfred/tool mechanics
 
 ### Phase 3: Generic Active Work State
@@ -213,7 +220,7 @@ Remaining:
 
 ### Phase 5: Writer Readiness Contract
 
-Status: substantially implemented
+Status: implemented for the current runtime boundary
 
 Delivered:
 
@@ -222,7 +229,7 @@ Delivered:
 - no forced low-budget writer sink
 - no placeholder draft persistence as fresh output by default
 - finalization logic distinguishes reusable body vs metadata-only vs missing
-- writer core no longer defaults to `section plan -> section passes -> polish`; it now interprets deliverable shape, drafts directly in that shape, runs semantic review, and repairs process-commentary drafts into the requested final form when possible
+- writer core no longer defaults to `section plan -> section passes -> polish`; it is now a bounded one-pass generation tool that drafts directly in the requested shape and reports mechanical quality against the contract
 - specialist writer call sites now derive generation format/instructions from the immutable contract and normalize planner-provided writer payloads before execution
 
 Remaining:
@@ -243,6 +250,19 @@ Still present in meaningful places:
 - specialist loop guards that still encode progression shortcuts
 
 The runtime is now much closer to `LLM owns semantics / runtime owns mechanics`, but this is still the largest open architecture gap.
+
+### Completion Authority
+
+Status: in progress
+
+Delivered:
+
+- the separate outer completion-evaluator model call has been removed from Alfred's loop
+- successful tool and delegation results now flow back into the same Alfred planner for reassessment, instead of being judged by a second semantic model
+
+Remaining:
+
+- finish collapsing the remaining deterministic contract gate so final-answer acceptance is both single-owner and less heuristic
 
 ## Deterministic Code That Should Remain
 

@@ -13,6 +13,7 @@
 
 ## Current Status
 
+- 2026-03-17: Fixed a critical bug in the orchestrator guard that caused infinite search loops by hijacking all general-task actions. Added "SEARCH STRATEGY" directives to the planner to ensure concise, keyword-based queries and prevent lazy paragraph-style searching.
 - 2026-03-17: Stabilized the March 17 refactor by removing the `research_agent` middleman and simplifying the `writer_agent` into a single-pass tool. Converted deterministic "Forced Phase Transitions" into "Reflection Hints" in both Alfred's loop and the specialist loop, restoring tactical autonomy to the agent while preserving the authority of the `TurnContract`. Fixed TypeScript compilation errors and updated unit tests to match the hint-based architecture.
 - 2026-03-17: Made the first deep architectural cut in Slice 2: general tasks no longer delegate to `research_agent` at all. Alfred now keeps general execution in its own loop, hides `research_agent` from planner-visible agent catalogs for general-task turns, and reuses stored session artifacts via direct `file_read` when a follow-up already has a reusable body.
 - 2026-03-17: Slice 2/3 moved forward in code: Alfred now hides `research_agent` from the planner for simple direct-execution research/list shapes, and specialist writer actions are normalized back to the immutable task contract before execution so explicit `blog_post` payloads can no longer silently drift ranked-list/list/comparison tasks into article mode.

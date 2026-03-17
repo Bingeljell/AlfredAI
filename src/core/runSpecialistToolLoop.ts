@@ -134,7 +134,7 @@ function deriveWriterFormatHint(contract?: AgentTaskContract): "blog_post" | "em
     case "csv":
       return "notes";
     default:
-      return contract?.requiresDraft ? "blog_post" : "notes";
+      return "notes";
   }
 }
 
@@ -409,7 +409,12 @@ export function selectFetchUrlsForHandoff(sourceUrls: Set<string>, maxUrls = 12)
   return normalized.slice(0, Math.max(1, maxUrls));
 }
 
-function normalizeActionInputForSchemaRecovery(tool: string, inputJson: string, objective: string): string {
+function normalizeActionInputForSchemaRecovery(
+  tool: string,
+  inputJson: string,
+  objective: string,
+  contract?: AgentTaskContract
+): string {
   const parsed = safeParseObject(inputJson) ?? {};
   if (tool === "search" || tool === "lead_search_shortlist") {
     const query =
@@ -436,15 +441,14 @@ function normalizeActionInputForSchemaRecovery(tool: string, inputJson: string, 
       ?? asString(parsed.prompt)
       ?? deriveObjectiveQuery(objective);
     const outputPath = asString(parsed.outputPath) ?? extractOutputPathFromObjective(objective);
-    const normalized: Record<string, unknown> = {
-      instruction,
-      maxWords: asInteger(parsed.maxWords) ?? 950,
-      format: asString(parsed.format) ?? "blog_post"
-    };
-    if (outputPath) {
-      normalized.outputPath = outputPath;
-    }
-    return JSON.stringify(normalized);
+    return JSON.stringify(
+      buildWriterToolInput({
+        contract,
+        baseInstruction: instruction,
+        maxWords: asInteger(parsed.maxWords) ?? 950,
+        outputPath
+      })
+    );
   }
   return inputJson;
 }
@@ -551,18 +555,20 @@ function deriveSpecialistPhase(
   return "complete";
 }
 
-function expectedPhaseToolFamily(phase: SpecialistPhase, skillName: string): string {
+function expectedPhaseToolFamily(phase: SpecialistPhase, availableToolNames: Set<string>): string {
   switch (phase) {
     case "discovery":
       return "search/shortlist";
     case "fetch":
       return "web_fetch";
     case "synthesis":
-      return skillName === "research_agent" ? "writer_agent/article_writer" : "writer_agent/article_writer/lead_extract";
+      return availableToolNames.has("lead_extract")
+        ? "writer_agent/article_writer/lead_extract"
+        : "writer_agent/article_writer";
     case "persist":
-      return skillName === "research_agent"
-        ? "writer_agent/article_writer(outputPath)/file_write"
-        : "file_write/write_csv/writer_agent/article_writer(outputPath)";
+      return availableToolNames.has("write_csv")
+        ? "file_write/write_csv/writer_agent/article_writer(outputPath)"
+        : "writer_agent/article_writer(outputPath)/file_write";
     case "complete":
       return "respond";
     default:
@@ -901,7 +907,6 @@ function shouldApplyWriterRetryBudgetGuard(args: {
 }
 
 function shouldApplyLowBudgetFinalizeGuard(args: {
-  skillName: string;
   remainingMs: number;
   actions: Array<{ tool: string; inputJson: string }>;
   availableToolNames: Set<string>;
@@ -934,7 +939,7 @@ function shouldApplyLowBudgetFinalizeGuard(args: {
     missingEvidence: args.writerReadiness.missingEvidence,
     timeBudgetReady: args.writerReadiness.timeBudgetReady
   };
-  if (args.skillName !== "research_agent") {
+  if (!(args.contract.requiresAssembly === true || args.contract.requiresDraft || args.contract.requiresCitations)) {
     return { adjusted: null, reason: null, detail };
   }
   if (args.remainingMs > 45_000) {
@@ -981,7 +986,6 @@ function shouldApplyLowBudgetFinalizeGuard(args: {
 }
 
 export function shouldApplyAssemblyGuard(args: {
-  skillName: string;
   phase: SpecialistPhase;
   actions: Array<{ tool: string; inputJson: string }>;
   availableToolNames: Set<string>;
@@ -993,7 +997,7 @@ export function shouldApplyAssemblyGuard(args: {
   adjusted: Array<{ tool: string; inputJson: string }> | null;
   reason: string | null;
 } {
-  if (args.skillName !== "research_agent") {
+  if (!(args.contract.requiresAssembly === true || args.contract.requiresDraft || args.contract.requiresCitations)) {
     return { adjusted: null, reason: null };
   }
   if (args.phase !== "synthesis") {
@@ -1520,33 +1524,10 @@ function buildSpecialistResultAssistantText(
 }
 
 function buildSpecialistTaskContract(options: Pick<SpecialistToolLoopOptions, "skillName" | "message">): AgentTaskContract {
-  const isResearchSkill = options.skillName === "research_agent";
   const requestedOutputPath = extractOutputPathFromObjective(options.message);
 
-  if (isResearchSkill) {
-    return {
-      requiredDeliverable: `Satisfy the delegated research objective without changing its deliverable shape: ${options.message.trim().split(/\s+/).join(" ").slice(0, 220)}`,
-      requiresAssembly: true,
-      requiresDraft: false,
-      requiresCitations: false,
-      minimumCitationCount: 0,
-      doneCriteria: [
-        "Gather source evidence from search/fetch outputs.",
-        "Return a research-backed response that matches the delegated objective.",
-        "Do not mutate the deliverable shape from the delegated objective."
-      ],
-      requestedOutputPath,
-      targetWordCount: null,
-      assumptions: [],
-      blockingUnknowns: [],
-      requiredFields: [],
-      preferredOutputShape: null,
-      clarificationAllowed: false
-    };
-  }
-
   return {
-    requiredDeliverable: "Return a complete specialist response for the current objective.",
+    requiredDeliverable: `Return a complete specialist response for: ${options.message.trim().split(/\s+/).join(" ").slice(0, 220)}`,
     requiresAssembly: false,
     requiresDraft: false,
     requiresCitations: false,
@@ -2171,7 +2152,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     const currentPhase = deriveSpecialistPhase(taskContract, progress, toolContext.state.artifacts.length);
     const phaseTransitionHint = derivePhaseTransitionHint(taskContract, progress, toolContext.state.artifacts.length);
     const retryProfile = buildSearchRetryProfile(progress, consecutiveSearchOnlyIterations);
-    const expectedToolFamily = expectedPhaseToolFamily(currentPhase, options.skillName);
+    const expectedToolFamily = expectedPhaseToolFamily(currentPhase, new Set(Array.from(availableTools.keys())));
     const sourceCardCount = toolContext.getResearchSourceCards?.().length ?? 0;
     const evidenceThresholds = deriveEvidenceThresholds(taskContract);
     const activeWorkState = deriveActiveWorkState({
@@ -2577,7 +2558,12 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
         if (!schemaRecoveryTools.has(action.tool)) {
           return action;
         }
-        const repairedInputJson = normalizeActionInputForSchemaRecovery(action.tool, action.inputJson, options.message);
+        const repairedInputJson = normalizeActionInputForSchemaRecovery(
+          action.tool,
+          action.inputJson,
+          options.message,
+          taskContract
+        );
         if (repairedInputJson !== action.inputJson) {
           adjustedCount += 1;
           return {
@@ -2704,7 +2690,6 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
 
     if (actions.length > 0) {
       const assemblyGuard = shouldApplyAssemblyGuard({
-        skillName: options.skillName,
         phase: currentPhase,
         actions,
         availableToolNames: new Set(Array.from(availableTools.keys())),
@@ -2734,7 +2719,6 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
 
     if (actions.length > 0) {
       const lowBudgetFinalizeGuard = shouldApplyLowBudgetFinalizeGuard({
-        skillName: options.skillName,
         remainingMs,
         actions,
         availableToolNames: new Set(Array.from(availableTools.keys())),
@@ -3168,7 +3152,7 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
       });
       break;
     }
-    if (options.skillName !== "research_agent" && repeatedStableSuccessIterations >= 2) {
+    if (!(taskContract.requiresAssembly === true || taskContract.requiresDraft || taskContract.requiresCitations) && repeatedStableSuccessIterations >= 2) {
       await options.runStore.appendEvent({
         runId: options.runId,
         sessionId: options.sessionId,
@@ -3208,10 +3192,11 @@ export async function runSpecialistToolLoop(options: SpecialistToolLoopOptions):
     activeWorkState: finalActiveWorkState,
     artifactCount: toolContext.state.artifacts.length
   });
-  const partialResultReturned =
-    options.skillName === "research_agent" && outputAvailability !== "missing";
+  const assemblyStyleTask =
+    taskContract.requiresAssembly === true || taskContract.requiresDraft || taskContract.requiresCitations;
+  const partialResultReturned = assemblyStyleTask && outputAvailability !== "missing";
   const assistantText =
-    options.skillName === "research_agent" && !unmetContract.satisfied
+    assemblyStyleTask && !unmetContract.satisfied
       ? buildResearchFailureSummary({
           progress,
           observations,

@@ -370,6 +370,10 @@ Current progress:
   - explicit requested output paths remain mechanical constraints only
 - main-loop lead brief generation now activates only from model-owned `taskType=lead_generation` interpretation in the primary turn setup path
 - regression coverage now proves that missing turn interpretation yields a generic `general` contract instead of reconstructing article semantics from prompt text
+- specialist helper flow is now more contract-driven:
+  - schema repair for writer actions rebuilds inputs from the canonical contract instead of defaulting semantic formats like `blog_post`
+  - assembly/finalize guards no longer depend on `skillName === research_agent`; they trigger only when the passed contract actually requires assembly/draft/citation work
+  - fallback specialist contracts are now generic minimal specialist contracts rather than skill-name-owned research semantics
 
 Risks:
 - over-pruning memory reuse and hurting legitimate follow-up behavior

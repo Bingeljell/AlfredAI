@@ -236,6 +236,7 @@
   - Right-rail clipping is fixed: the sticky inspector column now scrolls vertically instead of hiding overflow, so lower cards such as tokens/time and run controls remain reachable on smaller viewports.
   - March 17 deep-cut refactor landed: `research_agent` was removed from the public skill registry/tool-policy surface, Alfred no longer runs a separate completion-evaluator model after successful actions, and `writer_agent` is now a plain one-pass generation tool with mechanical quality/persistence checks instead of the old intent/draft/review/repair stack.
   - Phase 6 cleanup is now in progress in code: Alfred's fallback objective contracts no longer reconstruct draft/citation/word-count semantics from raw prompt text when turn interpretation is unavailable, main-loop lead-brief creation now depends on model-owned `taskType=lead_generation`, and regression coverage proves missing interpretation falls back to a minimal generic contract plus explicit output-path mechanics only.
+  - Specialist runtime is now less semantic and more contract-driven: writer schema-repair/default inputs rebuild from the canonical contract, assembly/finalize behavior no longer keys off `research_agent` skill-name checks, and fallback specialist setup now degrades to a minimal generic contract unless an explicit task contract is provided.
   - Additional resiliency and production hardening tasks remain for later iterations.
 
 ## Remaining Follow-ups

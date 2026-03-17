@@ -254,6 +254,8 @@ Delivered in this phase so far:
 - orchestrator fallback objective setup no longer re-derives task type, hard constraints, draft intent, citation intent, or target word count from raw prompt heuristics
 - fresh missing-interpretation turns now degrade to a minimal generic contract plus explicit mechanical constraints like requested output path
 - canonical lead-brief generation in the main turn path is now interpretation-owned instead of keyword-owned
+- specialist schema-repair and writer/finalize guards now key off the passed contract and available tools instead of `research_agent` skill-name semantics
+- fallback specialist setup now degrades to a generic minimal specialist contract instead of reintroducing research semantics from skill identity
 
 ### Completion Authority
 

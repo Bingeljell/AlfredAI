@@ -235,6 +235,7 @@
   - Browser performance pass completed: the UI now avoids repainting hidden pages during polling, skips redundant `innerHTML`/`textContent` updates, polls less aggressively, and uses lighter panel styling to reduce lag on long-running sessions.
   - Right-rail clipping is fixed: the sticky inspector column now scrolls vertically instead of hiding overflow, so lower cards such as tokens/time and run controls remain reachable on smaller viewports.
   - March 17 deep-cut refactor landed: `research_agent` was removed from the public skill registry/tool-policy surface, Alfred no longer runs a separate completion-evaluator model after successful actions, and `writer_agent` is now a plain one-pass generation tool with mechanical quality/persistence checks instead of the old intent/draft/review/repair stack.
+  - Phase 6 cleanup is now in progress in code: Alfred's fallback objective contracts no longer reconstruct draft/citation/word-count semantics from raw prompt text when turn interpretation is unavailable, main-loop lead-brief creation now depends on model-owned `taskType=lead_generation`, and regression coverage proves missing interpretation falls back to a minimal generic contract plus explicit output-path mechanics only.
   - Additional resiliency and production hardening tasks remain for later iterations.
 
 ## Remaining Follow-ups

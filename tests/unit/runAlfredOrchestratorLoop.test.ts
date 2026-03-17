@@ -747,6 +747,111 @@ test("runAlfredOrchestratorLoop treats model interpretation as the semantic sour
   assert.equal(updatedRun?.toolCalls[0]?.toolName, "search");
 });
 
+test("runAlfredOrchestratorLoop keeps fallback objective contracts semantically minimal", async () => {
+  const workspace = await createTempWorkspace("alfred-orchestrator-minimal-fallback-contract");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun(
+    "session-1",
+    "Write an 800 word article with citations and save it to workspace/output.md",
+    "running"
+  );
+
+  let leadBriefCalls = 0;
+  let plannerPayload: Record<string, unknown> | null = null;
+  const structuredChatRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["structuredChatRunner"]> = async <
+    T
+  >(
+    options: { schemaName: string; messages?: Array<{ role: string; content: string }> }
+  ): Promise<StructuredChatDiagnostic<T>> => {
+    if (options.schemaName === "alfred_turn_interpretation") {
+      return {
+        result: null
+      } as StructuredChatDiagnostic<T>;
+    }
+    if (options.schemaName === "alfred_lead_execution_brief") {
+      leadBriefCalls += 1;
+      throw new Error("lead brief should not be requested for minimal fallback general tasks");
+    }
+    if (options.schemaName === "alfred_orchestrator_plan") {
+      plannerPayload = JSON.parse(options.messages?.[1]?.content ?? "{}") as Record<string, unknown>;
+      return {
+        result: {
+          thought: "Return a direct acknowledgement for fallback contract testing.",
+          actionType: "respond" as const,
+          responseKind: "final" as const,
+          delegateAgent: null,
+          delegateBrief: null,
+          toolName: null,
+          toolInputJson: null,
+          responseText: "Fallback contract inspected."
+        }
+      } as StructuredChatDiagnostic<T>;
+    }
+    throw new Error(`unexpected schema request: ${options.schemaName}`);
+  };
+
+  const outcome = await runAlfredOrchestratorLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as unknown as SearchManager,
+    workspaceDir: workspace,
+    message: "Write an 800 word article with citations and save it to workspace/output.md",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in minimal-fallback-contract test");
+    },
+    maxIterations: 2,
+    maxDurationMs: 60_000,
+    maxToolCalls: 2,
+    maxParallelTools: 1,
+    plannerMaxCalls: 2,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    structuredChatRunner,
+    agentLoopRunner: async () => {
+      throw new Error("agent loop should not run in minimal-fallback-contract test");
+    }
+  });
+
+  assert.equal(outcome.status, "completed");
+  assert.equal(leadBriefCalls, 0);
+  assert.ok(plannerPayload);
+  const capturedPlannerPayload = plannerPayload as Record<string, unknown>;
+  assert.equal((capturedPlannerPayload.turnInterpretation as null | undefined) ?? null, null);
+
+  const objectiveContract = (capturedPlannerPayload.objectiveContract as Record<string, unknown> | undefined) ?? {};
+  assert.equal(objectiveContract.taskType, "general");
+  assert.equal(objectiveContract.requiresDraft, false);
+  assert.equal(objectiveContract.requiresCitations, false);
+  assert.equal(objectiveContract.targetWordCount, null);
+  assert.equal(objectiveContract.requestedOutputPath, "workspace/output.md");
+  assert.deepEqual(objectiveContract.hardConstraints, ["Output must be saved to workspace/output.md."]);
+  assert.equal(
+    objectiveContract.requiredDeliverable,
+    "Provide a complete response for: Write an 800 word article with citations and save it to workspace/output.md"
+  );
+
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(!events.some((event) => event.eventType === "alfred_turn_interpreted"));
+  const contractEvent = events.find((event) => event.eventType === "alfred_objective_contract_created");
+  const createdContract = (contractEvent?.payload as { objectiveContract?: Record<string, unknown> } | undefined)?.objectiveContract ?? {};
+  assert.equal(createdContract.requiresDraft, false);
+  assert.equal(createdContract.requiresCitations, false);
+  assert.equal(createdContract.targetWordCount, null);
+});
+
 test("runAlfredOrchestratorLoop respects planner choice without forcing delegation", async () => {
   const workspace = await createTempWorkspace("alfred-orchestrator-planner-choice");
   const runStore = new RunStore(workspace);

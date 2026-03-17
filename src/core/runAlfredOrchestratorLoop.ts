@@ -552,14 +552,6 @@ async function interpretTurnWithModel(args: {
   );
 }
 
-function looksLikeExecutableLeadRequest(message: string): boolean {
-  const hasLeadIntent = containsAnyWord(message, ["find", "get", "list", "collect", "source", "prospect"]);
-  const hasLeadEntity = containsAnyWord(message, ["lead", "leads", "msp", "contact", "contacts"])
-    || containsAnyPhrase(message, ["systems integrator"]);
-  const hasCount = tokenizeLower(message).some((token) => Number.isFinite(Number.parseInt(token, 10)));
-  return hasLeadIntent && hasLeadEntity && hasCount;
-}
-
 function detectTurnMode(message: string): AlfredTurnMode {
   const command = parseSlashCommand(message);
   if (!command) {
@@ -1106,29 +1098,6 @@ function buildCompletionCriteria(message: string, leadExecutionBrief?: LeadExecu
   return [`Answer the current turn directly and honestly: ${collapseWhitespace(message).slice(0, 240)}`];
 }
 
-function detectObjectiveTaskType(message: string, leadExecutionBrief?: LeadExecutionBrief | null): AlfredTaskType {
-  if (leadExecutionBrief) {
-    return "lead_generation";
-  }
-  if (
-    containsAnyWord(message, [
-      "research",
-      "news",
-      "blog",
-      "article",
-      "draft",
-      "writeup",
-      "source",
-      "sources",
-      "citation",
-      "citations"
-    ])
-  ) {
-    return "general";
-  }
-  return "general";
-}
-
 function parseFirstPositiveInt(token: string): number | null {
   const normalized = trimPunctuationEdges(token);
   if (!normalized) {
@@ -1160,41 +1129,6 @@ function parseLeadCountFromMessage(message: string): number | null {
     }
   }
   return null;
-}
-
-function deriveHardConstraints(message: string): string[] {
-  const constraints: string[] = [];
-  const leadCount = parseLeadCountFromMessage(message);
-  if (leadCount) {
-    constraints.push(`Target lead count is ${leadCount}.`);
-  }
-  if (containsAnyWord(message, ["texas"])) {
-    constraints.push("Geography includes Texas.");
-  }
-  if (containsAnyWord(message, ["usa", "us"]) || containsAnyPhrase(message, ["united states"])) {
-    constraints.push("Geography includes USA.");
-  }
-  if (containsAnyWord(message, ["email", "emails"])) {
-    constraints.push("Emails are required in the output.");
-  }
-  if (containsAnyWord(message, ["csv"])) {
-    constraints.push("Deliverable must include CSV output.");
-  }
-  const targetWordCount = extractTargetWordCount(message);
-  if (targetWordCount) {
-    constraints.push(`Target word count is approximately ${targetWordCount}.`);
-  }
-  if (containsAnyWord(message, ["cite", "cited", "citation", "citations", "source", "sources"])) {
-    constraints.push("Citations/sources are required.");
-  }
-  if (containsAnyWord(message, ["x", "twitter"])) {
-    constraints.push("Include X/Twitter coverage when available.");
-  }
-  const outputPath = extractRequestedOutputPath(message);
-  if (outputPath) {
-    constraints.push(`Output must be saved to ${outputPath}.`);
-  }
-  return constraints;
 }
 
 function inferPreferredOutputShape(args: {
@@ -1236,11 +1170,7 @@ function buildFallbackObjectiveContract(args: {
   explicitRequestedOutputPath: string | null;
 }): AlfredObjectiveContract {
   const taskType: AlfredTaskType = args.leadExecutionBrief ? "lead_generation" : "general";
-  const hardConstraints = deriveHardConstraints(args.message);
-  const targetWordCount = extractTargetWordCount(args.message);
-  const requestedOutputPath = args.groundedSource === "message" ? args.explicitRequestedOutputPath : args.explicitRequestedOutputPath;
-  const requiresCitations = hardConstraints.some((item) => containsAnyWord(item, ["citation", "source"]));
-  const requiresDraft = containsAnyWord(args.message, ["blog", "post", "article", "draft", "write"]);
+  const requestedOutputPath = args.explicitRequestedOutputPath;
   const requiredDeliverable = args.leadExecutionBrief
     ? (
       args.leadExecutionBrief.outputFormat === "csv"
@@ -1248,13 +1178,21 @@ function buildFallbackObjectiveContract(args: {
         : `Produce ${args.leadExecutionBrief.requestedLeadCount} lead records.`
     )
     : `Provide a complete response for: ${collapseWhitespace(args.message).slice(0, 180)}`;
+  const hardConstraints = args.leadExecutionBrief
+    ? dedupeStrings([
+        args.leadExecutionBrief.objectiveBrief.geography
+          ? `Keep results within ${args.leadExecutionBrief.objectiveBrief.geography}.`
+          : "",
+        args.leadExecutionBrief.emailRequired ? "Include email data for returned leads." : "",
+        args.leadExecutionBrief.outputFormat ? `Return the deliverable as ${args.leadExecutionBrief.outputFormat}.` : "",
+        requestedOutputPath ? `Output must be saved to ${requestedOutputPath}.` : ""
+      ])
+    : dedupeStrings([
+        requestedOutputPath ? `Output must be saved to ${requestedOutputPath}.` : ""
+      ]);
   const doneCriteria = args.leadExecutionBrief
     ? buildCompletionCriteria(args.message, args.leadExecutionBrief)
-    : [
-      `Answer the current turn directly and honestly: ${collapseWhitespace(args.message).slice(0, 240)}`,
-      ...(requiresCitations ? ["Include explicit source citations for factual claims."] : []),
-      ...(requiresDraft ? ["Return the complete draft text in the requested format."] : [])
-    ];
+    : [`Answer the current turn directly and honestly: ${collapseWhitespace(args.message).slice(0, 240)}`];
   return {
     taskType,
     groundedObjective: args.message,
@@ -1270,9 +1208,9 @@ function buildFallbackObjectiveContract(args: {
       message: args.message
     }),
     requiredFields: [],
-    requiresDraft,
-    requiresCitations,
-    targetWordCount,
+    requiresDraft: false,
+    requiresCitations: false,
+    targetWordCount: null,
     requestedOutputPath,
     clarificationNeeded: false,
     clarificationQuestion: null
@@ -1405,34 +1343,6 @@ function buildObjectiveContract(
     clarificationNeeded: interpretation.clarificationNeeded,
     clarificationQuestion: interpretation.clarificationQuestion
   };
-}
-
-function extractTargetWordCount(message: string): number | null {
-  const tokens = tokenizeLower(message);
-  for (let index = 0; index < tokens.length - 1; index += 1) {
-    const current = tokens[index] ?? "";
-    const next = tokens[index + 1] ?? "";
-    if (next !== "word" && next !== "words") {
-      continue;
-    }
-    const normalizedCurrent = current.split("–").join("-");
-    if (normalizedCurrent.includes("-")) {
-      const parts = normalizedCurrent.split("-");
-      if (parts.length === 2) {
-        const lower = parseFirstPositiveInt(parts[0] ?? "");
-        const upper = parseFirstPositiveInt(parts[1] ?? "");
-        if (lower && upper) {
-          return Math.round((lower + upper) / 2);
-        }
-      }
-      continue;
-    }
-    const single = parseFirstPositiveInt(current);
-    if (single) {
-      return single;
-    }
-  }
-  return null;
 }
 
 function buildDelegatedTaskContract(args: {
@@ -2257,7 +2167,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
   const scratchpad: Record<string, unknown> = {
     currentTurnObjective: turnObjective
   };
-  const initialLeadBrief = looksLikeExecutableLeadRequest(turnObjective)
+  const initialLeadBrief = interpretedTurn?.taskType === "lead_generation"
     ? await buildLeadExecutionBrief({
         apiKey: options.openAiApiKey,
         structuredChatRunner,

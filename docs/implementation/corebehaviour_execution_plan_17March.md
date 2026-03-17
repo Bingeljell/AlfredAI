@@ -29,7 +29,7 @@ Every slice below must be judged against that rule.
   - hardcoded `blog_post`/`memo` recovery defaults have been replaced with contract-derived generation inputs
 - Slice 4: `in progress`
 - Slice 5: `in progress`
-- Slice 6: `pending`
+- Slice 6: `in progress`
 
 ## Slice 1 - Contract Hardening
 
@@ -361,6 +361,15 @@ Tests to add or update:
 
 Exit criteria:
 - continuity works without stale-context takeover
+
+Current progress:
+- stale-artifact takeover was already bounded earlier in the refactor through fresh-turn demotion and recent-output hygiene
+- Alfred fallback objective contracts are now intentionally minimal when model turn interpretation is unavailable:
+  - no fallback draft/citation/word-count inference from raw prompt text
+  - no pre-interpretation keyword routing into lead execution
+  - explicit requested output paths remain mechanical constraints only
+- main-loop lead brief generation now activates only from model-owned `taskType=lead_generation` interpretation in the primary turn setup path
+- regression coverage now proves that missing turn interpretation yields a generic `general` contract instead of reconstructing article semantics from prompt text
 
 Risks:
 - over-pruning memory reuse and hurting legitimate follow-up behavior

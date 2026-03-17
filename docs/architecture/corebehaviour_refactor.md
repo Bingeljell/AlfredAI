@@ -51,6 +51,8 @@ This section reflects what is actually implemented today.
 - The contract now behaves as the canonical turn contract for the run:
   - downstream execution receives the same deliverable contract
   - specialist fallback paths no longer infer draft/citation semantics from raw prompt keywords when no explicit task contract is supplied
+  - when turn interpretation is unavailable, Alfred now falls back to a deliberately minimal general contract instead of reconstructing article semantics from prompt text
+  - lead-execution brief creation in the main turn path now activates only from model-owned `taskType=lead_generation` interpretation rather than pre-interpretation keyword routing
 - General-task execution now stays in Alfred's loop: if planner tries to delegate a general task to `research_agent`, runtime rewrites that into direct tool execution instead.
 - For those same general-task contracts, the planner-visible agent catalog now hides `research_agent`, so Alfred no longer advertises an unnecessary second semantic planner path for normal general work.
 - When a general-task follow-up already has a reusable session artifact, Alfred now prefers direct `file_read` reuse over blindly restarting retrieval.
@@ -238,18 +240,20 @@ Remaining:
 
 ### Phase 6: Remaining Heuristic Ownership
 
-Status: still the main unfinished cleanup
+Status: in progress
 
 Still present in meaningful places:
 
 - specialist task-contract prompt regexing for draft/citation/word-count intent
-- orchestrator objective/task helpers such as:
-  - `detectObjectiveTaskType`
-  - `deriveHardConstraints`
-  - `extractTargetWordCount`
 - specialist loop guards that still encode progression shortcuts
 
 The runtime is now much closer to `LLM owns semantics / runtime owns mechanics`, but this is still the largest open architecture gap.
+
+Delivered in this phase so far:
+
+- orchestrator fallback objective setup no longer re-derives task type, hard constraints, draft intent, citation intent, or target word count from raw prompt heuristics
+- fresh missing-interpretation turns now degrade to a minimal generic contract plus explicit mechanical constraints like requested output path
+- canonical lead-brief generation in the main turn path is now interpretation-owned instead of keyword-owned
 
 ### Completion Authority
 

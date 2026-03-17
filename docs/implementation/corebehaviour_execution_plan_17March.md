@@ -22,8 +22,8 @@ Every slice below must be judged against that rule.
   - turn interpretation now owns delegated contract semantics when available
   - specialist fallback contract no longer regex-infers draft/citation intent from raw prompt text
 - Slice 2: `in progress`
-  - simple ranked-list research tasks now stay in Alfred's loop via direct execution override instead of defaulting to `research_agent`
-- planner-visible agent catalog now hides `research_agent` for those simple direct-execution contracts, so the planner no longer treats delegation as an equal semantic path
+  - general tasks now stay in Alfred's loop via direct execution override instead of defaulting to `research_agent`
+  - planner-visible agent catalog now hides `research_agent` for general-task contracts, so the planner no longer treats delegation as an equal semantic path
 - Slice 3: `in progress`
   - specialist writer actions are now normalized back to the immutable task contract before execution
   - hardcoded `blog_post`/`memo` recovery defaults have been replaced with contract-derived generation inputs
@@ -62,10 +62,10 @@ Status:
 - `in progress`
 
 Objective:
-- remove duplicate semantic planning between Alfred orchestrator and research specialist for simple plaintext tasks
+- remove duplicate semantic planning between Alfred orchestrator and research specialist for general plaintext tasks
 
 Primary outcome:
-- simple research/list/recommendation tasks should stay in one semantic execution loop instead of being re-planned by a second semantic authority
+- general tasks should stay in one semantic execution loop instead of being re-planned by a second semantic authority
 
 Files in scope:
 - `src/core/runAlfredOrchestratorLoop.ts`
@@ -97,10 +97,10 @@ Logic to keep:
 - cancellation and approval
 
 Planned code moves:
-1. classify which task shapes still justify delegation
-   - keep delegation for genuinely heavy/bounded specialist tasks only
-   - route simple research/list/recommendation/plain synthesis tasks through Alfred directly
-2. make research specialist optional, not default, for these common flows
+1. classify which task classes still justify delegation
+   - keep delegation for non-general specialist tasks only
+   - route general research/synthesis/writing flows through Alfred directly
+2. remove `research_agent` as a semantic path for general tasks
 3. preserve active work state only as execution memory, not as a second semantic planner contract
 4. collapse duplicated completion gates where possible during the same slice if needed to avoid split-brain behavior
 
@@ -111,13 +111,14 @@ Tests to add or update:
 - no regression on lead generation delegation path
 
 Exit criteria:
-- simple research/list tasks no longer require a second semantic planner
+- general tasks no longer require a second semantic planner
 - no semantic disagreement between Alfred and specialist for those tasks
 - run traces show fewer planning layers and fewer LLM calls for the same task class
 
 Current progress:
-- Alfred now rewrites `delegate_agent: research_agent` into direct tool execution for simple general ranked-list/list/comparison/brief shapes that do not require long-form drafting or artifact persistence.
-- Alfred planner context now filters out `research_agent` for those same simple direct-execution shapes, keeping the planner's semantic choices aligned with the contract.
+- Alfred now rewrites `delegate_agent: research_agent` into direct tool execution for general-task contracts, not just simple ranked-list/list shapes.
+- Alfred planner context now filters out `research_agent` for general tasks entirely, keeping the planner's semantic choices aligned with the contract.
+- If a general-task follow-up already has a reusable session artifact, Alfred now prefers direct `file_read` handoff instead of defaulting to a fresh search.
 
 Risks:
 - deleting delegation too aggressively and harming cases where specialist state still helps

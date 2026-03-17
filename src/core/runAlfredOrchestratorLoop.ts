@@ -915,7 +915,7 @@ function buildAlfredPlannerSystemPrompt(sessionContext?: SessionPromptContext): 
     {
       label: "Directives",
       content:
-        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. You have two capability catalogs at runtime: `availableTools` and `availableAgents`. Each tool includes `inputContract` with required fields, bounds, and an example payload: obey these strictly when choosing `toolInputJson` (for example, if `maxResults <= 15`, never exceed it). Choose strategy dynamically from the user ask and current evidence. You may execute directly with tools, delegate to a specialist agent, or respond if complete. Prefer direct execution when a small number of tool actions can likely complete the task; delegate when specialist iterative loops are likely higher-yield. For simple research/list/comparison/brief tasks that do not require long-form drafting, prefer direct tool execution in Alfred's loop over delegating to `research_agent`. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. If `resolvedSessionOutput` is present, treat it as a reusable session asset. If `bodyPreview` is present, you may use it for lightweight continuation or transformation. If `artifactPath` is present and the exact stored body matters, call `file_read` before responding or revising. When `actionType=respond`, set `responseKind` explicitly: use `final` for a completed answer, `clarification` only when blocking ambiguity genuinely requires user input, and `progress` for interim guidance/status. Respect execution permission: if `executionPermission` is `plan_only`, return `actionType=respond` with plan guidance and no execution. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
+        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. You have two capability catalogs at runtime: `availableTools` and `availableAgents`. Each tool includes `inputContract` with required fields, bounds, and an example payload: obey these strictly when choosing `toolInputJson` (for example, if `maxResults <= 15`, never exceed it). Choose strategy dynamically from the user ask and current evidence. You may execute directly with tools, delegate to a specialist agent, or respond if complete. Keep general-task execution in Alfred's loop; reserve specialist delegation for non-general work such as lead-generation or explicit local ops flows. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. If `resolvedSessionOutput` is present, treat it as a reusable session asset. If `bodyPreview` is present, you may use it for lightweight continuation or transformation. If `artifactPath` is present and the exact stored body matters, call `file_read` before responding or revising. When `actionType=respond`, set `responseKind` explicitly: use `final` for a completed answer, `clarification` only when blocking ambiguity genuinely requires user input, and `progress` for interim guidance/status. Respect execution permission: if `executionPermission` is `plan_only`, return `actionType=respond` with plan guidance and no execution. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
     },
     {
       label: "Session Context",
@@ -1529,33 +1529,41 @@ function shouldKeepTaskInAlfredLoop(args: {
   if (args.objectiveContract.taskType !== "general") {
     return false;
   }
-  if (args.objectiveContract.requiresDraft || args.objectiveContract.requestedOutputPath) {
-    return false;
-  }
-  return [
-    "ranked_list",
-    "list",
-    "comparison",
-    "brief",
-    "table"
-  ].includes(args.objectiveContract.preferredOutputShape ?? "");
+  return true;
 }
 
 function buildDirectExecutionOverrideForDelegation(args: {
   plan: AlfredPlannerOutput;
   objectiveContract: AlfredObjectiveContract;
   availableToolNames: Set<string>;
+  resolvedSessionOutput: SessionOutputRecord | null;
 }): AlfredPlannerOutput | null {
   const agentName = args.plan.delegateAgent?.trim().toLowerCase() ?? "";
   if (!shouldKeepTaskInAlfredLoop({ agentName, objectiveContract: args.objectiveContract })) {
     return null;
   }
 
+  const reusableArtifactPath = args.resolvedSessionOutput?.availability === "body_available"
+    ? args.resolvedSessionOutput.artifactPath ?? null
+    : null;
+  if (reusableArtifactPath && args.availableToolNames.has("file_read")) {
+    return {
+      ...args.plan,
+      thought: `${args.plan.thought} (adjusted: keep general task in Alfred loop and reuse prior artifact)`,
+      actionType: "call_tool",
+      delegateAgent: null,
+      delegateBrief: null,
+      toolName: "file_read",
+      toolInputJson: JSON.stringify({ path: reusableArtifactPath }),
+      responseText: null
+    };
+  }
+
   const query = collapseWhitespace(args.objectiveContract.groundedObjective).slice(0, 400);
   if (args.availableToolNames.has("search")) {
     return {
       ...args.plan,
-      thought: `${args.plan.thought} (adjusted: keep simple research/list task in Alfred loop)`,
+      thought: `${args.plan.thought} (adjusted: keep general task in Alfred loop)`,
       actionType: "call_tool",
       delegateAgent: null,
       delegateBrief: null,
@@ -1567,7 +1575,7 @@ function buildDirectExecutionOverrideForDelegation(args: {
   if (args.availableToolNames.has("web_fetch")) {
     return {
       ...args.plan,
-      thought: `${args.plan.thought} (adjusted: keep simple research/list task in Alfred loop)`,
+      thought: `${args.plan.thought} (adjusted: keep general task in Alfred loop)`,
       actionType: "call_tool",
       delegateAgent: null,
       delegateBrief: null,
@@ -1579,7 +1587,7 @@ function buildDirectExecutionOverrideForDelegation(args: {
   if (args.availableToolNames.has("lead_search_shortlist")) {
     return {
       ...args.plan,
-      thought: `${args.plan.thought} (adjusted: keep simple research/list task in Alfred loop)`,
+      thought: `${args.plan.thought} (adjusted: keep general task in Alfred loop)`,
       actionType: "call_tool",
       delegateAgent: null,
       delegateBrief: null,
@@ -2710,7 +2718,8 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     const directExecutionOverride = buildDirectExecutionOverrideForDelegation({
       plan,
       objectiveContract,
-      availableToolNames: new Set(availableToolSpecs.map((tool) => tool.name))
+      availableToolNames: new Set(availableToolSpecs.map((tool) => tool.name)),
+      resolvedSessionOutput
     });
     if (directExecutionOverride) {
       const originalActionType = plan.actionType;
@@ -2723,7 +2732,7 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
         eventType: "alfred_plan_adjusted",
         payload: {
           iteration,
-          reason: "simple_research_task_direct_execution",
+          reason: "general_task_direct_execution",
           originalActionType,
           originalDelegateAgent,
           adjustedActionType: plan.actionType,

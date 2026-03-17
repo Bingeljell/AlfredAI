@@ -51,8 +51,9 @@ This section reflects what is actually implemented today.
 - The contract now behaves as the canonical turn contract for the run:
   - downstream execution receives the same deliverable contract
   - specialist fallback paths no longer infer draft/citation semantics from raw prompt keywords when no explicit task contract is supplied
-- For simple general ranked-list/list/comparison/brief tasks that do not require long-form drafting, Alfred now keeps execution in its own loop and rewrites planner delegation to `research_agent` into direct retrieval actions.
-- For those same simple direct-execution task shapes, the planner-visible agent catalog now hides `research_agent`, so Alfred does not advertise an unnecessary second semantic planner path when the contract already says to keep execution local.
+- General-task execution now stays in Alfred's loop: if planner tries to delegate a general task to `research_agent`, runtime rewrites that into direct tool execution instead.
+- For those same general-task contracts, the planner-visible agent catalog now hides `research_agent`, so Alfred no longer advertises an unnecessary second semantic planner path for normal general work.
+- When a general-task follow-up already has a reusable session artifact, Alfred now prefers direct `file_read` reuse over blindly restarting retrieval.
 - Alfred planner responses now carry explicit `responseKind`:
   - `final`
   - `clarification`
@@ -170,13 +171,14 @@ Status: in progress
 
 Delivered so far:
 
-- Alfred now prevents unnecessary delegation for simple general research/list tasks by converting `research_agent` delegation into direct tool execution in Alfred's own loop.
-- Alfred now also stops advertising `research_agent` to the planner for those same simple direct-execution research/list task shapes.
+- Alfred now prevents general-task delegation to `research_agent` by converting that planner action into direct tool execution inside Alfred's own loop.
+- Alfred now also stops advertising `research_agent` to the planner for general-task contracts.
+- Alfred can reuse existing session artifacts with direct `file_read` when a general-task follow-up already points to a reusable stored body.
 
 Remaining:
 
-- continue reducing duplicate semantic planning for other simple research/synthesis shapes
-- decide which remaining task classes still justify delegation
+- remove or retire the dead `research_agent` contract plumbing that no longer serves general-task execution
+- decide whether any non-general research-specialist responsibilities should survive as separate skills or move into Alfred/tool mechanics
 
 ### Phase 3: Generic Active Work State
 

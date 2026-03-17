@@ -520,7 +520,7 @@ test("runAlfredOrchestratorLoop records delegation telemetry and passes scratchp
   assert.equal((delegatedEvent?.payload as { leadExecutionBrief?: { requestedLeadCount?: number } } | undefined)?.leadExecutionBrief?.requestedLeadCount, 3);
 });
 
-test("runAlfredOrchestratorLoop passes unified taskContract when delegating research_agent", async () => {
+test("runAlfredOrchestratorLoop keeps general writing tasks in Alfred loop even when planner asks for research_agent", async () => {
   const workspace = await createTempWorkspace("alfred-orchestrator-research-task-contract");
   const runStore = new RunStore(workspace);
   const run = await runStore.createRun(
@@ -561,13 +561,9 @@ test("runAlfredOrchestratorLoop passes unified taskContract when delegating rese
     throw new Error(`unexpected schema request: ${options.schemaName}`);
   };
 
-  let delegatedInput: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["agentLoopRunner"]> extends (
-    options: infer TOptions
-  ) => Promise<unknown>
-    ? TOptions | undefined
-    : never;
-  const agentLoopRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["agentLoopRunner"]> = async (options) => {
-    delegatedInput = options;
+  let delegated = false;
+  const agentLoopRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["agentLoopRunner"]> = async () => {
+    delegated = true;
     return {
       status: "completed",
       assistantText: "Draft saved.",
@@ -609,27 +605,22 @@ test("runAlfredOrchestratorLoop passes unified taskContract when delegating rese
   });
 
   assert.equal(outcome.status, "completed");
-  assert.match(outcome.assistantText ?? "", /research_agent status: completed/i);
-  assert.equal(delegatedInput?.skillName, "research_agent");
-  assert.equal(delegatedInput?.taskContract?.requiresDraft, true);
-  assert.equal(delegatedInput?.taskContract?.requiresCitations, true);
-  assert.equal(delegatedInput?.taskContract?.minimumCitationCount, 2);
-  assert.equal(
-    delegatedInput?.taskContract?.requestedOutputPath,
-    "workspace/alfred/artifacts/blog_test/latest.md"
-  );
-  assert.equal(delegatedInput?.taskContract?.targetWordCount, 900);
+  assert.equal(delegated, false);
 
   const updatedRun = await runStore.getRun(run.runId);
   const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
-  const delegatedEvent = events.find((event) => event.eventType === "agent_delegated");
-  const delegatedPayload = (delegatedEvent?.payload as { taskContract?: { targetWordCount?: number } } | undefined)
-    ?.taskContract;
-  assert.ok(delegatedPayload);
-  assert.equal(delegatedPayload?.targetWordCount, 900);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.eventType === "alfred_plan_adjusted"
+        && (event.payload as { reason?: string }).reason === "general_task_direct_execution"
+    )
+  );
+  assert.ok(!events.some((event) => event.eventType === "agent_delegated"));
+  assert.equal(updatedRun?.toolCalls[0]?.toolName, "search");
 });
 
-test("runAlfredOrchestratorLoop treats model interpretation as the semantic source of truth for delegated contract", async () => {
+test("runAlfredOrchestratorLoop treats model interpretation as the semantic source of truth for direct general-task execution", async () => {
   const workspace = await createTempWorkspace("alfred-orchestrator-contract-authority");
   const runStore = new RunStore(workspace);
   const run = await runStore.createRun(
@@ -690,13 +681,9 @@ test("runAlfredOrchestratorLoop treats model interpretation as the semantic sour
     throw new Error(`unexpected schema request: ${options.schemaName}`);
   };
 
-  let delegatedInput: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["agentLoopRunner"]> extends (
-    options: infer TOptions
-  ) => Promise<unknown>
-    ? TOptions | undefined
-    : never;
-  const agentLoopRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["agentLoopRunner"]> = async (options) => {
-    delegatedInput = options;
+  let delegated = false;
+  const agentLoopRunner: NonNullable<Parameters<typeof runAlfredOrchestratorLoop>[0]["agentLoopRunner"]> = async () => {
+    delegated = true;
     return {
       status: "completed",
       assistantText: "Ranked list completed."
@@ -736,14 +723,22 @@ test("runAlfredOrchestratorLoop treats model interpretation as the semantic sour
   });
 
   assert.equal(outcome.status, "completed");
-  assert.equal(delegatedInput?.taskContract?.requiredDeliverable, "Return a concise ranked list of recent kid-friendly video games.");
-  assert.equal(delegatedInput?.taskContract?.requiresDraft, false);
-  assert.equal(delegatedInput?.taskContract?.requiresCitations, false);
-  assert.equal(delegatedInput?.taskContract?.minimumCitationCount, 0);
-  assert.equal(delegatedInput?.taskContract?.targetWordCount, null);
-  assert.equal(delegatedInput?.taskContract?.requestedOutputPath, "workspace/alfred/artifacts/games.md");
-  assert.equal(delegatedInput?.taskContract?.preferredOutputShape, "ranked_list");
-  assert.deepEqual(delegatedInput?.taskContract?.assumptions, ["No board games unless explicitly requested."]);
+  assert.equal(delegated, false);
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(
+    events.some(
+      (event) =>
+        event.eventType === "alfred_plan_adjusted"
+        && (event.payload as { reason?: string }).reason === "general_task_direct_execution"
+    )
+  );
+  const contractEvent = events.find((event) => event.eventType === "alfred_objective_contract_created");
+  const createdContract = (contractEvent?.payload as { objectiveContract?: { requiredDeliverable?: string; preferredOutputShape?: string; assumptions?: string[] } } | undefined)?.objectiveContract;
+  assert.equal(createdContract?.requiredDeliverable, "Return a concise ranked list of recent kid-friendly video games.");
+  assert.equal(createdContract?.preferredOutputShape, "ranked_list");
+  assert.deepEqual(createdContract?.assumptions, ["No board games unless explicitly requested."]);
+  assert.equal(updatedRun?.toolCalls[0]?.toolName, "search");
 });
 
 test("runAlfredOrchestratorLoop respects planner choice without forcing delegation", async () => {
@@ -960,7 +955,7 @@ test("runAlfredOrchestratorLoop keeps simple ranked-list research tasks in Alfre
   const adjustedEvent = events.find(
     (event) =>
       event.eventType === "alfred_plan_adjusted"
-      && (event.payload as { reason?: string }).reason === "simple_research_task_direct_execution"
+      && (event.payload as { reason?: string }).reason === "general_task_direct_execution"
   );
   assert.ok(adjustedEvent);
   const toolCall = updatedRun?.toolCalls.find((call) => call.toolName === "search");
@@ -990,7 +985,6 @@ test("runAlfredOrchestratorLoop exposes full runtime catalogs to planner", async
       assert.ok(toolNames.has("file_read"));
       assert.ok((searchTool?.inputContract?.bounds ?? []).some((bound) => bound.includes("maxResults <= 15")));
       assert.ok(agentNames.has("lead_agent"));
-      assert.ok(agentNames.has("research_agent"));
       assert.ok(agentNames.has("ops_agent"));
       return {
         result: {
@@ -1850,10 +1844,9 @@ test("runAlfredOrchestratorLoop does not carry stale artifact obligations into a
   });
 
   assert.equal(outcome.status, "completed");
-  assert.equal(delegatedInput?.taskContract?.requestedOutputPath, null);
-  assert.ok(
-    !(delegatedInput?.taskContract?.doneCriteria ?? []).some((item) => item.includes("workspace/alfred/sessions/session-1/outputs/run-prev-article.md"))
-  );
+  assert.equal(delegatedInput, undefined);
+  const updatedRun = await runStore.getRun(run.runId);
+  assert.equal(updatedRun?.toolCalls[0]?.toolName, "search");
 });
 
 test("runAlfredOrchestratorLoop rejects stale recent-output grounding for a fresh standalone request", async () => {
@@ -2012,7 +2005,7 @@ test("runAlfredOrchestratorLoop rejects stale recent-output grounding for a fres
     events.some(
       (event) =>
         event.eventType === "alfred_plan_adjusted"
-        && (event.payload as { reason?: string }).reason === "simple_research_task_direct_execution"
+        && (event.payload as { reason?: string }).reason === "general_task_direct_execution"
     )
   );
 });

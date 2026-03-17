@@ -13,6 +13,8 @@
 
 ## Current Status
 
+- 2026-03-17: Added [docs/architecture/corebehaviour_refactor_plan_17March.md](/Users/nikhil/Projects/Alfredv1/docs/architecture/corebehaviour_refactor_plan_17March.md) as the replacement architecture plan to remove duplicate semantic control layers and move Alfred toward one turn contract, one execution loop, one semantic validator, and tools/skills that own mechanics rather than semantics.
+
 - **Phase 0**: Completed
   - Project scaffold created with TypeScript scripts and `.env.example`.
   - Test script wrappers now map to real `pnpm run test:*` commands.

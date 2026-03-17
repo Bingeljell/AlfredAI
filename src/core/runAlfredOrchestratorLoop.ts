@@ -878,7 +878,7 @@ function buildAlfredPlannerSystemPrompt(sessionContext?: SessionPromptContext): 
     {
       label: "Directives",
       content:
-        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. You have two capability catalogs at runtime: `availableTools` and `availableAgents`. Each tool includes `inputContract` with required fields, bounds, and an example payload: obey these strictly when choosing `toolInputJson` (for example, if `maxResults <= 15`, never exceed it). Choose strategy dynamically from the user ask and current evidence. You must execute general tasks (research, writing, lists, comparisons) directly using tools like `search`, `web_fetch`, and `writer_agent`; do not delegate general work to specialist agents. Reserve specialist delegation for non-general work such as lead-generation or explicit local ops flows. SEARCH STRATEGY: Always use concise, keyword-based queries for the `search` tool. Never use full sentences or your entire instructions as search queries. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. If `resolvedSessionOutput` is present, treat it as a reusable session asset. If `bodyPreview` is present, you may use it for lightweight continuation or transformation. If `artifactPath` is present and the exact stored body matters, call `file_read` before responding or revising. When `actionType=respond`, set `responseKind` explicitly: use `final` for a completed answer, `clarification` only when blocking ambiguity genuinely requires user input, and `progress` for interim guidance/status. Respect execution permission: if `executionPermission` is `plan_only`, return `actionType=respond` with plan guidance and no execution. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
+        "Treat this as the active task for this turn. Sessions can persist, but success criteria are based on the current turn unless user explicitly references prior work. The `turnState.objectiveContract` is immutable for this turn: do not weaken its hard constraints or done criteria. You have two capability catalogs at runtime: `availableTools` and `availableAgents`. Each tool includes `inputContract` with required fields, bounds, and an example payload: obey these strictly when choosing `toolInputJson` (for example, if `maxResults <= 15`, never exceed it). Choose strategy dynamically from the user ask and current evidence. You must execute general tasks (research, writing, lists, comparisons) directly using tools like `search`, `web_fetch`, and `writer_agent`; do not delegate general work to specialist agents. Reserve specialist delegation for non-general work such as lead-generation or explicit local ops flows. SEARCH STRATEGY: Always use concise, keyword-based queries for the `search` tool. Never use full sentences or your entire instructions as search queries. After you have discovered a few candidate URLs in search results, you MUST move to the verification phase using `web_fetch` to gather evidence. Do not repeat broad searches once you have candidate URLs. Use `turnState.completionCriteria`, `turnState.completedCriteria`, `turnState.missingRequirements`, and `turnState.blockingIssues` as the canonical execution state for replanning. If `resolvedSessionOutput` is present, treat it as a reusable session asset. If `bodyPreview` is present, you may use it for lightweight continuation or transformation. If `artifactPath` is present and the exact stored body matters, call `file_read` before responding or revising. When `actionType=respond`, set `responseKind` explicitly: use `final` for a completed answer, `clarification` only when blocking ambiguity genuinely requires user input, and `progress` for interim guidance/status. Respect execution permission: if `executionPermission` is `plan_only`, return `actionType=respond` with plan guidance and no execution. Keep decisions prompt-driven; deterministic behavior should be limited to budget/safety guardrails."
     },
     {
       label: "Session Context",
@@ -1594,7 +1594,14 @@ export function buildAlfredMechanicalRecoveryHint(args: {
     return null;
   }
 
-  return "Mechanical hint: You have discovered enough candidate URLs (5+). It is highly recommended to move to the 'web_fetch' phase to verify details and collect evidence before further searching.";
+  const sampleUrls = state.discoveredUrls.slice(0, 5).join(", ");
+  const baseHint = `Mechanical observation: You have discovered ${state.discoveredUrlCount} candidate URLs (e.g., ${sampleUrls}).`;
+
+  if (state.searchCallCount >= 4) {
+    return `${baseHint} Efficiency Warning: You are repeating searches without verifying details. You MUST move to the 'web_fetch' phase now to avoid budget exhaustion. Use the discovered URLs directly.`;
+  }
+
+  return `${baseHint} It is highly recommended to move to the 'web_fetch' phase to verify details and collect evidence before further searching.`;
 }
 
 function filterPlannerVisibleAgents(args: {
@@ -2490,6 +2497,9 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     };
   }
 
+  let lastSearchQuery: string | null = null;
+  let searchQueryRepeatCount = 0;
+
   for (let iteration = 1; iteration <= options.maxIterations; iteration += 1) {
     if (await options.isCancellationRequested()) {
       return {
@@ -2529,6 +2539,9 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
     const reflectionHints: string[] = [];
     if (mechanicalRecoveryHint) {
       reflectionHints.push(mechanicalRecoveryHint);
+    }
+    if (lastSearchQuery && searchQueryRepeatCount >= 1) {
+      reflectionHints.push(`Efficiency Warning: Your last ${searchQueryRepeatCount + 1} search queries were identical ("${lastSearchQuery}"). You are wasting budget. Please diversify your keywords or move to the 'web_fetch' phase using the URLs already discovered.`);
     }
 
     const plannerDiagnostic = await structuredChatRunner(
@@ -3056,6 +3069,20 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           status: "completed",
           summary: JSON.stringify(output).slice(0, 280)
         };
+
+        // Repetition tracking
+        if (toolName === "search" || toolName === "lead_search_shortlist") {
+          const inputData = parsedInput.data as Record<string, unknown>;
+          const currentQuery = typeof inputData.query === "string" ? inputData.query.trim() : null;
+          if (currentQuery) {
+            if (currentQuery === lastSearchQuery) {
+              searchQueryRepeatCount += 1;
+            } else {
+              lastSearchQuery = currentQuery;
+              searchQueryRepeatCount = 0;
+            }
+          }
+        }
       } catch (error) {
         toolCallsUsed += 1;
         const errorMessage = error instanceof Error ? error.message.slice(0, 220) : "tool_execution_failed";

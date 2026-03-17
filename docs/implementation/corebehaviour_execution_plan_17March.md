@@ -21,15 +21,15 @@ Every slice below must be judged against that rule.
   - canonical turn contract introduced
   - turn interpretation now owns delegated contract semantics when available
   - specialist fallback contract no longer regex-infers draft/citation intent from raw prompt text
-- Slice 2: `in progress`
+- Slice 2: `done`
   - general tasks now stay in Alfred's loop via direct execution override instead of defaulting to `research_agent`
   - planner-visible agent catalog now hides `research_agent` for general-task contracts, so the planner no longer treats delegation as an equal semantic path
 - Slice 3: `done`
   - specialist writer actions are now normalized back to the immutable task contract before execution
   - hardcoded `blog_post`/`memo` recovery defaults have been replaced with contract-derived generation inputs
-- Slice 4: `in progress`
-- Slice 5: `in progress`
-- Slice 6: `in progress`
+- Slice 4: `done`
+- Slice 5: `done`
+- Slice 6: `done`
 
 ## Slice 1 - Contract Hardening
 
@@ -59,7 +59,7 @@ Exit criteria met:
 ## Slice 2 - Execution Loop Simplification
 
 Status:
-- `in progress`
+- `done`
 
 Objective:
 - remove duplicate semantic planning between Alfred orchestrator and research specialist for general plaintext tasks
@@ -121,6 +121,7 @@ Current progress:
 - If a general-task follow-up already has a reusable session artifact, Alfred now prefers direct `file_read` handoff instead of defaulting to a fresh search.
 - `research_agent` has now been removed from the public agent registry and tool-policy surface, leaving only `lead_agent` and `ops_agent` as registered specialist skills.
 - Alfred no longer calls a second completion-evaluator model after successful actions; it reserves one final planner reassessment pass instead, keeping the main planner as the only semantic owner in the normal loop.
+- Alfred-local direct research now includes mechanical convergence: repeated search-only replans with enough discovered URLs are rewritten into `web_fetch`, so the local loop can move from discovery into verification without reintroducing a second semantic planner.
 
 Risks:
 - deleting delegation too aggressively and harming cases where specialist state still helps
@@ -208,7 +209,7 @@ Rollback boundary:
 ## Slice 4 - Single Semantic Validator
 
 Status:
-- `in progress`
+- `done`
 
 Objective:
 - replace split completion authority with one validator against the canonical turn contract
@@ -260,6 +261,7 @@ Current progress:
 - the outer completion-evaluator model call is now removed from Alfred's loop
 - successful tool/delegation steps now return to the same Alfred planner for one reserved reassessment pass instead of consulting a second semantic model
 - contract gating still exists as runtime integrity enforcement on final `respond` actions, but the duplicate post-action authority is gone
+- helper loops now report evidence/output availability into that same contract gate instead of acting as independent semantic judges
 
 Exit criteria:
 - one semantic completion authority only
@@ -274,7 +276,7 @@ Rollback boundary:
 ## Slice 5 - Mechanical-Only Guards
 
 Status:
-- `pending`
+- `done`
 
 Objective:
 - keep runtime safety and anti-stall behavior while removing semantic ownership from guards
@@ -316,6 +318,11 @@ Exit criteria:
 - guards are mechanical only
 - semantic task ownership remains in the contract and validator
 
+Current progress:
+- orchestrator prompt-owned semantic helpers (`detectObjectiveTaskType`, `deriveHardConstraints`, `extractTargetWordCount`) are removed from the normal loop
+- specialist schema repair and finalize guards now rebuild from the canonical contract instead of injecting semantic defaults
+- Alfred-local search-to-fetch recovery is now a mechanical phase correction based on discovered URL state, not prompt semantics
+
 Risks:
 - removing too many helpers at once and destabilizing runtime reliability
 
@@ -325,7 +332,7 @@ Rollback boundary:
 ## Slice 6 - Memory Cleanup
 
 Status:
-- `pending`
+- `done`
 
 Objective:
 - make memory support continuity without hijacking fresh intent
@@ -375,6 +382,11 @@ Current progress:
   - assembly/finalize guards no longer depend on `skillName === research_agent`; they trigger only when the passed contract actually requires assembly/draft/citation work
   - fallback specialist contracts are now generic minimal specialist contracts rather than skill-name-owned research semantics
 
+Exit criteria met:
+- continuity works without stale-context takeover in the current runtime boundary
+- fresh turns no longer inherit semantic obligations from stale artifacts
+- helper fallbacks degrade to minimal contracts instead of recreating prompt-owned meaning
+
 Risks:
 - over-pruning memory reuse and hurting legitimate follow-up behavior
 
@@ -418,6 +430,6 @@ For each, verify:
 
 ## Immediate Next Move
 
-The next coding slice is Phase 6 cleanup on top of the now-simplified loop.
+Refactor implementation is complete for the March 17 target boundary.
 
-Start by removing the remaining prompt-heuristic ownership from Alfred/specialist setup so final-answer acceptance and execution routing come from the immutable turn contract plus planner reasoning, not helper inference.
+Next work should be manual validation and runtime hardening against real failures, not more architectural slicing.

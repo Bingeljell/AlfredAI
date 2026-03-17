@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
-import { runAlfredOrchestratorLoop } from "../../src/core/runAlfredOrchestratorLoop.js";
+import { buildAlfredMechanicalRecoveryPlan, runAlfredOrchestratorLoop } from "../../src/core/runAlfredOrchestratorLoop.js";
 import { RunStore } from "../../src/runs/runStore.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
 import type { SearchManager } from "../../src/tools/search/searchManager.js";
@@ -1251,6 +1251,84 @@ test("runAlfredOrchestratorLoop hides research_agent from planner for simple dir
   });
 
   assert.ok(outcome.status === "completed" || outcome.status === "failed");
+});
+
+test("buildAlfredMechanicalRecoveryPlan forces fetch after repeated general-task searches", () => {
+  const adjusted = buildAlfredMechanicalRecoveryPlan({
+    plan: {
+      thought: "Run another broad search.",
+      actionType: "call_tool",
+      responseKind: null,
+      delegateAgent: null,
+      delegateBrief: null,
+      toolName: "search",
+      toolInputJson: JSON.stringify({ query: "family friendly pc games", maxResults: 10 }),
+      responseText: null
+    },
+    objectiveContract: {
+      taskType: "general",
+      groundedObjective: "Find me 10 family-friendly multiplayer video games released in 2024, 2025, or announced for 2026.",
+      requiredDeliverable: "Return a ranked list of 10 family-friendly multiplayer video games.",
+      hardConstraints: [],
+      softPreferences: [],
+      doneCriteria: ["Return a ranked list in markdown."],
+      assumptions: [],
+      blockingUnknowns: [],
+      preferredOutputShape: "ranked_list",
+      requiredFields: ["title", "release year", "multiplayer type", "source URL"],
+      requiresDraft: false,
+      requiresCitations: false,
+      targetWordCount: null,
+      requestedOutputPath: null,
+      clarificationNeeded: false,
+      clarificationQuestion: null
+    },
+    runRecord: {
+      runId: "run-1",
+      sessionId: "session-1",
+      message: "test",
+      status: "running",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      llmUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, callCount: 0 },
+      toolCalls: [
+        {
+          toolName: "search",
+          inputRedacted: { query: "q1", maxResults: 10 },
+          outputRedacted: {
+            topResults: [
+              { url: "https://example.com/1" },
+              { url: "https://example.com/2" },
+              { url: "https://example.com/3" }
+            ]
+          },
+          durationMs: 100,
+          status: "ok",
+          timestamp: new Date().toISOString()
+        },
+        {
+          toolName: "search",
+          inputRedacted: { query: "q2", maxResults: 10 },
+          outputRedacted: {
+            topResults: [
+              { url: "https://example.com/4" },
+              { url: "https://example.com/5" },
+              { url: "https://example.com/6" }
+            ]
+          },
+          durationMs: 100,
+          status: "ok",
+          timestamp: new Date().toISOString()
+        }
+      ],
+      artifactPaths: []
+    },
+    availableToolNames: new Set(["search", "web_fetch"])
+  });
+
+  assert.ok(adjusted);
+  assert.equal(adjusted?.reason, "general_task_fetch_transition");
+  assert.equal(adjusted?.adjustedPlan.toolName, "web_fetch");
 });
 
 test("runAlfredOrchestratorLoop respects plan-only execution permission and does not execute", async () => {

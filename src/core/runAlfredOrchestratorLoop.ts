@@ -1453,6 +1453,112 @@ function buildDirectExecutionOverrideForDelegation(args: {
   return null;
 }
 
+function deriveGeneralResearchState(runRecord: RunRecord | undefined): {
+  discoveredUrls: string[];
+  discoveredUrlCount: number;
+  fetchedPageCount: number;
+  searchCallCount: number;
+} {
+  const discovered = new Set<string>();
+  let fetchedPageCount = 0;
+  let searchCallCount = 0;
+
+  for (const toolCall of runRecord?.toolCalls ?? []) {
+    if (toolCall.status !== "ok") {
+      continue;
+    }
+    if (toolCall.toolName === "search") {
+      searchCallCount += 1;
+      const output = toolCall.outputRedacted;
+      if (output && typeof output === "object" && Array.isArray((output as Record<string, unknown>).topResults)) {
+        for (const item of (output as Record<string, unknown>).topResults as Array<unknown>) {
+          if (!item || typeof item !== "object") {
+            continue;
+          }
+          const url = (item as Record<string, unknown>).url;
+          if (typeof url === "string" && url.trim()) {
+            discovered.add(url.trim());
+          }
+        }
+      }
+    }
+    if (toolCall.toolName === "lead_search_shortlist") {
+      const output = toolCall.outputRedacted;
+      if (output && typeof output === "object" && Array.isArray((output as Record<string, unknown>).shortlistedUrls)) {
+        for (const item of (output as Record<string, unknown>).shortlistedUrls as Array<unknown>) {
+          if (typeof item === "string" && item.trim()) {
+            discovered.add(item.trim());
+          }
+        }
+      }
+    }
+    if (toolCall.toolName === "web_fetch") {
+      fetchedPageCount += findNumericField(toolCall.outputRedacted, ["usablePageCount", "pagesFetched"]) ?? 0;
+    }
+  }
+
+  return {
+    discoveredUrls: Array.from(discovered),
+    discoveredUrlCount: discovered.size,
+    fetchedPageCount,
+    searchCallCount
+  };
+}
+
+export function buildAlfredMechanicalRecoveryPlan(args: {
+  plan: AlfredPlannerOutput;
+  objectiveContract: AlfredObjectiveContract;
+  runRecord: RunRecord | undefined;
+  availableToolNames: Set<string>;
+}): { adjustedPlan: AlfredPlannerOutput; reason: string } | null {
+  if (args.objectiveContract.taskType !== "general") {
+    return null;
+  }
+  if (args.plan.actionType !== "call_tool") {
+    return null;
+  }
+  if (args.plan.toolName !== "search" && args.plan.toolName !== "lead_search_shortlist") {
+    return null;
+  }
+  const requiresAssembly =
+    args.objectiveContract.preferredOutputShape === "ranked_list"
+    || args.objectiveContract.preferredOutputShape === "comparison"
+    || args.objectiveContract.preferredOutputShape === "brief"
+    || args.objectiveContract.requiresDraft
+    || args.objectiveContract.requiresCitations;
+  if (!requiresAssembly) {
+    return null;
+  }
+  if (!args.availableToolNames.has("web_fetch")) {
+    return null;
+  }
+
+  const state = deriveGeneralResearchState(args.runRecord);
+  if (state.fetchedPageCount > 0) {
+    return null;
+  }
+  if (state.discoveredUrlCount < 5) {
+    return null;
+  }
+  if (state.searchCallCount < 2) {
+    return null;
+  }
+
+  return {
+    adjustedPlan: {
+      ...args.plan,
+      thought: `${args.plan.thought} (adjusted: enough candidate URLs discovered; transition to fetch)`,
+      toolName: "web_fetch",
+      toolInputJson: JSON.stringify({
+        urls: state.discoveredUrls.slice(0, 8),
+        maxPages: Math.min(8, state.discoveredUrls.length),
+        browseConcurrency: 3
+      })
+    },
+    reason: "general_task_fetch_transition"
+  };
+}
+
 function filterPlannerVisibleAgents(args: {
   availableAgents: Array<{ name: string; description: string; toolAllowlist: string[] }>;
   objectiveContract: AlfredObjectiveContract;
@@ -2547,6 +2653,29 @@ export async function runAlfredOrchestratorLoop(options: AlfredOrchestratorOptio
           originalActionType,
           originalDelegateAgent,
           adjustedActionType: plan.actionType,
+          adjustedToolName: plan.toolName
+        },
+        timestamp: nowIso()
+      });
+    }
+    const mechanicalRecoveryPlan = buildAlfredMechanicalRecoveryPlan({
+      plan,
+      objectiveContract,
+      runRecord: latestRunRecord,
+      availableToolNames: new Set(availableToolSpecs.map((tool) => tool.name))
+    });
+    if (mechanicalRecoveryPlan) {
+      const originalToolName = plan.toolName;
+      plan = mechanicalRecoveryPlan.adjustedPlan;
+      await options.runStore.appendEvent({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        phase: "thought",
+        eventType: "alfred_plan_adjusted",
+        payload: {
+          iteration,
+          reason: mechanicalRecoveryPlan.reason,
+          originalToolName,
           adjustedToolName: plan.toolName
         },
         timestamp: nowIso()

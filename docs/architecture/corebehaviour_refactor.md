@@ -176,7 +176,7 @@ Remaining:
 
 ### Slice 2: Execution Loop Simplification
 
-Status: substantially implemented
+Status: implemented for the current runtime boundary
 
 Delivered so far:
 
@@ -205,7 +205,7 @@ Remaining:
 
 ### Phase 4: Evidence-Driven Specialist Convergence
 
-Status: substantially implemented
+Status: implemented for the current runtime boundary
 
 Delivered:
 
@@ -222,7 +222,7 @@ Remaining:
 
 ### Phase 5: Writer Readiness Contract
 
-Status: implemented for the current runtime boundary
+Status: implemented
 
 Delivered:
 
@@ -240,14 +240,7 @@ Remaining:
 
 ### Phase 6: Remaining Heuristic Ownership
 
-Status: in progress
-
-Still present in meaningful places:
-
-- specialist task-contract prompt regexing for draft/citation/word-count intent
-- specialist loop guards that still encode progression shortcuts
-
-The runtime is now much closer to `LLM owns semantics / runtime owns mechanics`, but this is still the largest open architecture gap.
+Status: implemented for the current runtime boundary
 
 Delivered in this phase so far:
 
@@ -256,14 +249,20 @@ Delivered in this phase so far:
 - canonical lead-brief generation in the main turn path is now interpretation-owned instead of keyword-owned
 - specialist schema-repair and writer/finalize guards now key off the passed contract and available tools instead of `research_agent` skill-name semantics
 - fallback specialist setup now degrades to a generic minimal specialist contract instead of reintroducing research semantics from skill identity
+- Alfred-local direct research now uses mechanical search-to-fetch recovery once enough candidate URLs are discovered, instead of repeatedly re-owning discovery semantics
+
+Residual risk:
+
+- runtime hardening is still needed for noisy real-world evidence quality and planner repetition, but that is now a behavior/reliability problem inside the simplified architecture rather than a duplicate-semantic-ownership problem
 
 ### Completion Authority
 
-Status: in progress
+Status: implemented for the current runtime boundary
 
 Delivered:
 
 - the separate outer completion-evaluator model call has been removed from Alfred's loop
+- final `respond` acceptance now flows through the canonical contract gate after the same Alfred planner reassessment path
 - successful tool and delegation results now flow back into the same Alfred planner for reassessment, instead of being judged by a second semantic model
 
 Remaining:

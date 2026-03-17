@@ -243,3 +243,4 @@
 - Enable robots-aware scraping mode for production profile.
 - Add structured retry/backoff metrics and deeper async supervision dashboards.
 - Add lightweight browser-level regression coverage for the `webui/` shell once the new layout and telemetry interactions settle.
+  - Self-contained LLM provider layer is now packaged for the refactored runtime: `openAiClient` exposes timeout/attempt-aware chat diagnostics, `src/services/llm/` provides provider interfaces plus fallback routing/OpenAI adapter, and dedicated `llmRouter` tests now cover provider failover/ordering so the simplified writer builds and runs cleanly on a fresh checkout.

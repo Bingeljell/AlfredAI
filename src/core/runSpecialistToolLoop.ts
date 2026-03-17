@@ -1483,7 +1483,20 @@ function buildSpecialistTaskContract(options: Pick<SpecialistToolLoopOptions, "s
 
 function extractUrls(text: string): string[] {
   const matches = text.match(/https?:\/\/[^\s)]+/gi) ?? [];
-  return Array.from(new Set(matches.map((item) => item.trim())));
+  const trailing = ".,;:!?)]}\"'`";
+  const normalized = matches
+    .map((item) => item.trim())
+    .map((item) => {
+      let value = item;
+      while (value.length > 0 && trailing.includes(value[value.length - 1] ?? "")) {
+        value = value.slice(0, -1);
+      }
+      value = value.replace(/\\n\[[^\]]+\]$/i, "");
+      value = value.replace(/\/n\[[^\]]+\]$/i, "");
+      return value;
+    })
+    .filter((item) => /^https?:\/\/[^\s]+$/i.test(item));
+  return Array.from(new Set(normalized));
 }
 
 function countWords(text: string): number {
@@ -1650,10 +1663,6 @@ function updateSpecialistProgress(progress: SpecialistProgressState, result: Too
 
   progress.successfulToolCalls += 1;
   const payload = result.result ?? {};
-  const payloadText = JSON.stringify(payload);
-  for (const url of extractUrls(payloadText)) {
-    progress.sourceUrls.add(url);
-  }
 
   if (result.tool === "web_fetch") {
     const pagesFetched =

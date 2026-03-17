@@ -94,6 +94,7 @@ This section reflects what is actually implemented today.
 - When runtime state is clearly `fetch_pending`, search-only replans can be mechanically corrected into fetch/evidence actions.
 - When runtime state is clearly `fetch_pending`, repeated `file_read` or `file_read + search` plans can also be corrected into fetch/evidence actions instead of rereading the same stale artifact.
 - Planner timeouts during `discovery_complete_fetch_pending` can recover into fetch instead of burning another shortlist/search iteration.
+- Specialist discovery source tracking is now constrained to discovery/fetch tool outputs (search/shortlist/fetch), so URLs embedded inside `file_read` memo content no longer poison source discovery or trigger malformed fetch loops.
 
 ### Writer readiness
 

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
 import { RunStore } from "../../src/runs/runStore.js";
 import { runSpecialistToolLoop, shouldApplyAssemblyGuard, shouldForcePhaseTransition } from "../../src/core/runSpecialistToolLoop.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
@@ -1488,6 +1489,83 @@ test("phase lock rewrites repeated file reads into fetch when fetch is already p
   assert.equal(decision.forced?.[0]?.tool, "web_fetch");
   const input = JSON.parse(decision.forced?.[0]?.inputJson ?? "{}") as { urls?: string[] };
   assert.deepEqual(input.urls, urls);
+});
+
+test("runSpecialistToolLoop does not promote memo citation URLs from file_read into fetch-phase source discovery", async () => {
+  const workspace = await createTempWorkspace("specialist-file-read-url-poisoning");
+  const runStore = new RunStore(workspace);
+  const run = await runStore.createRun("session-1", "Use memo as context", "running");
+  const memoPath = "workspace/alfred/sessions/session-1/outputs/memo.md";
+  await mkdir(`${workspace}/workspace/alfred/sessions/session-1/outputs`, { recursive: true });
+  await writeFile(
+    `${workspace}/${memoPath}`,
+    "Draft notes with citations:\n[S1] https://example.com/game-1/n[S2]\n[S2] https://example.com/game-2\\n[S3]\n",
+    "utf8"
+  );
+
+  const outcome = await runSpecialistToolLoop({
+    runStore,
+    searchManager: new FakeSearchManager() as never,
+    workspaceDir: workspace,
+    message: "Use memo as context",
+    runId: run.runId,
+    sessionId: "session-1",
+    openAiApiKey: "test-key",
+    defaults: {
+      searchMaxResults: 15,
+      subReactMaxPages: 10,
+      subReactBrowseConcurrency: 3,
+      subReactBatchSize: 4,
+      subReactLlmMaxCalls: 6,
+      subReactMinConfidence: 0.6
+    },
+    leadPipelineExecutor: async () => {
+      throw new Error("lead pipeline should not run in this test");
+    },
+    maxIterations: 3,
+    maxDurationMs: 60_000,
+    maxToolCalls: 5,
+    maxParallelTools: 1,
+    plannerMaxCalls: 3,
+    observationWindow: 5,
+    diminishingThreshold: 1,
+    policyMode: "trusted",
+    isCancellationRequested: async () => false,
+    skillName: "research_agent",
+    skillDescription: "Research skill",
+    skillSystemPrompt: "Do research",
+    toolAllowlist: ["file_read", "web_fetch"],
+    structuredChatRunner: async <T>() =>
+      ({
+        result: {
+          thought: "Read the memo first.",
+          actionType: "single",
+          singleTool: "file_read",
+          singleInputJson: JSON.stringify({ path: memoPath }),
+          parallelActions: null,
+          responseText: null
+        }
+      }) as import("../../src/services/openAiClient.js").StructuredChatDiagnostic<T>
+  });
+
+  assert.equal(outcome.status, "completed");
+  const updatedRun = await runStore.getRun(run.runId);
+  const events = updatedRun ? await runStore.listRunEvents(updatedRun) : [];
+  assert.ok(
+    !events.some(
+      (event) =>
+        event.eventType === "specialist_phase_state"
+        && (event.payload as { phase?: string }).phase === "fetch"
+    )
+  );
+  assert.ok(
+    !events.some(
+      (event) =>
+        event.eventType === "specialist_plan_adjusted"
+        && typeof (event.payload as { reason?: string }).reason === "string"
+        && ((event.payload as { reason?: string }).reason ?? "").startsWith("phase_lock_forced_transition")
+    )
+  );
 });
 
 test("runSpecialistToolLoop defaults missing single-action input for known tools", async () => {

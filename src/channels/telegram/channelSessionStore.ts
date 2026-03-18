@@ -58,4 +58,8 @@ export class ChannelSessionStore {
     };
     await this.save(data);
   }
+
+  async getAll(): Promise<ChannelSessionMap> {
+    return this.load();
+  }
 }

@@ -191,7 +191,7 @@ Runs:   tsc --noEmit  →  node --test  →  git commit
 
 ---
 
-### 4. Conversational Channels (WhatsApp + Telegram)
+### 4. Conversational Channels (WhatsApp + Telegram) ✅ Telegram Done
 
 **Problem:** Alfred is only accessible via the web UI. Goal: chat with Alfred from anywhere.
 
@@ -251,7 +251,7 @@ Adapter sends response back to platform
 | 1 | Second brain (QMD) | ✅ Done |
 | 2 | Video clipper tool | Quick win, validates tool extensibility pattern |
 | 3 | Self-awareness (dev specialist) | Multiplies iteration speed for all subsequent work |
-| 4 | Channels | Needs stable core + memory first |
+| 4 | Channels | ✅ Telegram done — WhatsApp (Baileys) when needed |
 | 5 | Open source packaging | Last — done when major features are in |
 
 ---

@@ -10,6 +10,7 @@ import { BrightDataProvider } from "../tools/search/providers/brightDataProvider
 import { SearchManager } from "../tools/search/searchManager.js";
 import { InMemoryQueue } from "../workers/inMemoryQueue.js";
 import { ChatService } from "../services/chatService.js";
+import { ChannelSessionStore } from "../channels/telegram/channelSessionStore.js";
 
 const SessionPostSchema = z.object({
   action: z.enum(["create", "list"]).default("list"),
@@ -161,6 +162,12 @@ app.get("/v1/runs/:runId/export", async (c) => {
   } catch {
     return c.json({ error: "Run not found" }, 404);
   }
+});
+
+app.get("/v1/channels", async (c) => {
+  const store = new ChannelSessionStore(appConfig.workspaceDir);
+  const channelSessions = await store.getAll();
+  return c.json({ channelSessions });
 });
 
 app.use(

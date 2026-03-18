@@ -39,6 +39,7 @@ interface ChatServiceOptions {
   subReactBatchSize: number;
   subReactLlmMaxCalls: number;
   subReactMinConfidence: number;
+  pinchtabBaseUrl?: string;
   agentMaxDurationMs: number;
   agentMaxToolCalls: number;
   agentMaxParallelTools: number;
@@ -373,6 +374,7 @@ export class ChatService {
         subReactBatchSize: this.options.subReactBatchSize,
         subReactLlmMaxCalls: this.options.subReactLlmMaxCalls,
         subReactMinConfidence: this.options.subReactMinConfidence,
+        pinchtabBaseUrl: this.options.pinchtabBaseUrl,
         agentMaxDurationMs: this.options.agentMaxDurationMs,
         agentMaxToolCalls: this.options.agentMaxToolCalls,
         agentMaxParallelTools: this.options.agentMaxParallelTools,

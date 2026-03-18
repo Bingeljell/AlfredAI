@@ -40,7 +40,8 @@ export const toolDefinition: LeadAgentToolDefinition<typeof LeadPipelineToolInpu
       executionBrief: context.leadExecutionBrief,
       filters: normalizedFilters,
       deadlineAtMs: context.deadlineAtMs,
-      isCancellationRequested: context.isCancellationRequested
+      isCancellationRequested: context.isCancellationRequested,
+      pinchtabBaseUrl: context.defaults.pinchtabBaseUrl
     });
 
     const merged = context.addLeads(outcome.leads);

@@ -77,6 +77,7 @@ const chatService = new ChatService({
   subReactBatchSize: appConfig.subReactBatchSize,
   subReactLlmMaxCalls: appConfig.subReactLlmMaxCalls,
   subReactMinConfidence: appConfig.subReactMinConfidence,
+  pinchtabBaseUrl: appConfig.enablePinchtab ? appConfig.pinchtabBaseUrl : undefined,
   agentMaxDurationMs: appConfig.agentMaxDurationMs,
   agentMaxToolCalls: appConfig.agentMaxToolCalls,
   agentMaxParallelTools: appConfig.agentMaxParallelTools,

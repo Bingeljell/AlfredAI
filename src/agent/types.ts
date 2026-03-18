@@ -83,6 +83,7 @@ export interface LeadAgentDefaults {
   subReactBatchSize: number;
   subReactLlmMaxCalls: number;
   subReactMinConfidence: number;
+  pinchtabBaseUrl?: string;
 }
 
 export interface LeadAgentState {

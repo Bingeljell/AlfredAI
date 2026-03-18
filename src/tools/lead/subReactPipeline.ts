@@ -9,6 +9,7 @@ import {
   type StructuredChatHttpErrorDetails
 } from "../../services/openAiClient.js";
 import { BrowserPool, type PagePayload } from "./browserPool.js";
+import { PinchtabPool } from "./pinchtabPool.js";
 import {
   ExtractedLeadBatchSchema,
   QueryExpansionSchema,
@@ -287,6 +288,7 @@ interface LeadSubReactOptions {
   filters?: NormalizedLeadPipelineFilters;
   deadlineAtMs?: number;
   isCancellationRequested?: () => Promise<boolean>;
+  pinchtabBaseUrl?: string;
 }
 
 export interface LeadSubReactResult {
@@ -1755,7 +1757,9 @@ async function enrichLeadEmails(
     };
   }
 
-  const browserPool = await BrowserPool.create();
+  const browserPool = options.pinchtabBaseUrl
+    ? PinchtabPool.create(options.pinchtabBaseUrl)
+    : await BrowserPool.create();
   try {
     const collection = await browserPool.collectPages(unresolvedUrls, options.browseConcurrency, options.deadlineAtMs);
     const visitedByDomain = new Set<string>(resolvedDomains);
@@ -2072,7 +2076,9 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     urlCount: mergedResults.length
   });
 
-  const browserPool = await BrowserPool.create();
+  const browserPool = options.pinchtabBaseUrl
+    ? PinchtabPool.create(options.pinchtabBaseUrl)
+    : await BrowserPool.create();
   let pagePayloads: PagePayload[] = [];
   let browseFailures: Array<{ url: string; error: string }> = [];
   try {

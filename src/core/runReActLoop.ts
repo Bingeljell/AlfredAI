@@ -22,6 +22,7 @@ interface RunReActLoopOptions {
   subReactBatchSize: number;
   subReactLlmMaxCalls: number;
   subReactMinConfidence: number;
+  pinchtabBaseUrl?: string;
   leadPipelineExecutor?: typeof executeLeadSubReactPipeline;
   agentMaxDurationMs?: number;
   agentMaxToolCalls?: number;
@@ -120,7 +121,8 @@ export async function runReActLoop(
       subReactBrowseConcurrency: options.subReactBrowseConcurrency,
       subReactBatchSize: options.subReactBatchSize,
       subReactLlmMaxCalls: options.subReactLlmMaxCalls,
-      subReactMinConfidence: options.subReactMinConfidence
+      subReactMinConfidence: options.subReactMinConfidence,
+      pinchtabBaseUrl: options.pinchtabBaseUrl
     },
     leadPipelineExecutor,
     maxDurationMs: options.agentMaxDurationMs ?? 240_000,

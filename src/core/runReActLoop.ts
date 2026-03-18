@@ -3,6 +3,7 @@ import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import { evaluateApprovalNeed } from "./approvalPolicy.js";
 import { appendDailyNote } from "../memory/dailyNotes.js";
+import { extractAndSaveSessionNotes } from "../memory/sessionExtractor.js";
 import { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
 import { runOrchestrator } from "./orchestrator.js";
 
@@ -129,5 +130,17 @@ export async function runReActLoop(
   });
 
   await appendDailyNote(options.workspaceDir, sessionId, "assistant", outcome.assistantText ?? "");
+
+  // Fire-and-forget: extract facts from this session and persist to knowledge base
+  extractAndSaveSessionNotes({
+    workspaceDir: options.workspaceDir,
+    sessionId,
+    message,
+    assistantText: outcome.assistantText ?? "",
+    openAiApiKey: options.openAiApiKey
+  }).catch(() => {
+    // Non-fatal — never surface memory errors to the user
+  });
+
   return outcome;
 }

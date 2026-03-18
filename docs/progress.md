@@ -13,6 +13,8 @@
 
 ## Current Status
 
+- 2026-03-18: **Track 1: QMD second brain.** Added `sessionExtractor.ts` (post-session LLM call writes structured Markdown notes per category to `knowledge/`). Added `rag_memory_query` tool (wraps `qmd query` CLI, graceful fallback if QMD not installed). Research, writing, and lead specialists now call `rag_memory_query` as step 0 before searching the web. Added `docs/roadmap.md` with the full expansion roadmap.
+
 - 2026-03-18: **Big-bang rewrite — native tool-calling architecture.** Replaced the entire `runAlfredOrchestratorLoop` + specialist loop stack (~4,000 lines) with three new files: `orchestrator.ts` (classification router), `agentLoop.ts` (native OpenAI tool-calling loop), and `specialists.ts` (4 specialist configs). Added `runOpenAiToolCallWithDiagnostics` to `openAiClient.ts`. `runReActLoop.ts` simplified to call `runOrchestrator`. Deleted 8 source files and 9 stale test files. Build clean, no new test failures. Architecture documented in `docs/architecture/corebehaviour_refactor.md`.
 
 - 2026-03-17: Intensified the "SEARCH STRATEGY" directives and implemented explicit search repetition detection in the orchestrator loop. Mechanical hints now escalate to "Efficiency Warnings" when the agent ignores phase transitions or repeats queries, preventing tactical stutter and ensuring progression to verification. Fixed a bug where legitimate tool calls were being hijacked by the general-task guard.

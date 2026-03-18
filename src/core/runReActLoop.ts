@@ -4,7 +4,7 @@ import type { SearchManager } from "../tools/search/searchManager.js";
 import { evaluateApprovalNeed } from "./approvalPolicy.js";
 import { appendDailyNote } from "../memory/dailyNotes.js";
 import { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
-import { runAlfredOrchestratorLoop } from "./runAlfredOrchestratorLoop.js";
+import { runOrchestrator } from "./orchestrator.js";
 
 interface RunReActLoopOptions {
   runStore: RunStore;
@@ -62,7 +62,10 @@ export async function runReActLoop(
       payload: {
         hasActiveObjective: Boolean(options.sessionContext.activeObjective),
         hasLastCompletedRun: Boolean(options.sessionContext.lastCompletedRun?.runId),
-        artifactCount: options.sessionContext.lastArtifacts?.length ?? options.sessionContext.lastCompletedRun?.artifactPaths?.length ?? 0,
+        artifactCount:
+          options.sessionContext.lastArtifacts?.length ??
+          options.sessionContext.lastCompletedRun?.artifactPaths?.length ??
+          0,
         hasSessionSummary: Boolean(options.sessionContext.sessionSummary),
         recentTurnCount: options.sessionContext.recentTurns?.length ?? 0,
         recentOutputCount: options.sessionContext.recentOutputs?.length ?? 0
@@ -101,7 +104,8 @@ export async function runReActLoop(
   });
 
   const leadPipelineExecutor = options.leadPipelineExecutor ?? executeLeadSubReactPipeline;
-  const outcome = await runAlfredOrchestratorLoop({
+
+  const outcome = await runOrchestrator({
     runStore,
     searchManager: options.searchManager,
     workspaceDir: options.workspaceDir,
@@ -118,13 +122,7 @@ export async function runReActLoop(
       subReactMinConfidence: options.subReactMinConfidence
     },
     leadPipelineExecutor,
-    maxIterations: options.maxSteps,
-    maxDurationMs: options.agentMaxDurationMs ?? 240000,
-    maxToolCalls: options.agentMaxToolCalls ?? Math.max(8, options.maxSteps * 3),
-    maxParallelTools: options.agentMaxParallelTools ?? 3,
-    plannerMaxCalls: options.agentPlannerMaxCalls ?? Math.max(3, options.maxSteps),
-    observationWindow: options.agentObservationWindow ?? 8,
-    diminishingThreshold: options.agentDiminishingThreshold ?? 2,
+    maxDurationMs: options.agentMaxDurationMs ?? 240_000,
     policyMode: options.policyMode,
     sessionContext: options.sessionContext,
     isCancellationRequested: options.isCancellationRequested

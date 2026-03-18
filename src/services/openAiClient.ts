@@ -400,6 +400,229 @@ export async function runOpenAiStructuredChat<T>(
   return diagnostic.result;
 }
 
+// ─── Native tool-calling support ─────────────────────────────────────────────
+
+export type OpenAiConversationMessage =
+  | { role: "system"; content: string }
+  | { role: "user"; content: string }
+  | { role: "assistant"; content: string | null; tool_calls?: OpenAiToolCall[] }
+  | { role: "tool"; tool_call_id: string; content: string };
+
+export interface OpenAiToolDef {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+export interface OpenAiToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+export type ToolCallFailureCode =
+  | "missing_api_key"
+  | "network_error"
+  | "http_error"
+  | "empty_response";
+
+export interface ToolCallDiagnostic {
+  content?: string;
+  toolCalls?: OpenAiToolCall[];
+  finishReason?: string;
+  failureCode?: ToolCallFailureCode;
+  failureClass?: FailureClass;
+  failureMessage?: string;
+  statusCode?: number;
+  httpErrorDetails?: StructuredChatHttpErrorDetails;
+  usage?: LlmUsage;
+  attempts?: number;
+  elapsedMs?: number;
+  softTimeoutMs?: number;
+  hardTimeoutMs?: number;
+  softTimeoutExceeded?: boolean;
+}
+
+interface OpenAiToolCallOptions {
+  apiKey?: string;
+  model?: string;
+  messages: OpenAiConversationMessage[];
+  tools: OpenAiToolDef[];
+  timeoutMs?: number;
+  maxAttempts?: number;
+}
+
+interface OpenAiToolCallResponsePayload {
+  choices?: Array<{
+    message?: {
+      content?: string | null;
+      tool_calls?: OpenAiToolCall[];
+    };
+    finish_reason?: string;
+  }>;
+  usage?: {
+    prompt_tokens?: unknown;
+    completion_tokens?: unknown;
+    total_tokens?: unknown;
+  };
+}
+
+function parseToolCallResponse(response: Response): Promise<OpenAiToolCallResponsePayload | undefined> {
+  if (!response.ok) {
+    return Promise.resolve(undefined);
+  }
+  return response.json() as Promise<OpenAiToolCallResponsePayload>;
+}
+
+export async function runOpenAiToolCallWithDiagnostics(options: OpenAiToolCallOptions): Promise<ToolCallDiagnostic> {
+  if (!options.apiKey) {
+    return {
+      failureCode: "missing_api_key",
+      failureClass: "policy_block",
+      failureMessage: "OpenAI API key is not configured",
+      attempts: 0
+    };
+  }
+
+  const retryPolicy = resolveRetryPolicy(options.maxAttempts);
+  const softTimeoutMs = resolveSoftTimeoutMs(options.timeoutMs, 60_000);
+  const hardTimeoutMs = resolveHardTimeoutMs(softTimeoutMs);
+  const callStartedAt = Date.now();
+  const model = options.model ?? "gpt-4o";
+
+  const body: Record<string, unknown> = {
+    model,
+    messages: options.messages,
+    tools: options.tools,
+    tool_choice: "auto"
+  };
+  if (!shouldOmitTemperature(model)) {
+    body.temperature = 0.2;
+  }
+
+  let response: Response | undefined;
+  let attempts = 0;
+
+  for (let attempt = 1; attempt <= retryPolicy.maxAttempts; attempt += 1) {
+    attempts = attempt;
+    try {
+      response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${options.apiKey}`
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(hardTimeoutMs)
+      });
+    } catch (error) {
+      const failureMessage = error instanceof Error ? error.message : "Network request failed";
+      if (attempt < retryPolicy.maxAttempts && isLikelyTransientNetworkError(error)) {
+        const delayMs = computeRetryDelayMs(attempt, retryPolicy);
+        await sleep(delayMs);
+        continue;
+      }
+      const elapsedMs = Date.now() - callStartedAt;
+      return {
+        failureCode: "network_error",
+        failureClass: classifyStructuredFailure({ failureCode: "network_error", failureMessage }),
+        failureMessage,
+        attempts: attempt,
+        elapsedMs,
+        softTimeoutMs,
+        hardTimeoutMs,
+        softTimeoutExceeded: elapsedMs > softTimeoutMs
+      };
+    }
+
+    if (!response.ok) {
+      if (attempt < retryPolicy.maxAttempts && isRetryableHttpStatus(response.status)) {
+        const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after") ?? undefined);
+        const delayMs = computeRetryDelayMs(attempt, retryPolicy, retryAfterMs);
+        await response.arrayBuffer().catch(() => undefined);
+        await sleep(delayMs);
+        continue;
+      }
+      break;
+    }
+    break;
+  }
+
+  if (!response) {
+    const elapsedMs = Date.now() - callStartedAt;
+    return {
+      failureCode: "network_error",
+      failureClass: "network",
+      failureMessage: "Tool call request failed before receiving a response",
+      attempts,
+      elapsedMs,
+      softTimeoutMs,
+      hardTimeoutMs,
+      softTimeoutExceeded: elapsedMs > softTimeoutMs
+    };
+  }
+
+  if (!response.ok) {
+    const httpErrorDetails = await buildHttpErrorDetails(response);
+    const elapsedMs = Date.now() - callStartedAt;
+    return {
+      failureCode: "http_error",
+      failureClass: classifyStructuredFailure({
+        failureCode: "http_error",
+        statusCode: response.status,
+        failureMessage: formatHttpFailureMessage(httpErrorDetails)
+      }),
+      failureMessage: formatHttpFailureMessage(httpErrorDetails),
+      statusCode: response.status,
+      httpErrorDetails,
+      attempts,
+      elapsedMs,
+      softTimeoutMs,
+      hardTimeoutMs,
+      softTimeoutExceeded: elapsedMs > softTimeoutMs
+    };
+  }
+
+  const payload = await parseToolCallResponse(response);
+  const elapsedMs = Date.now() - callStartedAt;
+
+  if (!payload) {
+    return {
+      failureCode: "empty_response",
+      failureClass: "unknown",
+      failureMessage: "Tool call response body was empty",
+      attempts,
+      elapsedMs,
+      softTimeoutMs,
+      hardTimeoutMs,
+      softTimeoutExceeded: elapsedMs > softTimeoutMs
+    };
+  }
+
+  const choice = payload.choices?.[0];
+  const message = choice?.message;
+  const finishReason = choice?.finish_reason;
+  const usage = parseUsage(payload as OpenAiResponse);
+
+  return {
+    content: message?.content?.trim() || undefined,
+    toolCalls: message?.tool_calls?.length ? message.tool_calls : undefined,
+    finishReason,
+    usage,
+    attempts,
+    elapsedMs,
+    softTimeoutMs,
+    hardTimeoutMs,
+    softTimeoutExceeded: elapsedMs > softTimeoutMs
+  };
+}
+
 export async function runOpenAiStructuredChatWithDiagnostics<T>(
   options: OpenAiStructuredChatOptions,
   validator: z.ZodType<T>

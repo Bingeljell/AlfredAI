@@ -1,296 +1,243 @@
 # Core Behaviour Refactor
 
-## Goal
-
-Make Alfred behave more like a general-purpose second brain and less like a prompt-shaped workflow engine.
-
-Design rule:
-
-- `LLM owns semantics`
-- `Runtime owns mechanics`
-
-That means:
-
-- Alfred interprets user intent, continuity, assumptions, ambiguity, and completion using model reasoning.
-- Deterministic code persists memory, validates schemas, enforces safety, manages budgets, and executes tools.
-
-## Why This Refactor Exists
-
-Historically, Alfred owned too much meaning in deterministic code:
-
-- turn continuation heuristics
-- task-type inference from prompt text
-- hard-constraint extraction from keywords
-- clarification detection from question-like responses
-- completion checks that inferred semantics from regex/phrasing instead of task state
-
-That caused the failures we were seeing:
-
-- unnecessary clarification loops
-- weak continuity across turns
-- specialist loops that kept searching instead of converging
-- low-budget writer fallback being used as a fake completion path
-
-## Current Architecture Direction
-
-The runtime is being reshaped around four ideas:
-
-1. Plaintext turns are interpreted, not classified.
-2. Session memory must preserve usable cognition, not just logs.
-3. Specialist convergence must be driven by evidence state, not optimistic phase labels.
-4. Writer should only run when there is a real chance of producing a reusable output.
-
-## Current Runtime State
-
-This section reflects what is actually implemented today.
-
-### Turn semantics
-
-- Execute-mode turns now go through a structured `turn_interpretation` model call in [runAlfredOrchestratorLoop.ts](/Users/nikhil/Projects/Alfredv1/src/core/runAlfredOrchestratorLoop.ts).
-- Alfred now builds an immutable `objectiveContract` from grounded turn interpretation rather than re-deriving semantics from the raw user message when interpretation is available.
-- The contract now behaves as the canonical turn contract for the run:
-  - downstream execution receives the same deliverable contract
-  - specialist fallback paths no longer infer draft/citation semantics from raw prompt keywords when no explicit task contract is supplied
-  - when turn interpretation is unavailable, Alfred now falls back to a deliberately minimal general contract instead of reconstructing article semantics from prompt text
-  - lead-execution brief creation in the main turn path now activates only from model-owned `taskType=lead_generation` interpretation rather than pre-interpretation keyword routing
-- General-task execution now stays in Alfred's loop: if planner tries to delegate a general task to `research_agent`, runtime rewrites that into direct tool execution instead.
-- For those same general-task contracts, the planner-visible agent catalog now hides `research_agent`, so Alfred no longer advertises an unnecessary second semantic planner path for normal general work.
-- When a general-task follow-up already has a reusable session artifact, Alfred now prefers direct `file_read` reuse over blindly restarting retrieval.
-- `research_agent` has now been removed from the public agent registry and tool-policy surface, so it is no longer a first-class runtime path competing with Alfred for general task semantics.
-- Alfred planner responses now carry explicit `responseKind`:
-  - `final`
-  - `clarification`
-  - `progress`
-- Planner clarification is no longer inferred from punctuation or text shape in the normal response path.
-- Alfred no longer calls a separate completion-evaluator model after successful tool or delegation steps; the same planner gets one reserved reassessment pass instead.
-- Over-literal interpretation fields are now sanitized before they harden into runtime obligations:
-  - format words like `markdown` no longer become fake output paths
-  - per-item source URL requirements no longer force formal citation completion gates by default
-
-### Session memory and prior-output grounding
-
-- Session working memory now includes:
-  - `recentOutputs`
-  - `unresolvedItems`
-  - `activeThreadSummary`
-  - `recentTurns`
-- Completed runs can be turned into session output records with explicit availability:
-  - `body_available`
-  - `metadata_only`
-  - `missing`
-- Alfred can recover durable recent outputs from prior runs and merge them into runtime session context.
-- If a prior output has a stored artifact and `availability=body_available`, Alfred can load a bounded body preview for planning.
-- Fresh standalone turns now keep a stricter boundary around stale artifacts: if grounding resolves to `source=message`, Alfred does not inherit prior output-path or artifact obligations unless the current turn explicitly references them.
-- Fresh substantive requests now also reject stale `recent_output` grounding when the grounded objective injects prior artifact bindings that were not actually asked for in the current turn.
-
-### Specialist runtime cognition
-
-- Specialist/runtime contexts now carry generic active-work state:
-  - `assumptions`
-  - `unresolvedItems`
-  - `activeWorkItems`
-  - `candidateSets`
-  - `evidenceRecords`
-  - `synthesisState`
-- This state is generic by design. It is not article-specific, lead-specific, or game-specific.
-- Specialist planner context receives `activeWorkState` directly so the model can plan against current evidence and synthesis readiness.
-
-### Specialist convergence
+## The Principle
+
+> LLM owns semantics. Runtime owns mechanics.
+
+Alfred interprets intent, continuity, and completion using model reasoning.
+Deterministic code persists memory, validates schemas, enforces safety, and executes tools.
+
+---
+
+## Why the Old Architecture Failed
+
+### The Planner-Per-Iteration Pattern
+
+Before the March 2026 rewrite, Alfred's execution loop looked like this:
+
+```
+User message
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│  runAlfredOrchestratorLoop (~3,200 lines)            │
+│                                                      │
+│  for each iteration (max 6):                        │
+│    │                                                 │
+│    ├─ 1. TurnInterpretation LLM call                 │
+│    │     ↳ derives task type, contract, constraints  │
+│    │                                                 │
+│    ├─ 2. Planner LLM call                            │
+│    │     ↳ "what is the single next action?"         │
+│    │     ↳ serializes all state to JSON for context  │
+│    │                                                 │
+│    ├─ 3. Guard layer (mechanical + semantic mixed)   │
+│    │     ↳ buildDirectExecutionOverrideForDelegation │
+│    │     ↳ buildAlfredMechanicalRecoveryHint         │
+│    │     ↳ buildSearchStalledOverride                │
+│    │     ↳ ... multiple competing guards             │
+│    │                                                 │
+│    └─ 4. Execute one tool, serialize output to JSON  │
+│                                                      │
+└─────────────────────────────────────────────────────┘
+```
+
+**What went wrong in practice:**
+
+```
+Iteration 1: Planner → "search for family games 2024"
+Iteration 2: Planner → "search for multiplayer games 2025"   ← should have fetched
+Iteration 3: Planner → "search for family multiplayer 2026"  ← still searching
+[buildSearchStalledOverride fires]
+Iteration 4: OVERRIDE → web_fetch (URLs from iter 1-3)
+Iteration 5: Planner → "search for more games"              ← regressed back!
+[buildSearchStalledOverride fires again, same URLs]
+Iteration 6: OVERRIDE → web_fetch (same URLs, redundant)
+→ Loop exhausted. No synthesis. No answer.
+```
+
+**Root causes:**
+
+1. **State serialization loss** — at each iteration, all context is compressed to JSON and handed to a fresh planner call. The model loses continuity of what it just saw.
+
+2. **Competing semantic layers** — TurnInterpretation, the planner directive, mechanical hints, and guard overrides all tried to control the same decision (search vs fetch vs respond). They conflicted.
+
+3. **One tool per iteration** — the model could not naturally chain search → fetch → respond. Every step required burning an iteration and a planner LLM call.
+
+4. **Tight maxIterations** — with 6 iterations and a bad sequence, synthesis never had a slot.
+
+---
+
+## The New Architecture
+
+### Overview
+
+```
+User message
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│  runOrchestrator                                     │
+│                                                      │
+│  1. One classification LLM call (gpt-4o-mini)        │
+│     ↳ research | writing | lead | ops               │
+│                                                      │
+│  2. Select SpecialistConfig                          │
+│     ↳ system prompt + tool allowlist + model        │
+└───────────────────────┬─────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────┐
+│  runAgentLoop (native tool-calling)                  │
+│                                                      │
+│  Messages = [ system, user ]                        │
+│                                                      │
+│  loop:                                              │
+│    ├─ LLM call (full conversation in context)        │
+│    │                                                 │
+│    ├─ finish_reason == "stop"?                       │
+│    │   └─ return assistantText ✓                    │
+│    │                                                 │
+│    └─ finish_reason == "tool_calls"?                 │
+│        ├─ execute tool_1 → append result to messages │
+│        ├─ execute tool_2 → append result to messages │
+│        └─ continue loop (model sees all results)     │
+│                                                      │
+└─────────────────────────────────────────────────────┘
+```
 
-- Research tasks now default to `requiresAssembly=true`, which prevents premature completion after a single shortlist/search step.
-- Specialist planner responses now also use explicit `responseKind`.
-- Delegated research contracts default to `clarificationAllowed=false` unless the task contract says otherwise.
-- Unsupported long-form `respond` attempts are blocked when evidence and synthesis state do not justify them.
-- Evidence readiness is now separated from final completion gaps. Alfred can distinguish:
-  - enough evidence to synthesize
-  - not yet enough for final polish/citations/artifacts
-- When runtime state is clearly `fetch_pending`, search-only replans can be mechanically corrected into fetch/evidence actions.
-- When runtime state is clearly `fetch_pending`, repeated `file_read` or `file_read + search` plans can also be corrected into fetch/evidence actions instead of rereading the same stale artifact.
-- Planner timeouts during `discovery_complete_fetch_pending` can recover into fetch instead of burning another shortlist/search iteration.
-- Specialist discovery source tracking is now constrained to discovery/fetch tool outputs (search/shortlist/fetch), so URLs embedded inside `file_read` memo content no longer poison source discovery or trigger malformed fetch loops.
+**What the same task looks like now:**
 
-### Writer readiness
+```
+Messages: [system, user: "list 10 family games 2024-2026"]
 
-- Specialist runtime now computes shared `writerReadiness` from:
-  - evidence readiness
-  - synthesis state
-  - time budget viability
-  - output contract readiness
-- Low-budget forced writer fallback is no longer treated as an acceptable completion strategy.
-- Search/synthesis loops can reroute into assembly when evidence is ready, rather than waiting for a low-budget emergency finalize path.
-- Low-confidence placeholder drafts from failed low-budget or no-output writer passes are no longer persisted as new artifacts by default.
-- Writer-quality signals now drive reusable-body classification across runtime memory:
-  - specialist loop records last writer output availability and deliverable status
-  - assembly tasks only become `complete` when a reusable synthesized body exists
-  - persisted artifacts from insufficient writer outputs remain `metadata_only` instead of being treated as finished bodies
-- Specialist generation inputs are now rebuilt from the immutable task contract before execution:
-  - hardcoded `blog_post` / `memo` recovery defaults are gone from assembly/retry/finalize call sites
-  - planner-supplied writer actions are normalized back to contract-derived shape hints and deliverable instructions
-  - ranked lists, comparisons, briefs, tables, and other non-article contracts now enter generation as contract-preserving `notes`-style outputs instead of article defaults
-- `writer_agent` itself is now a plain generation tool:
-  - one bounded generation pass
-  - mechanical quality checks
-  - artifact persistence
-  - no writer-owned intent/review/repair stack
+LLM call 1:
+  → tool_calls: [search("family multiplayer games 2024 2026")]
 
-### Output availability contract
+Execute search → append result to messages
 
-- Specialist stop/failure handling now emits explicit output availability:
-  - `body_available`
-  - `metadata_only`
-  - `missing`
-- Final contract/failure paths now distinguish:
-  - reusable body
-  - recoverable metadata only
-  - no recoverable output
-- Session-output recovery now also respects writer quality metadata, so old placeholder drafts or planning memos no longer re-enter later turns as `body_available`.
-- This prevents placeholder or low-evidence outcomes from masquerading as reusable completed drafts.
+LLM call 2:
+  → tool_calls: [web_fetch(urls=[...])]   ← model decides to fetch, not search again
 
-## Refactor Status By Phase
+Execute web_fetch → append page content to messages
 
-### Phase 1: Model-Owned Turn Interpretation
+LLM call 3:
+  → finish_reason: "stop"
+  → content: "Here are 10 family-friendly multiplayer games..."  ✓
+```
 
-Status: substantially implemented
+No state serialization. No competing guards. The model sees its own prior tool results in full context and decides naturally when it has enough to answer.
 
-Delivered:
+---
 
-- structured turn interpretation for execute-mode plaintext turns
-- immutable turn contract built from grounded interpretation
-- clarification now model-signaled instead of punctuation-signaled
-- downstream delegated research contracts now preserve interpretation-owned draft/citation/word-count/path semantics instead of re-deriving them from the raw message
-- specialist fallback contracts no longer regex-infer draft/citation intent from prompt text
+## File Map
 
-Remaining:
+### New Files
 
-- remove more fallback prompt heuristics where they still influence task setup when model interpretation is unavailable
+| File | Role | Lines |
+|---|---|---|
+| `src/core/orchestrator.ts` | Classification LLM call → specialist selection | ~110 |
+| `src/core/agentLoop.ts` | Native tool-calling loop | ~200 |
+| `src/core/specialists.ts` | 4 specialist configs (system prompts + tool allowlists) | ~110 |
 
-### Phase 2: Explicit Planner Response Kind
+### Modified Files
 
-Status: implemented in Alfred and specialist loops
+| File | Change |
+|---|---|
+| `src/services/openAiClient.ts` | Added `runOpenAiToolCallWithDiagnostics` — native tool-call format |
+| `src/core/runReActLoop.ts` | Simplified: calls `runOrchestrator` instead of the old 3,200-line loop |
 
-Delivered:
+### Deleted Files
 
-- planner-visible `responseKind`
-- explicit distinction between final, clarification, and progress responses
+| File | Why deleted |
+|---|---|
+| `src/core/runAlfredOrchestratorLoop.ts` | Replaced by orchestrator + agentLoop |
+| `src/core/runLeadAgenticLoop.ts` | Lead specialist now runs via agentLoop |
+| `src/core/runSpecialistToolLoop.ts` | Specialist routing now via specialists.ts + agentLoop |
+| `src/core/runAgentLoop.ts` | Was a thin wrapper over the skills registry |
+| `src/agent/skills/leadAgentSkill.ts` | Skills registry replaced by SpecialistConfig |
+| `src/agent/skills/opsAgentSkill.ts` | Same |
+| `src/agent/skills/registry.ts` | Same |
+| `src/agent/skills/types.ts` | Same |
 
-Remaining:
+---
 
-- none material for this phase
+## Specialists
 
-### Slice 2: Execution Loop Simplification
+Each specialist is a plain config object: a system prompt, a curated tool allowlist, a model, and a max iteration count.
 
-Status: implemented for the current runtime boundary
+```
+Research  → search, web_fetch, search_status, recover_search
+Writing   → search, web_fetch, writer_agent, search_status
+Lead      → lead_search_shortlist, web_fetch, lead_extract, email_enrich, lead_pipeline, write_csv
+Ops       → file_list, file_read, file_write, file_edit, shell_exec, process_list, process_stop
+```
 
-Delivered so far:
+The system prompt for each specialist contains:
+- The Alfred identity block (shared)
+- Role-specific pipeline instructions (e.g. Research: strict discover→fetch→synthesize sequence)
+- Rules that encode what was previously mechanical guard logic
 
-- Alfred now prevents general-task delegation to `research_agent` by converting that planner action into direct tool execution inside Alfred's own loop.
-- Alfred now also stops advertising `research_agent` to the planner for general-task contracts.
-- Alfred can reuse existing session artifacts with direct `file_read` when a general-task follow-up already points to a reusable stored body.
-- `research_agent` is no longer registered as a public specialist skill, so the runtime no longer exposes a dead general-purpose delegation target.
+---
 
-Remaining:
+## How Tool Context State Still Works
 
-- decide whether any non-general research-specialist responsibilities should survive as separate skills or move into Alfred/tool mechanics
+All existing tool definitions (`search.tool.ts`, `webFetch.tool.ts`, `writerAgent.tool.ts`, etc.) are unchanged. They still receive a `LeadAgentToolContext` with mutable state callbacks (`setFetchedPages`, `setResearchSourceCards`, `addLeads`, etc.).
 
-### Phase 3: Generic Active Work State
+The difference: this state is now a side-channel for tools that need it (e.g. `writer_agent` reads source cards set by a prior `web_fetch` call). The primary information channel is the native conversation — tool results come back as `role: "tool"` messages and the model reads them directly.
 
-Status: implemented
+```
+web_fetch called
+  → sets context.fetchedPages (for writer_agent)
+  → returns JSON summary to conversation (for model reasoning)
 
-Delivered:
+writer_agent called
+  → reads context.researchSourceCards for citations
+  → generates draft
+  → returns draft content + outputPath to conversation
+```
 
-- generic cognition state across runtime contexts
-- planner-visible `activeWorkState`
-- recent output registry and durable recent-output recovery
+---
 
-Remaining:
+## Classification Logic
 
-- continue using this state to replace remaining heuristic progression logic
+The orchestrator uses fast heuristics before calling the LLM:
 
-### Phase 4: Evidence-Driven Specialist Convergence
+```
+"find me leads / contacts / companies"  → lead (regex match)
+"write / draft / article / blog"        → writing (regex match)
+"run / exec / shell / file / script"    → ops (regex match)
+everything else                         → research (LLM call)
+```
 
-Status: implemented for the current runtime boundary
+The LLM classification uses `gpt-4o-mini` with a 10-second timeout and a simple 4-way enum schema. Failure defaults to `research`.
 
-Delivered:
+---
 
-- evidence-backed response blocking
-- `requiresAssembly` for research-style tasks
-- evidence readiness separated from completion gaps
-- fetch-pending mechanical recovery
-- assembly-first rerouting
-- explicit output availability in stop/failure paths
+## What This Fixes
 
-Remaining:
+| Old problem | New behaviour |
+|---|---|
+| Planner could call search 6x without fetching | Model sees its own prior search results; the research specialist system prompt enforces max 2 searches before fetch |
+| Guards competed with planner, causing hijacking bugs | Guards are gone. Rules live in the system prompt. |
+| `maxIterations=6` was the only safety net | Model stops itself via `finish_reason: stop`; maxIterations is a hard ceiling only |
+| State lost between iterations via JSON serialization | Full conversation history is in context — nothing is discarded |
+| Two LLM calls per iteration (interpretation + planner) | One LLM call per iteration, no separate planner |
 
-- reduce the last specialist loop guards that still encode progression heuristics instead of relying purely on model-produced state plus runtime mechanics
+---
 
-### Phase 5: Writer Readiness Contract
+## What's Still Pending
 
-Status: implemented
+- **Heartbeat events** — the old loop emitted `heartbeat` events that drove the UI elapsed-time ticker. The new loop does not. A lightweight interval-based emitter should be added to `agentLoop.ts`.
+- **Model thought events** — the UI's thinking panel expected `alfred_plan_created` events with the planner's reasoning text. The new loop doesn't emit these. Should emit the assistant's text content (when present alongside tool calls) as a `thought` phase event.
+- **Automated tests for new core files** — `agentLoop.ts`, `orchestrator.ts`, and `specialists.ts` have no unit tests yet. Deferred until post-validation of the live pipeline. Tracked in `docs/to_revisit.md`.
 
-Delivered:
+---
 
-- shared `writerReadiness`
-- viable writer time-window checks
-- no forced low-budget writer sink
-- no placeholder draft persistence as fresh output by default
-- finalization logic distinguishes reusable body vs metadata-only vs missing
-- writer core no longer defaults to `section plan -> section passes -> polish`; it is now a bounded one-pass generation tool that drafts directly in the requested shape and reports mechanical quality against the contract
-- specialist writer call sites now derive generation format/instructions from the immutable contract and normalize planner-provided writer payloads before execution
+## Design Principle (Restated)
 
-Remaining:
+The refactor is the implementation of the principle stated at the top.
 
-- tighten any remaining response paths that still treat weak draft state too optimistically
+The old loop had deterministic code doing semantic work: deciding what constitutes "enough searching," when to transition phases, what counts as a completed synthesis. That's the LLM's job.
 
-### Phase 6: Remaining Heuristic Ownership
-
-Status: implemented for the current runtime boundary
-
-Delivered in this phase so far:
-
-- orchestrator fallback objective setup no longer re-derives task type, hard constraints, draft intent, citation intent, or target word count from raw prompt heuristics
-- fresh missing-interpretation turns now degrade to a minimal generic contract plus explicit mechanical constraints like requested output path
-- canonical lead-brief generation in the main turn path is now interpretation-owned instead of keyword-owned
-- specialist schema-repair and writer/finalize guards now key off the passed contract and available tools instead of `research_agent` skill-name semantics
-- fallback specialist setup now degrades to a generic minimal specialist contract instead of reintroducing research semantics from skill identity
-- Alfred-local direct research now uses mechanical search-to-fetch recovery once enough candidate URLs are discovered, instead of repeatedly re-owning discovery semantics
-
-Residual risk:
-
-- runtime hardening is still needed for noisy real-world evidence quality and planner repetition, but that is now a behavior/reliability problem inside the simplified architecture rather than a duplicate-semantic-ownership problem
-
-### Completion Authority
-
-Status: implemented for the current runtime boundary
-
-Delivered:
-
-- the separate outer completion-evaluator model call has been removed from Alfred's loop
-- final `respond` acceptance now flows through the canonical contract gate after the same Alfred planner reassessment path
-- successful tool and delegation results now flow back into the same Alfred planner for reassessment, instead of being judged by a second semantic model
-
-Remaining:
-
-- finish collapsing the remaining deterministic contract gate so final-answer acceptance is both single-owner and less heuristic
-
-## Deterministic Code That Should Remain
-
-These should stay deterministic:
-
-- `/commands`
-- schema validation
-- file path extraction
-- tool approval and policy gates
-- budget / timeout / cancellation
-- persistence and retrieval
-- artifact existence checks
-- runtime recovery when state already makes the next mechanical step obvious
-
-## Success Criteria
-
-Alfred should behave like:
-
-`reason(current_turn + session_context + recoverable_memory) -> act -> persist -> continue`
-
-Not like:
-
-`classify(prompt with heuristics) -> run fixed branch -> hope it fits`
+The new loop has deterministic code doing mechanical work: executing tools, appending results to the conversation, enforcing hard limits (timeout, max iterations, cancellation). The model decides everything else.

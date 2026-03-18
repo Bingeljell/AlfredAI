@@ -242,7 +242,7 @@ function buildQueryExpansionSystemPrompt(): string {
     {
       label: "Directives",
       content:
-        "First clarify the objective into an objectiveBrief (what to find, for whom, where, B2B/B2C/supplier orientation, contact requirements, and missing constraints). Then rewrite the request into 3-5 targeted search queries for discovering real company entities. Respect explicit filter context (employee-count constraints, country, industry keywords, email intent). Also output a targetLeadCount integer when user intent specifies quantity."
+        "First clarify the objective into an objectiveBrief (what to find, for whom, where, B2B/B2C/supplier orientation, contact requirements, and missing constraints). Then rewrite the request into 3-5 BROAD discovery queries targeting directories, association member lists, and aggregator pages where many companies of this type appear. DO NOT embed employee counts, size ranges, or 'site:' operators in queries — those filters are applied at extraction time, not search time. Use industry and geography terms freely. Also output a targetLeadCount integer when user intent specifies quantity."
     }
   ]);
 }
@@ -694,27 +694,22 @@ function extractSignalTerms(message: string): string[] {
 
 function fallbackQueryExpansion(message: string, filters: NormalizedLeadPipelineFilters | undefined): string[] {
   const location = filters?.country ?? parseLocationHint(message);
-  const sizeClause = filters?.employeeCountMax ? ` under ${filters.employeeCountMax} employees` : "";
   const lower = message.toLowerCase();
   const signalTerms = filters?.industryKeywords?.length ? filters.industryKeywords : extractSignalTerms(message);
   const anchor = signalTerms.length > 0 ? signalTerms.join(" ") : "target";
   const locationClause = location ? ` ${location}` : "";
+  // Do NOT include size/employee-count clauses in queries — they make search too restrictive.
+  // Size filtering happens at extraction time, not search time.
   const base = new Set<string>();
-  base.add(message.replace(/\s+/g, " ").trim());
-  base.add(`${anchor} companies${locationClause}${sizeClause}`);
-  base.add(`${anchor} company directory${locationClause}${sizeClause}`);
-  base.add(`${anchor} top companies${locationClause}${sizeClause}`);
-  if (inferBusinessModelHint(message)) {
-    base.add(`${inferBusinessModelHint(message)} ${anchor} companies${locationClause}${sizeClause}`);
-  }
+  base.add(`${anchor} companies${locationClause}`);
+  base.add(`${anchor} company directory${locationClause}`);
+  base.add(`list of ${anchor} companies${locationClause}`);
+  base.add(`${anchor} association members${locationClause}`);
   if (filters?.requireEmail || /\bemail|emails|contact\b/i.test(message)) {
     base.add(`${anchor} company contact email${locationClause}`);
   }
   if (filters?.industryKeywords?.length) {
-    base.add(`${filters.industryKeywords.join(" ")} companies${locationClause}${sizeClause}`);
-  }
-  if (location) {
-    base.add(`${anchor} companies site:linkedin.com/company ${location}${sizeClause}`);
+    base.add(`${filters.industryKeywords.join(" ")} firms${locationClause}`);
   }
   return Array.from(base)
     .map((query) => query.replace(/\s+/g, " ").trim())

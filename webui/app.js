@@ -1561,6 +1561,14 @@ els.telemetryFilter.addEventListener('input', () => {
   renderTelemetryRuns();
 });
 
+els.telemetryRuns.addEventListener('click', async (event) => {
+  const item = event.target.closest('[data-run-id]');
+  if (!item?.dataset.runId) return;
+  await loadRun(item.dataset.runId);
+  renderTelemetryRuns();
+  renderTelemetry();
+});
+
 els.refreshRuns.addEventListener('click', () => {
   void refreshSessionRuns().then(async () => {
     if (state.activeRunId) {

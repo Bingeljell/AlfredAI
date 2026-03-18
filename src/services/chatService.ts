@@ -173,6 +173,7 @@ export class ChatService {
     const context: SessionPromptContext = {
       activeObjective: memory.activeObjective,
       lastRunId: memory.lastRunId,
+      lastSpecialist: memory.lastSpecialist,
       lastCompletedRun,
       lastArtifacts: memory.lastArtifacts?.slice(0, 5),
       lastOutcomeSummary: memory.lastOutcomeSummary,
@@ -242,6 +243,9 @@ export class ChatService {
     if (outcome.status === "completed") {
       memoryPatch.lastCompletedRunId = runId;
       memoryPatch.lastCompletedAt = new Date().toISOString();
+    }
+    if (outcome.specialist) {
+      memoryPatch.lastSpecialist = outcome.specialist;
     }
 
     memoryPatch.recentTurns = this.appendRecentTurn(existingMemory?.recentTurns, {

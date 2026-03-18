@@ -57,13 +57,11 @@ async function classifyTask(
   if (/\b(lead|leads|prospect|contact|email.{0,20}compan|compan.{0,20}email|find.{0,30}compan|list.{0,30}compan)\b/.test(lower)) {
     return "lead";
   }
-  // Follow-up / retry messages inherit the active specialist when the objective is lead-gen
-  const isFollowUp = /\b(retry|retrying|try again|relax|loosen|adjust|same (thing|search|query|criteria)|more results?|fewer results?|expand|broaden|tighten|run it again|redo|re-run)\b/.test(lower);
-  if (isFollowUp && sessionContext?.activeObjective) {
-    const objLower = sessionContext.activeObjective.toLowerCase();
-    if (/\b(lead|leads|prospect|msp|contact|email.{0,20}compan|compan.{0,20}email|find.{0,30}compan|list.{0,30}compan)\b/.test(objLower)) {
-      return "lead";
-    }
+  // Follow-up / retry messages: if the message has no strong new intent signal,
+  // inherit the last specialist from session memory (deterministic, no pattern matching).
+  const isFollowUp = /\b(retry|retrying|try again|relax|loosen|adjust|same (thing|search|query|criteria)|more results?|fewer results?|expand|broaden|tighten|run it again|redo|re-run|refine|try more)\b/.test(lower);
+  if (isFollowUp && sessionContext?.lastSpecialist) {
+    return sessionContext.lastSpecialist as SpecialistName;
   }
   if (/\b(write|draft|article|blog|post|memo|email.{0,20}write|write.{0,20}email|outline|newsletter)\b/.test(lower)) {
     return "writing";
@@ -135,7 +133,7 @@ export async function runOrchestrator(options: OrchestratorOptions): Promise<Run
 
   const spec = getSpecialistConfig(specialistName);
 
-  return runAgentLoop({
+  const outcome = await runAgentLoop({
     runId,
     sessionId,
     message,
@@ -154,4 +152,5 @@ export async function runOrchestrator(options: OrchestratorOptions): Promise<Run
     sessionContext,
     isCancellationRequested
   });
+  return { ...outcome, specialist: specialistName };
 }

@@ -75,6 +75,7 @@ export interface SessionWorkingMemory {
   recentTurns?: SessionTurnSnippet[];
   recentOutputs?: SessionOutputRecord[];
   unresolvedItems?: string[];
+  lastSpecialist?: string;
 }
 
 export interface SessionTurnSnippet {
@@ -87,6 +88,7 @@ export interface SessionTurnSnippet {
 export interface SessionPromptContext {
   activeObjective?: string;
   lastRunId?: string;
+  lastSpecialist?: string;
   lastCompletedRun?: {
     runId: string;
     message?: string;
@@ -202,4 +204,5 @@ export interface RunOutcome {
   assistantText?: string;
   artifactPaths?: string[];
   approvalToken?: string;
+  specialist?: string;
 }

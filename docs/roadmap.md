@@ -1,6 +1,6 @@
 # Alfred Expansion Roadmap
 
-> Last updated: 2026-03-18
+> Last updated: 2026-03-18 (Track 0 added)
 
 ## Core Status
 
@@ -10,7 +10,98 @@ The March 17 native tool-calling rewrite is stable. The core (orchestrator → a
 
 ## Tracks (in priority order)
 
-### 1. Second Brain (QMD Memory)
+### 0. Multi-Provider LLM Support ⬅ next
+
+**Problem:** Every LLM call is hardcoded to OpenAI. Model names (`gpt-4o`, `gpt-4o-mini`) are hardcoded in `specialists.ts` and `orchestrator.ts`. Alfred can't use Claude, Gemini, or local open-source models, and users have no way to configure their preferred provider or models without changing code.
+
+**What already exists:** `src/services/llm/` has a correct `LlmProvider` interface (`generateText`, `generateStructured`), an `OpenAiLlmProvider` implementation, and a `router.ts` with provider fallback logic. The problem is adoption — only `writerAgent` uses this abstraction. The agent loop, orchestrator, and session extractor all call `openAiClient.ts` directly.
+
+**What's missing:**
+1. `generateWithTools()` not in `LlmProvider` interface — native tool-calling is the core of `agentLoop.ts` and each provider has a different wire format
+2. No `AnthropicLlmProvider`, `GeminiLlmProvider`, or `OllamaLlmProvider`
+3. Model names not configurable — must change code to switch models
+4. `agentLoop.ts` and `orchestrator.ts` bypass the provider abstraction entirely
+
+**Tool-calling format differences:**
+
+| Provider | Tool call format |
+|---|---|
+| OpenAI / Ollama | `tool_calls[].function.arguments` (JSON string) |
+| Anthropic | `tool_use[].input` (JSON object) |
+| Gemini | `functionCall[].args` (JSON object) |
+
+Each provider implementation handles the translation internally — the agent loop sees a unified interface.
+
+**`.env` additions:**
+```bash
+# Primary provider (openai | anthropic | gemini | ollama)
+ALFRED_LLM_PROVIDER=openai
+
+# Model roles — configurable without code changes
+ALFRED_MODEL_FAST=gpt-4o-mini     # classification, session extractor, lead extraction
+ALFRED_MODEL_SMART=gpt-4o         # specialist agent loops
+
+# API keys — Alfred activates whichever providers have keys present
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+GOOGLE_GEMINI_API_KEY=...
+OLLAMA_BASE_URL=http://localhost:11434   # local / open-source models
+```
+
+Setting `ALFRED_MODEL_SMART=gpt-5` (or `claude-opus-4-6`, `gemini-2.0-flash`, etc.) propagates to all specialist loops with no code change.
+
+**Setup wizard (first run):** When Alfred starts and detects no provider keys, it will prompt interactively to choose a provider and paste an API key. This is a first-run onboarding flow — fits naturally alongside Track 5 (open source packaging) but the env var mechanism works immediately.
+
+**Implementation steps:**
+
+1. **Extend `LlmProvider` interface** (`src/services/llm/types.ts`)
+   - Add `generateWithTools(request: LlmToolCallRequest): Promise<LlmToolCallResult>`
+   - Define unified `LlmToolDef`, `LlmToolCall`, `LlmConversationMessage` types (provider-agnostic)
+
+2. **Update `OpenAiLlmProvider`** (`src/services/llm/openAiProvider.ts`)
+   - Implement `generateWithTools` by delegating to `runOpenAiToolCallWithDiagnostics`
+
+3. **Add `AnthropicLlmProvider`** (`src/services/llm/anthropicProvider.ts`)
+   - Uses `@anthropic-ai/sdk`
+   - Translates `tool_use` ↔ unified tool call format
+   - Implements all three methods
+
+4. **Add `GeminiLlmProvider`** (`src/services/llm/geminiProvider.ts`)
+   - Uses `@google/genai` SDK
+   - Translates `functionCall` ↔ unified format
+
+5. **Add `OllamaLlmProvider`** (`src/services/llm/ollamaProvider.ts`)
+   - Ollama exposes an OpenAI-compatible API — thin wrapper that sets `baseURL` to `OLLAMA_BASE_URL`
+   - Reuses OpenAI wire format
+
+6. **Wire env config** (`src/config/env.ts`)
+   - Add `ALFRED_LLM_PROVIDER`, `ALFRED_MODEL_FAST`, `ALFRED_MODEL_SMART`, and provider API key vars
+   - Build a `createLlmProviders()` factory that reads config and returns the active provider list
+
+7. **Migrate `agentLoop.ts`** to use `provider.generateWithTools()` instead of `runOpenAiToolCallWithDiagnostics`
+
+8. **Migrate `orchestrator.ts`** to use `provider.generateStructured()` instead of `runOpenAiStructuredChatWithDiagnostics`
+
+9. **Migrate `sessionExtractor.ts`** to use `provider.generateStructured()`
+
+10. **Pull model names from config** in `specialists.ts` — replace `"gpt-4o"` / `"gpt-4o-mini"` with `appConfig.modelSmart` / `appConfig.modelFast`
+
+**Files to create/modify:**
+- `src/services/llm/types.ts` — add tool-calling types
+- `src/services/llm/openAiProvider.ts` — add `generateWithTools`
+- `src/services/llm/anthropicProvider.ts` — new
+- `src/services/llm/geminiProvider.ts` — new
+- `src/services/llm/ollamaProvider.ts` — new
+- `src/services/llm/registry.ts` — new: `createLlmProviders()` factory
+- `src/config/env.ts` — add provider + model env vars
+- `src/core/agentLoop.ts` — use provider abstraction
+- `src/core/orchestrator.ts` — use provider abstraction
+- `src/memory/sessionExtractor.ts` — use provider abstraction
+- `src/core/specialists.ts` — pull model names from config
+
+---
+
+### 1. Second Brain (QMD Memory) ✅ Done
 
 **Problem:** Daily notes are written to `knowledge/Daily/YYYY/MM/DD.md` but never read. Alfred has no memory of prior research, leads, or user decisions across sessions.
 
@@ -156,7 +247,8 @@ Adapter sends response back to platform
 
 | Order | Track | Rationale |
 |---|---|---|
-| 1 | Second brain (QMD) | Foundational — all other tracks benefit from memory |
+| 0 | Multi-provider LLM | ⬅ next — every subsequent track benefits from model flexibility |
+| 1 | Second brain (QMD) | ✅ Done |
 | 2 | Video clipper tool | Quick win, validates tool extensibility pattern |
 | 3 | Self-awareness (dev specialist) | Multiplies iteration speed for all subsequent work |
 | 4 | Channels | Needs stable core + memory first |
@@ -166,6 +258,7 @@ Adapter sends response back to platform
 
 ## Verification Checklist
 
+- **Multi-provider**: Set `ALFRED_LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` → run a research query → confirm Alfred responds using Claude. Set `ALFRED_MODEL_FAST=gpt-4o-mini` and `ALFRED_MODEL_SMART=gpt-4o` → verify correct models appear in run diagnostics.
 - **Second brain**: Ask Alfred about a topic researched in a prior session → `rag_memory_query` should return relevant chunks before web search fires
 - **Dev specialist**: Ask Alfred to "add a tool that returns the current time" → verify it writes the file, runs tsc clean, tool appears on next server start
 - **Channels**: Send a message from WhatsApp/Telegram → receive a response with correct session continuity

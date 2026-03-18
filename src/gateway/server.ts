@@ -25,7 +25,8 @@ async function bootstrap(): Promise<void> {
       chatService,
       sessionStore,
       runStore,
-      appConfig.workspaceDir
+      appConfig.workspaceDir,
+      appConfig.telegramAllowedUserIds
     );
     await telegram.start();
   }

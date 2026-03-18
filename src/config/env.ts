@@ -51,7 +51,9 @@ const EnvSchema = z.object({
   ALFRED_AGENT_OBSERVATION_WINDOW: z.coerce.number().int().min(3).max(20).default(8),
   ALFRED_AGENT_DIMINISHING_THRESHOLD: z.coerce.number().int().min(1).max(10).default(2),
   // ─── Channels ─────────────────────────────────────────────────────────────
-  TELEGRAM_BOT_TOKEN: z.string().optional()
+  TELEGRAM_BOT_TOKEN: z.string().optional(),
+  // Comma-separated Telegram user IDs allowed to interact with the bot
+  TELEGRAM_ALLOWED_USER_IDS: z.string().default("")
 });
 
 const parsed = EnvSchema.parse(process.env);
@@ -100,7 +102,13 @@ export const appConfig = {
   agentPlannerMaxCalls: parsed.ALFRED_AGENT_PLANNER_MAX_CALLS,
   agentObservationWindow: parsed.ALFRED_AGENT_OBSERVATION_WINDOW,
   agentDiminishingThreshold: parsed.ALFRED_AGENT_DIMINISHING_THRESHOLD,
-  telegramBotToken: parsed.TELEGRAM_BOT_TOKEN
+  telegramBotToken: parsed.TELEGRAM_BOT_TOKEN,
+  telegramAllowedUserIds: parsed.TELEGRAM_ALLOWED_USER_IDS
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map(Number)
+    .filter((n) => !isNaN(n))
 };
 
 export function getPolicyMode(): PolicyMode {

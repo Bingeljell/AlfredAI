@@ -25,7 +25,8 @@ export class TelegramAdapter implements ChannelAdapter {
     private readonly chatService: ChatService,
     private readonly sessionStore: SessionStore,
     private readonly runStore: RunStore,
-    private readonly workspaceDir: string
+    private readonly workspaceDir: string,
+    private readonly allowedUserIds: number[] = []
   ) {
     this.bot = new TelegramBot(token, { polling: true });
     this.channelStore = new ChannelSessionStore(workspaceDir);
@@ -66,6 +67,13 @@ export class TelegramAdapter implements ChannelAdapter {
 
   private async handleMessage(msg: TelegramBot.Message): Promise<void> {
     const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+
+    if (this.allowedUserIds.length > 0 && (!userId || !this.allowedUserIds.includes(userId))) {
+      await this.send(chatId, "Unauthorized.");
+      return;
+    }
+
     const text = msg.text?.trim();
     if (!text) return;
 

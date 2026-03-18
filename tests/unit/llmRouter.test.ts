@@ -40,6 +40,10 @@ class FakeProvider implements LlmProvider {
       attempts?: number;
     }>;
   }
+
+  async generateWithTools(): Promise<never> {
+    throw new Error("generateWithTools not implemented in FakeProvider");
+  }
 }
 
 test("runStructuredWithFallback fails over to second provider on network timeout", async () => {

@@ -22,6 +22,7 @@ interface OpenAiChatOptions {
   messages: OpenAiMessage[];
   timeoutMs?: number;
   maxAttempts?: number;
+  baseUrl?: string;
 }
 
 interface OpenAiResponse {
@@ -40,6 +41,7 @@ interface OpenAiResponse {
 interface OpenAiStructuredChatOptions extends OpenAiChatOptions {
   schemaName: string;
   jsonSchema: Record<string, unknown>;
+  // baseUrl inherited from OpenAiChatOptions
 }
 
 export type ChatFailureCode =
@@ -290,7 +292,7 @@ export async function runOpenAiChatWithDiagnostics(options: OpenAiChatOptions): 
   for (let attempt = 1; attempt <= retryPolicy.maxAttempts; attempt += 1) {
     let response: Response;
     try {
-      response = await fetch("https://api.openai.com/v1/chat/completions", {
+      response = await fetch(`${options.baseUrl ?? "https://api.openai.com"}/v1/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -456,6 +458,7 @@ interface OpenAiToolCallOptions {
   tools: OpenAiToolDef[];
   timeoutMs?: number;
   maxAttempts?: number;
+  baseUrl?: string;
 }
 
 interface OpenAiToolCallResponsePayload {
@@ -512,7 +515,7 @@ export async function runOpenAiToolCallWithDiagnostics(options: OpenAiToolCallOp
   for (let attempt = 1; attempt <= retryPolicy.maxAttempts; attempt += 1) {
     attempts = attempt;
     try {
-      response = await fetch("https://api.openai.com/v1/chat/completions", {
+      response = await fetch(`${options.baseUrl ?? "https://api.openai.com"}/v1/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -662,7 +665,7 @@ export async function runOpenAiStructuredChatWithDiagnostics<T>(
   for (let attempt = 1; attempt <= retryPolicy.maxAttempts; attempt += 1) {
     attempts = attempt;
     try {
-      response = await fetch("https://api.openai.com/v1/chat/completions", {
+      response = await fetch(`${options.baseUrl ?? "https://api.openai.com"}/v1/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

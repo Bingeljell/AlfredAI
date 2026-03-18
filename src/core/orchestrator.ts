@@ -4,7 +4,8 @@ import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import type { LeadAgentDefaults } from "../agent/types.js";
 import type { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
-import { runOpenAiStructuredChatWithDiagnostics } from "../services/openAiClient.js";
+import { getActiveLlmProvider } from "../services/llm/registry.js";
+import { appConfig } from "../config/env.js";
 import { getSpecialistConfig } from "./specialists.js";
 import { runAgentLoop } from "./agentLoop.js";
 
@@ -47,14 +48,8 @@ function nowIso(): string {
 
 async function classifyTask(
   message: string,
-  apiKey: string | undefined,
   sessionContext: SessionPromptContext | undefined
 ): Promise<SpecialistName> {
-  if (!apiKey) {
-    // Default to research if no API key (will fail later with a clear error)
-    return "research";
-  }
-
   // Quick heuristics to skip the LLM call for obvious cases
   const lower = message.toLowerCase();
   if (/\b(lead|leads|prospect|contact|email.{0,20}compan|compan.{0,20}email|find.{0,30}compan|list.{0,30}compan)\b/.test(lower)) {
@@ -71,10 +66,10 @@ async function classifyTask(
     ? `User objective context: ${sessionContext.activeObjective}\n\nUser message: ${message}`
     : message;
 
-  const result = await runOpenAiStructuredChatWithDiagnostics(
+  const provider = getActiveLlmProvider();
+  const result = await provider.generateStructured(
     {
-      apiKey,
-      model: "gpt-4o-mini",
+      model: appConfig.modelFast,
       messages: [
         { role: "system", content: CLASSIFICATION_SYSTEM_PROMPT },
         { role: "user", content: userContent }
@@ -116,7 +111,7 @@ export async function runOrchestrator(options: OrchestratorOptions): Promise<Run
   } = options;
 
   const classifyStart = Date.now();
-  const specialistName = await classifyTask(message, openAiApiKey, sessionContext);
+  const specialistName = await classifyTask(message, sessionContext);
   const classifyMs = Date.now() - classifyStart;
 
   await runStore.appendEvent({

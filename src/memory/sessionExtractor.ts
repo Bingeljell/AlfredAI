@@ -1,7 +1,8 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { runOpenAiStructuredChat } from "../services/openAiClient.js";
+import { getActiveLlmProvider } from "../services/llm/registry.js";
+import { appConfig } from "../config/env.js";
 import { ensureDir } from "../utils/fs.js";
 
 const NoteSchema = z.object({
@@ -30,18 +31,16 @@ export async function extractAndSaveSessionNotes(options: {
   sessionId: string;
   message: string;
   assistantText: string;
-  openAiApiKey?: string;
 }): Promise<void> {
-  const { workspaceDir, message, assistantText, openAiApiKey } = options;
+  const { workspaceDir, message, assistantText } = options;
 
-  if (!openAiApiKey) return;
   // Skip trivially short exchanges — no facts worth persisting
   if (!assistantText || assistantText.trim().length < 80) return;
 
-  const result = await runOpenAiStructuredChat(
+  const provider = getActiveLlmProvider();
+  const result = await provider.generateStructured(
     {
-      apiKey: openAiApiKey,
-      model: "gpt-4o-mini",
+      model: appConfig.modelFast,
       timeoutMs: 15_000,
       schemaName: "session_notes",
       jsonSchema: z.toJSONSchema(ExtractionOutputSchema) as Record<string, unknown>,
@@ -65,12 +64,12 @@ Categories:
     ExtractionOutputSchema
   );
 
-  if (!result?.notes?.length) return;
+  if (!result.result?.notes?.length) return;
 
   const dateStr = new Date().toISOString().slice(0, 10);
 
   await Promise.all(
-    result.notes.map(async (note: Note) => {
+    result.result.notes.map(async (note: Note) => {
       const slug = toSlug(note.title);
       const filePath = path.join(workspaceDir, "knowledge", note.category, `${dateStr}-${slug}.md`);
       await ensureDir(path.dirname(filePath));

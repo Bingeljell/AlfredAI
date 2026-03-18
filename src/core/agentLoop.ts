@@ -5,11 +5,8 @@ import type { SearchManager } from "../tools/search/searchManager.js";
 import type { LeadAgentDefaults, LeadAgentState, LeadAgentToolContext } from "../agent/types.js";
 import type { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
 import { discoverLeadAgentTools, applyToolAllowlist, executeToolWithEnvelope } from "../agent/tools/registry.js";
-import {
-  runOpenAiToolCallWithDiagnostics,
-  type OpenAiConversationMessage,
-  type OpenAiToolDef
-} from "../services/openAiClient.js";
+import { getActiveLlmProvider } from "../services/llm/registry.js";
+import type { LlmConversationMessage, LlmToolDef } from "../services/llm/types.js";
 
 export interface AgentLoopOptions {
   runId: string;
@@ -35,14 +32,11 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function toolDefsToOpenAi(tools: Map<string, { name: string; description: string; inputSchema: z.ZodTypeAny }>): OpenAiToolDef[] {
+function toolDefsToLlm(tools: Map<string, { name: string; description: string; inputSchema: z.ZodTypeAny }>): LlmToolDef[] {
   return Array.from(tools.values()).map((tool) => ({
-    type: "function" as const,
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: z.toJSONSchema(tool.inputSchema) as Record<string, unknown>
-    }
+    name: tool.name,
+    description: tool.description,
+    parameters: z.toJSONSchema(tool.inputSchema) as Record<string, unknown>
   }));
 }
 
@@ -137,7 +131,8 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
   // Discover and filter tools
   const allTools = await discoverLeadAgentTools();
   const tools = applyToolAllowlist(allTools, toolAllowlist);
-  const openAiTools = toolDefsToOpenAi(tools);
+  const llmTools = toolDefsToLlm(tools);
+  const provider = getActiveLlmProvider();
 
   // Build initial conversation
   let userContent = message;
@@ -148,7 +143,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     }
   }
 
-  const messages: OpenAiConversationMessage[] = [
+  const messages: LlmConversationMessage[] = [
     { role: "system", content: systemPrompt },
     { role: "user", content: userContent }
   ];
@@ -198,11 +193,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     });
 
     const remaining = deadlineAtMs - Date.now();
-    const llmResult = await runOpenAiToolCallWithDiagnostics({
-      apiKey: openAiApiKey,
+    const llmResult = await provider.generateWithTools({
       model,
       messages,
-      tools: openAiTools,
+      tools: llmTools,
       timeoutMs: Math.min(90_000, remaining - 5_000)
     });
 
@@ -259,17 +253,17 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
 
     // Model wants to call tools
     if (llmResult.toolCalls?.length) {
-      // Append the assistant's tool-call message to history
+      // Append the assistant's tool-call message to history (unified format)
       messages.push({
         role: "assistant",
         content: llmResult.content ?? null,
-        tool_calls: llmResult.toolCalls
+        toolCalls: llmResult.toolCalls
       });
 
       // Execute each tool call and collect results
       for (const toolCall of llmResult.toolCalls) {
-        const toolName = toolCall.function.name;
-        const inputJson = toolCall.function.arguments;
+        const toolName = toolCall.name;
+        const inputJson = toolCall.arguments;
 
         await runStore.appendEvent({
           runId,
@@ -295,7 +289,8 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
 
         messages.push({
           role: "tool",
-          tool_call_id: toolCall.id,
+          toolCallId: toolCall.id,
+          toolName,
           content: resultContent
         });
 

@@ -1,3 +1,5 @@
+import { appConfig } from "../config/env.js";
+
 export interface SpecialistConfig {
   name: string;
   model: string;
@@ -14,7 +16,7 @@ Avoid hallucinations — when uncertain, say so.
 
 export const RESEARCH_SPECIALIST: SpecialistConfig = {
   name: "research",
-  model: "gpt-4o",
+  model: appConfig.modelSmart,
   systemPrompt: `${BASE_IDENTITY}
 
 You are the Research Specialist. Your job is to answer questions, build lists, make comparisons, and surface factual information by searching the web and reading pages.
@@ -38,7 +40,7 @@ RULES:
 
 export const WRITING_SPECIALIST: SpecialistConfig = {
   name: "writing",
-  model: "gpt-4o",
+  model: appConfig.modelSmart,
   systemPrompt: `${BASE_IDENTITY}
 
 You are the Writing Specialist. Your job is to produce high-quality written content: blog posts, articles, memos, emails, social posts, and outlines.
@@ -62,7 +64,7 @@ RULES:
 
 export const LEAD_SPECIALIST: SpecialistConfig = {
   name: "lead",
-  model: "gpt-4o",
+  model: appConfig.modelSmart,
   systemPrompt: `${BASE_IDENTITY}
 
 You are the Lead Generation Specialist. Your job is to find, qualify, and enrich business leads.
@@ -98,7 +100,7 @@ RULES:
 
 export const OPS_SPECIALIST: SpecialistConfig = {
   name: "ops",
-  model: "gpt-4o",
+  model: appConfig.modelSmart,
   systemPrompt: `${BASE_IDENTITY}
 
 You are the Operations Specialist. Your job is to manage files, run shell commands, and handle workspace operations.

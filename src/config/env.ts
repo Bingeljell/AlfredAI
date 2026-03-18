@@ -8,7 +8,14 @@ loadDotEnv();
 const EnvSchema = z.object({
   ALFRED_ENV: z.enum(["dev", "prod"]).default("dev"),
   PORT: z.coerce.number().default(3000),
+  // ─── LLM provider ─────────────────────────────────────────────────────────
+  ALFRED_LLM_PROVIDER: z.enum(["openai", "anthropic", "gemini", "ollama"]).default("openai"),
+  ALFRED_MODEL_FAST: z.string().default("gpt-4o-mini"),   // cheap/fast: classification, session extractor
+  ALFRED_MODEL_SMART: z.string().default("gpt-4o"),       // specialist agent loops
   OPENAI_API_KEY: z.string().optional(),
+  ANTHROPIC_API_KEY: z.string().optional(),
+  GOOGLE_GEMINI_API_KEY: z.string().optional(),
+  OLLAMA_BASE_URL: z.string().default("http://localhost:11434"),
   SEARXNG_BASE_URL: z.string().url().default("http://127.0.0.1:8888"),
   SEARXNG_SEARCH_PATH: z.string().default("/search"),
   SEARXNG_HEALTH_PATH: z.string().default("/search?q=ping&format=json"),
@@ -50,7 +57,13 @@ const parsed = EnvSchema.parse(process.env);
 export const appConfig = {
   env: parsed.ALFRED_ENV,
   port: parsed.PORT,
+  llmProvider: parsed.ALFRED_LLM_PROVIDER,
+  modelFast: parsed.ALFRED_MODEL_FAST,
+  modelSmart: parsed.ALFRED_MODEL_SMART,
   openAiApiKey: parsed.OPENAI_API_KEY,
+  anthropicApiKey: parsed.ANTHROPIC_API_KEY,
+  geminiApiKey: parsed.GOOGLE_GEMINI_API_KEY,
+  ollamaBaseUrl: parsed.OLLAMA_BASE_URL,
   searxngBaseUrl: parsed.SEARXNG_BASE_URL,
   searxngSearchPath: parsed.SEARXNG_SEARCH_PATH,
   searxngHealthPath: parsed.SEARXNG_HEALTH_PATH,

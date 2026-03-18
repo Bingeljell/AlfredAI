@@ -136,8 +136,7 @@ export async function runReActLoop(
     workspaceDir: options.workspaceDir,
     sessionId,
     message,
-    assistantText: outcome.assistantText ?? "",
-    openAiApiKey: options.openAiApiKey
+    assistantText: outcome.assistantText ?? ""
   }).catch(() => {
     // Non-fatal — never surface memory errors to the user
   });

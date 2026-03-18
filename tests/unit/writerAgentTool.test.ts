@@ -21,6 +21,10 @@ class FakeLlmProvider implements LlmProvider {
     throw new Error("generateStructured should not be used by writer_agent");
   }
 
+  async generateWithTools(): Promise<never> {
+    throw new Error("generateWithTools should not be used by writer_agent");
+  }
+
   async generateText(request: LlmTextRequest): Promise<LlmTextResult> {
     this.textRequests.push(request);
     const next = this.textResponses.shift();

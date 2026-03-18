@@ -10,7 +10,20 @@ import { ChannelSessionStore } from "./channelSessionStore.js";
 const POLL_INTERVAL_MS = 3_000;
 const POLL_TIMEOUT_MS = 600_000; // 10 min max
 const WORKING_ON_IT_DELAY_MS = 8_000;
+const HEARTBEAT_INTERVAL_MS = 15 * 60 * 1_000; // 15 min
 const INLINE_TEXT_MAX_CHARS = 3_800; // Telegram message limit is 4096
+
+const HELP_TEXT = `
+Alfred commands:
+
+/help — show this message
+/status — current session ID, label, and start time
+/label <text> — set a context hint for this chat (e.g. /label lead gen — MSPs USA)
+/label — clear the label
+/newsession — start a fresh session (clears Alfred's context for this chat)
+
+Any other message is sent to Alfred as a task.
+`.trim();
 
 export class TelegramAdapter implements ChannelAdapter {
   readonly platform = "telegram";
@@ -86,6 +99,11 @@ export class TelegramAdapter implements ChannelAdapter {
       } else {
         await this.send(chatId, "Cancelled — continuing with the current session.");
       }
+      return;
+    }
+
+    if (text.startsWith("/help")) {
+      await this.send(chatId, HELP_TEXT);
       return;
     }
 
@@ -179,13 +197,22 @@ export class TelegramAdapter implements ChannelAdapter {
     const runId = result.runId;
 
     // Send "Working on it..." after WORKING_ON_IT_DELAY_MS if still running
+    const startedAt = Date.now();
     const workingTimer = setTimeout(() => {
       void this.send(chatId, "Working on it...");
     }, WORKING_ON_IT_DELAY_MS);
 
+    // Send a heartbeat every 15 minutes so you know the run is still alive
+    const heartbeatTimer = setInterval(() => {
+      const elapsedMin = Math.round((Date.now() - startedAt) / 60_000);
+      void this.send(chatId, `Still working... (${elapsedMin}m elapsed)`);
+    }, HEARTBEAT_INTERVAL_MS);
+    heartbeatTimer.unref?.();
+
     try {
       const run = await this.pollUntilDone(runId);
       clearTimeout(workingTimer);
+      clearInterval(heartbeatTimer);
 
       const responseText = run?.assistantText ?? "Done — no response text.";
       await this.sendResponse(chatId, responseText);
@@ -198,6 +225,7 @@ export class TelegramAdapter implements ChannelAdapter {
       }
     } catch (error) {
       clearTimeout(workingTimer);
+      clearInterval(heartbeatTimer);
       const msg = error instanceof Error ? error.message : "Unknown error";
       await this.send(chatId, `Something went wrong: ${msg}`);
     }

@@ -1,6 +1,6 @@
 # Alfred Expansion Roadmap
 
-> Last updated: 2026-03-18 (Track 0 added)
+> Last updated: 2026-03-18
 
 ## Core Status
 
@@ -10,7 +10,7 @@ The March 17 native tool-calling rewrite is stable. The core (orchestrator → a
 
 ## Tracks (in priority order)
 
-### 0. Multi-Provider LLM Support ⬅ next
+### 0. Multi-Provider LLM Support ✅ Done
 
 **Problem:** Every LLM call is hardcoded to OpenAI. Model names (`gpt-4o`, `gpt-4o-mini`) are hardcoded in `specialists.ts` and `orchestrator.ts`. Alfred can't use Claude, Gemini, or local open-source models, and users have no way to configure their preferred provider or models without changing code.
 
@@ -247,7 +247,7 @@ Adapter sends response back to platform
 
 | Order | Track | Rationale |
 |---|---|---|
-| 0 | Multi-provider LLM | ⬅ next — every subsequent track benefits from model flexibility |
+| 0 | Multi-provider LLM | ✅ Done — OpenAI / Anthropic / Gemini / Ollama, configured via `.env` |
 | 1 | Second brain (QMD) | ✅ Done |
 | 2 | Video clipper tool | Quick win, validates tool extensibility pattern |
 | 3 | Self-awareness (dev specialist) | Multiplies iteration speed for all subsequent work |

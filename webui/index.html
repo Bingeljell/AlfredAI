@@ -39,6 +39,7 @@
           <span class="channel-badge hidden" id="channel-badge"></span>
         </div>
         <div class="topbar-right">
+          <span class="token-badge hidden" id="session-tokens-badge"></span>
           <span class="status-pill" id="run-status-pill">idle</span>
           <button class="ghost-btn" id="reset-ctx-btn" title="Reset context">/new</button>
           <button class="ghost-btn accent-btn" id="debug-open-btn">Debug ↗</button>
@@ -119,6 +120,10 @@
         </div>
 
         <div class="dpane" id="dpane-status">
+          <div class="dstatus-section">
+            <div class="dinspect-label">LLM provider</div>
+            <div id="status-llm-card" class="dstatus-body"></div>
+          </div>
           <div class="dstatus-section">
             <div class="dinspect-label">Search providers</div>
             <div id="status-provider-card" class="dstatus-body"></div>

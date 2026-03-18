@@ -98,6 +98,14 @@ app.get("/v1/providers/status", async (c) => {
   return c.json(status);
 });
 
+app.get("/v1/llm/status", (c) => {
+  return c.json({
+    provider: appConfig.llmProvider,
+    modelFast: appConfig.modelFast,
+    modelSmart: appConfig.modelSmart
+  });
+});
+
 app.post("/v1/sessions", async (c) => {
   const json = await c.req.json();
   const payload = SessionPostSchema.parse(json);

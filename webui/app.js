@@ -13,6 +13,7 @@ const state = {
   sessionRuns: [],
   activeRunPayload: null,
   providerStatus: null,
+  llmStatus: null,
   channelSessionMap: {},
   drawerOpen: false,
   drawerTab: 'inspector',
@@ -65,6 +66,8 @@ const els = {
   telemetryExport: document.getElementById('telemetry-export'),
   telemetryMeta: document.getElementById('telemetry-meta'),
   telemetryConsole: document.getElementById('telemetry-console'),
+  sessionTokensBadge: document.getElementById('session-tokens-badge'),
+  statusLlmCard: document.getElementById('status-llm-card'),
   statusProviderCard: document.getElementById('status-provider-card'),
   statusSessionCard: document.getElementById('status-session-card'),
   statusChannelCard: document.getElementById('status-channel-card'),
@@ -716,6 +719,27 @@ async function refreshChannelSessions() {
   }
 }
 
+async function refreshLlmStatus() {
+  try {
+    state.llmStatus = await api('/v1/llm/status');
+    if (state.drawerOpen && state.drawerTab === 'status') {
+      renderStatusPage();
+    }
+  } catch {
+    // optional
+  }
+}
+
+function getSessionTotalTokens() {
+  return state.sessionRuns.reduce((sum, run) => sum + (run.llmUsage?.totalTokens ?? 0), 0);
+}
+
+function formatTokenCount(n) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M tok`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k tok`;
+  return `${n} tok`;
+}
+
 async function refreshSessionRuns(options = {}) {
   const sessionId = options.sessionId || state.activeSessionId;
   if (!sessionId) {
@@ -997,6 +1021,14 @@ function renderChatHeader() {
 
   setTextIfChanged(els.runStatusPill, run ? statusLabel(run.status) : 'idle');
   els.runStatusPill.className = `status-pill ${statusClass(run?.status)}`;
+
+  const totalTokens = getSessionTotalTokens();
+  if (totalTokens > 0) {
+    setTextIfChanged(els.sessionTokensBadge, formatTokenCount(totalTokens));
+    els.sessionTokensBadge.classList.remove('hidden');
+  } else {
+    els.sessionTokensBadge.classList.add('hidden');
+  }
 }
 
 function buildRunAssistantPreview(run) {
@@ -1199,8 +1231,19 @@ function renderTelemetry() {
 
 function renderStatusPage() {
   const status = state.providerStatus;
+  const llm = state.llmStatus;
   const session = getActiveSession();
   const run = getSelectedRunRecord();
+  const sessionTokens = getSessionTotalTokens();
+
+  setHtmlIfChanged(els.statusLlmCard, llm
+    ? `
+        <p>Provider: ${escapeHtml(llm.provider)}</p>
+        <p>Fast model: ${escapeHtml(llm.modelFast)}</p>
+        <p>Smart model: ${escapeHtml(llm.modelSmart)}</p>
+        <p>Session tokens: ${escapeHtml(formatTokenCount(sessionTokens))} (${escapeHtml(String(sessionTokens))} total)</p>
+      `
+    : '<p>Loading…</p>');
 
   setHtmlIfChanged(els.statusProviderCard, status
     ? `
@@ -1478,7 +1521,7 @@ els.telemetryExport.addEventListener('click', () => {
 // ── Init ─────────────────────────────────────────────────────────
 
 async function init() {
-  await Promise.all([refreshSessions(), refreshChannelSessions(), refreshProviderStatus()]);
+  await Promise.all([refreshSessions(), refreshChannelSessions(), refreshProviderStatus(), refreshLlmStatus()]);
   if (state.activeSessionId) {
     await refreshSessionRuns();
     if (state.activeRunId) {

@@ -178,4 +178,4 @@ app.onError((error, c) => {
   return c.json({ error: message }, 500);
 });
 
-export { app, sessionStore, runStore };
+export { app, sessionStore, runStore, chatService };

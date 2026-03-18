@@ -20,11 +20,13 @@
     "cheerio": "^1.1.2",
     "dotenv": "^16.6.1",
     "hono": "^4.9.8",
+    "node-telegram-bot-api": "^0.67.0",
     "playwright": "^1.55.1",
     "zod": "^4.1.8"
   },
   "devDependencies": {
     "@types/node": "^22.18.0",
+    "@types/node-telegram-bot-api": "^0.64.14",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"
   }

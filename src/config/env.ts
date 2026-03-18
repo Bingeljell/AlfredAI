@@ -49,7 +49,9 @@ const EnvSchema = z.object({
   ALFRED_AGENT_MAX_PARALLEL_TOOLS: z.coerce.number().int().min(1).max(5).default(3),
   ALFRED_AGENT_PLANNER_MAX_CALLS: z.coerce.number().int().min(1).max(30).default(10),
   ALFRED_AGENT_OBSERVATION_WINDOW: z.coerce.number().int().min(3).max(20).default(8),
-  ALFRED_AGENT_DIMINISHING_THRESHOLD: z.coerce.number().int().min(1).max(10).default(2)
+  ALFRED_AGENT_DIMINISHING_THRESHOLD: z.coerce.number().int().min(1).max(10).default(2),
+  // ─── Channels ─────────────────────────────────────────────────────────────
+  TELEGRAM_BOT_TOKEN: z.string().optional()
 });
 
 const parsed = EnvSchema.parse(process.env);
@@ -97,7 +99,8 @@ export const appConfig = {
   agentMaxParallelTools: parsed.ALFRED_AGENT_MAX_PARALLEL_TOOLS,
   agentPlannerMaxCalls: parsed.ALFRED_AGENT_PLANNER_MAX_CALLS,
   agentObservationWindow: parsed.ALFRED_AGENT_OBSERVATION_WINDOW,
-  agentDiminishingThreshold: parsed.ALFRED_AGENT_DIMINISHING_THRESHOLD
+  agentDiminishingThreshold: parsed.ALFRED_AGENT_DIMINISHING_THRESHOLD,
+  telegramBotToken: parsed.TELEGRAM_BOT_TOKEN
 };
 
 export function getPolicyMode(): PolicyMode {

@@ -1,6 +1,7 @@
 import { serve } from "@hono/node-server";
 import { appConfig } from "../config/env.js";
-import { app, sessionStore } from "./app.js";
+import { app, sessionStore, runStore, chatService } from "./app.js";
+import { TelegramAdapter } from "../channels/telegram/adapter.js";
 
 async function bootstrap(): Promise<void> {
   const existingSessions = await sessionStore.listSessions(1);
@@ -17,6 +18,17 @@ async function bootstrap(): Promise<void> {
       console.log(`Alfred gateway listening on http://localhost:${info.port}`);
     }
   );
+
+  if (appConfig.telegramBotToken) {
+    const telegram = new TelegramAdapter(
+      appConfig.telegramBotToken,
+      chatService,
+      sessionStore,
+      runStore,
+      appConfig.workspaceDir
+    );
+    await telegram.start();
+  }
 }
 
 void bootstrap();

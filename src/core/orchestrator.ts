@@ -32,13 +32,15 @@ const ClassificationSchema = z.object({
   reasoning: z.string()
 });
 
-const CLASSIFICATION_SYSTEM_PROMPT = `You are a task classifier. Given a user message, determine which specialist agent should handle it.
+const CLASSIFICATION_SYSTEM_PROMPT = `You are a task classifier. Given a user message (and optional session objective context), determine which specialist agent should handle it.
 
 Specialists:
 - research: Answering questions, finding information, building lists, comparisons, lookups, research tasks. Use when the user wants to find or learn something.
 - writing: Producing written content — blog posts, articles, emails, memos, social posts, outlines, rewrites. Use when the user wants a drafted document.
 - lead: Finding business leads, contacts, companies, email addresses, prospect lists. Use when the user wants a list of companies or contacts.
 - ops: File operations, shell commands, running scripts, managing processes, workspace management. Use when the user wants to do something on the filesystem or run code.
+
+IMPORTANT — follow-up messages: If the user message is a follow-up, adjustment, or retry ("try again", "relax the filter", "retry", "same thing but...", "more results", "adjust the criteria") AND the session objective context indicates a prior lead-gen task, classify as "lead". Do not downgrade a lead task to research just because the follow-up message doesn't repeat lead-specific keywords.
 
 Output a JSON object with "specialist" (one of: research, writing, lead, ops) and "reasoning" (one sentence).`;
 
@@ -54,6 +56,14 @@ async function classifyTask(
   const lower = message.toLowerCase();
   if (/\b(lead|leads|prospect|contact|email.{0,20}compan|compan.{0,20}email|find.{0,30}compan|list.{0,30}compan)\b/.test(lower)) {
     return "lead";
+  }
+  // Follow-up / retry messages inherit the active specialist when the objective is lead-gen
+  const isFollowUp = /\b(retry|retrying|try again|relax|loosen|adjust|same (thing|search|query|criteria)|more results?|fewer results?|expand|broaden|tighten|run it again|redo|re-run)\b/.test(lower);
+  if (isFollowUp && sessionContext?.activeObjective) {
+    const objLower = sessionContext.activeObjective.toLowerCase();
+    if (/\b(lead|leads|prospect|msp|contact|email.{0,20}compan|compan.{0,20}email|find.{0,30}compan|list.{0,30}compan)\b/.test(objLower)) {
+      return "lead";
+    }
   }
   if (/\b(write|draft|article|blog|post|memo|email.{0,20}write|write.{0,20}email|outline|newsletter)\b/.test(lower)) {
     return "writing";

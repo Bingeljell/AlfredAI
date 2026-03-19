@@ -132,20 +132,21 @@ No state serialization. No competing guards. The model sees its own prior tool r
 
 ## File Map
 
-### New Files
+> Note: paths below reflect the March 2026 restructure. `src/core/` → `src/runtime/`, `src/services/llm/` → `src/provider/`, `src/services/openAiClient.ts` → `src/provider/openai-http.ts`. `orchestrator.ts` was subsequently deleted (collapsed into `runReActLoop.ts` directly).
 
-| File | Role | Lines |
-|---|---|---|
-| `src/core/orchestrator.ts` | Classification LLM call → specialist selection | ~110 |
-| `src/core/agentLoop.ts` | Native tool-calling loop | ~200 |
-| `src/core/specialists.ts` | 4 specialist configs (system prompts + tool allowlists) | ~110 |
+### New Files (March 17 rewrite)
 
-### Modified Files
+| File | Role |
+|---|---|
+| `src/runtime/agentLoop.ts` | Native tool-calling loop |
+| `src/runtime/specialists.ts` | Alfred agent config (system prompt + tool allowlist + model) |
+
+### Modified Files (March 17 rewrite)
 
 | File | Change |
 |---|---|
-| `src/services/openAiClient.ts` | Added `runOpenAiToolCallWithDiagnostics` — native tool-call format |
-| `src/core/runReActLoop.ts` | Simplified: calls `runOrchestrator` instead of the old 3,200-line loop |
+| `src/provider/openai-http.ts` | Added `runOpenAiToolCallWithDiagnostics` — native tool-call format |
+| `src/runtime/runReActLoop.ts` | Entry point — calls agent loop directly (orchestrator layer removed) |
 
 ### Deleted Files
 
@@ -162,21 +163,17 @@ No state serialization. No competing guards. The model sees its own prior tool r
 
 ---
 
-## Specialists
+## Single Agent
 
-Each specialist is a plain config object: a system prompt, a curated tool allowlist, a model, and a max iteration count.
+Alfred is one `SpecialistConfig` object in `src/runtime/specialists.ts`: one system prompt, one tool allowlist, one model, one max iteration count. There is no classifier and no routing to sub-agents.
 
-```
-Research  → search, web_fetch, search_status, recover_search
-Writing   → search, web_fetch, writer_agent, search_status
-Lead      → lead_search_shortlist, web_fetch, lead_extract, email_enrich, lead_pipeline, write_csv
-Ops       → file_list, file_read, file_write, file_edit, shell_exec, process_list, process_stop
-```
+The unified system prompt contains:
+- Alfred identity (who he is, values, how to behave)
+- Pipeline sections for each task type (LEAD GENERATION, RESEARCH, WRITING, OPERATIONS)
+- SELF-AWARENESS section (how to read and extend his own codebase)
+- General rules
 
-The system prompt for each specialist contains:
-- The Alfred identity block (shared)
-- Role-specific pipeline instructions (e.g. Research: strict discover→fetch→synthesize sequence)
-- Rules that encode what was previously mechanical guard logic
+The model self-routes by reading the message and following whichever pipeline section applies.
 
 ---
 
@@ -199,18 +196,9 @@ writer_agent called
 
 ---
 
-## Classification Logic
+## Routing
 
-The orchestrator uses fast heuristics before calling the LLM:
-
-```
-"find me leads / contacts / companies"  → lead (regex match)
-"write / draft / article / blog"        → writing (regex match)
-"run / exec / shell / file / script"    → ops (regex match)
-everything else                         → research (LLM call)
-```
-
-The LLM classification uses `gpt-4o-mini` with a 10-second timeout and a simple 4-way enum schema. Failure defaults to `research`.
+There is no classifier. Alfred receives the user message directly in the single-agent loop. The unified system prompt contains pipeline sections for each task type. The model reads the message and follows whichever pipeline applies — no regex, no LLM classification call, no routing layer.
 
 ---
 

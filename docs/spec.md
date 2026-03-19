@@ -59,11 +59,12 @@ The canonical task brief is the stable execution contract for a run.
   - when to stop and report blockage
 - Evaluation happens against the preserved brief, not against planner-invented targets.
 
-### 2.3 Master vs Specialist Separation
-- **Alfred (Master Agent)** is domain-agnostic and owns orchestration, policy, memory continuity, and user-facing outcomes.
-- **Specialist Agents** (starting with LeadGenAgent) own domain execution details.
-- Deterministic logic is limited to guardrails (budget/time/safety), while specialist business behavior remains model-driven and objective-led.
-- LeadGenAgent must clarify objective constraints before retrieval (company type, industry, geography, B2B/B2C/supplier intent, contact needs) and adapt course from observations.
+### 2.3 Single-Agent with Tool Allowlist
+Alfred is one agent. There is no classifier, no routing layer, and no specialist sub-agents. The model self-routes via a unified system prompt that covers all task types (research, writing, lead gen, ops, self-development).
+
+- `src/runtime/specialists.ts` contains one config object (`ALFRED_AGENT`): system prompt + tool allowlist + model + max iterations.
+- All tools are Zod-defined, auto-discovered from `src/tools/definitions/*.tool.ts`, and filtered by the allowlist at runtime.
+- Deterministic code is limited to guardrails: budget, time, safety, cancellation, persistence. The model decides intent, sequencing, and completion.
 
 ## 3. Sessions – Isolated & Parallel
 - Full multi-session support: long-running (Product A), short-term (Outreach campaign), or one-off.  
@@ -122,31 +123,41 @@ All tools are Zod-defined, auto-discovered, and tagged (inline/queued, requiresA
 - `notify_user` (Telegram, WhatsApp, Slack)  
 - `calendar_search/book`
 
-## 6. Future-Proof Folder Structure
+## 6. Folder Structure
+
+Three-layer dependency hierarchy. Lower layers never import from higher layers; enforced by `pnpm run lint:layers`.
+
+```
 alfred/
 ├── src/
-│   ├── gateway/              # ReAct loops + session manager + model router
-│   ├── workers/              # BullMQ (browser, shell, system, email, etc.)
-│   ├── memory/               # QMD + nightly distillation
-│   ├── tools/                # *.tool.ts (Zod)
-│   ├── skills/               # Higher-level workflows
-│   └── channels/             # Telegram, WhatsApp, Slack
+│   ├── types.ts              # Foundation — zero internal deps
+│   ├── utils/                # Foundation — pure utilities (retry, redact, fs)
+│   ├── config/               # Foundation — env schema + appConfig
+│   ├── provider/             # Core — LLM adapters (openai, anthropic, gemini, ollama)
+│   ├── tools/                # Core — tool types, registry, definitions/, lead/, csv/, search/
+│   ├── memory/               # Core — session store, daily notes, RAG extractor
+│   ├── runs/                 # Core — run store + event log
+│   ├── workers/              # Core — in-memory queue
+│   ├── runtime/              # Core — agent loop, specialists, approval, thread/turn runtime
+│   ├── runner/               # Application — ChatService (entry point for a turn)
+│   ├── channels/             # Application — Telegram adapter + ChannelAdapter interface
+│   ├── gateway/              # Application — Hono HTTP server + API routes
+│   ├── prompts/              # Application — system prompt fragments
+│   └── evals/                # Application — eval metrics
 ├── webui/                    # React + Vite + Tailwind (chat + session switcher)
-├── workspace/                # Shared
-│   ├── SOUL.md               # Personality (loaded every loop)
-│   ├── USER.md
-│   └── AGENTS.md
-├── knowledge/                # PARA + per-session
-│   ├── Daily/YYYY/MM/DD.md
-│   ├── Summaries/
-│   ├── Projects/
-│   ├── Areas/
-│   └── Resources/
-├── sessions/                 # Per-session overrides
-├── logs/
+├── SOUL.md                   # Alfred's identity document (loaded by reference in system prompt)
+├── AGENTS.md                 # Codebase conventions + Alfred self-development guide
+├── workspace/                # Runtime workspace (sessions, artifacts, knowledge)
+│   └── alfred/
+│       ├── sessions/
+│       └── knowledge/
+│           ├── Daily/YYYY/MM/DD.md
+│           ├── Research/
+│           ├── Leads/
+│           └── Decisions/
 ├── .env
-├── pnpm-workspace.yaml
 └── package.json
+```
 
 
 ## 7. Personality – SOUL.md (OpenClaw style)

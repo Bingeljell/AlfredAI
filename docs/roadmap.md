@@ -1,20 +1,51 @@
 # Alfred Expansion Roadmap
 
-> Last updated: 2026-03-18
+> Last updated: 2026-03-20
 
 ## Core Status
 
-The March 17 native tool-calling rewrite is stable. The core (orchestrator → agentLoop → specialists) is clean, the tool system is fully pluggable (drop a `.tool.ts`, auto-discovered), and the HTTP gateway is functional. The system is ready to expand outward.
+The runtime is clean and layered. The orchestrator has been collapsed — `runtime/` contains the full agent loop directly. The tool system is fully pluggable (drop a `.tool.ts` in `src/tools/definitions/`, auto-discovered). Layer boundaries are enforced by ESLint (`pnpm run lint:layers`). The system is ready to expand outward.
 
 ---
 
 ## Tracks (in priority order)
 
+### -1. Architecture Restructure ✅ Done
+
+**What was done (2026-03-20):**
+- Collapsed `runOrchestrator` (was a trivial pass-through) into `runReActLoop` directly. Entry point → agent loop, no middleman.
+- Unified two tool directories (`src/agent/tools/` + `src/tools/`) into one: `src/tools/` (types, registry, definitions, helpers, lead, csv, search).
+- Moved LLM adapters from `src/services/llm/` to `src/provider/` (anthropic, gemini, openai, ollama, router).
+- Renamed `src/core/` → `src/runtime/`.
+- Moved `src/services/chatService.ts` → `src/runner/chatService.ts`. `src/services/` deleted.
+- Moved `reliability.ts` from `runtime/` to `utils/` (it's a pure utility, not runtime logic).
+- Deleted dead code: `toolPolicies.ts` (not imported anywhere), `orchestrator.ts`.
+- Added ESLint layer enforcement (`eslint.config.mjs`, `pnpm run lint:layers`) — 12 zones, explicit allow-lists, zero current violations.
+
+**Current layout:**
+```
+src/
+  types.ts       ← Foundation
+  utils/         ← Foundation (reliability, redact, fs)
+  config/        ← Foundation
+  provider/      ← Core (LLM adapters)
+  tools/         ← Core (definitions, registry, lead, csv, search)
+  memory/        ← Core
+  runs/          ← Core
+  workers/       ← Core
+  runtime/       ← Core (agent loop, specialists, approval, thread/turn runtime)
+  runner/        ← Application (ChatService)
+  channels/      ← Application (Telegram + ChannelAdapter interface)
+  gateway/       ← Application (HTTP server)
+```
+
+---
+
 ### 0. Multi-Provider LLM Support ✅ Done
 
 **Problem:** Every LLM call is hardcoded to OpenAI. Model names (`gpt-4o`, `gpt-4o-mini`) are hardcoded in `specialists.ts` and `orchestrator.ts`. Alfred can't use Claude, Gemini, or local open-source models, and users have no way to configure their preferred provider or models without changing code.
 
-**What already exists:** `src/services/llm/` has a correct `LlmProvider` interface (`generateText`, `generateStructured`), an `OpenAiLlmProvider` implementation, and a `router.ts` with provider fallback logic. The problem is adoption — only `writerAgent` uses this abstraction. The agent loop, orchestrator, and session extractor all call `openAiClient.ts` directly.
+**What already exists:** `src/provider/` has a correct `LlmProvider` interface (`generateText`, `generateStructured`), an `OpenAiLlmProvider` implementation, and a `router.ts` with provider fallback logic. The problem is adoption — only `writerAgent` uses this abstraction. The agent loop, orchestrator, and session extractor all call `openAiClient.ts` directly.
 
 **What's missing:**
 1. `generateWithTools()` not in `LlmProvider` interface — native tool-calling is the core of `agentLoop.ts` and each provider has a different wire format
@@ -54,23 +85,23 @@ Setting `ALFRED_MODEL_SMART=gpt-5` (or `claude-opus-4-6`, `gemini-2.0-flash`, et
 
 **Implementation steps:**
 
-1. **Extend `LlmProvider` interface** (`src/services/llm/types.ts`)
+1. **Extend `LlmProvider` interface** (`src/provider/types.ts`)
    - Add `generateWithTools(request: LlmToolCallRequest): Promise<LlmToolCallResult>`
    - Define unified `LlmToolDef`, `LlmToolCall`, `LlmConversationMessage` types (provider-agnostic)
 
-2. **Update `OpenAiLlmProvider`** (`src/services/llm/openAiProvider.ts`)
+2. **Update `OpenAiLlmProvider`** (`src/provider/openai.ts`)
    - Implement `generateWithTools` by delegating to `runOpenAiToolCallWithDiagnostics`
 
-3. **Add `AnthropicLlmProvider`** (`src/services/llm/anthropicProvider.ts`)
+3. **Add `AnthropicLlmProvider`** (`src/provider/anthropic.ts`)
    - Uses `@anthropic-ai/sdk`
    - Translates `tool_use` ↔ unified tool call format
    - Implements all three methods
 
-4. **Add `GeminiLlmProvider`** (`src/services/llm/geminiProvider.ts`)
+4. **Add `GeminiLlmProvider`** (`src/provider/gemini.ts`)
    - Uses `@google/genai` SDK
    - Translates `functionCall` ↔ unified format
 
-5. **Add `OllamaLlmProvider`** (`src/services/llm/ollamaProvider.ts`)
+5. **Add `OllamaLlmProvider`** (`src/provider/ollama.ts`)
    - Ollama exposes an OpenAI-compatible API — thin wrapper that sets `baseURL` to `OLLAMA_BASE_URL`
    - Reuses OpenAI wire format
 
@@ -87,17 +118,17 @@ Setting `ALFRED_MODEL_SMART=gpt-5` (or `claude-opus-4-6`, `gemini-2.0-flash`, et
 10. **Pull model names from config** in `specialists.ts` — replace `"gpt-4o"` / `"gpt-4o-mini"` with `appConfig.modelSmart` / `appConfig.modelFast`
 
 **Files to create/modify:**
-- `src/services/llm/types.ts` — add tool-calling types
-- `src/services/llm/openAiProvider.ts` — add `generateWithTools`
-- `src/services/llm/anthropicProvider.ts` — new
-- `src/services/llm/geminiProvider.ts` — new
-- `src/services/llm/ollamaProvider.ts` — new
-- `src/services/llm/registry.ts` — new: `createLlmProviders()` factory
+- `src/provider/types.ts` — add tool-calling types
+- `src/provider/openai.ts` — add `generateWithTools`
+- `src/provider/anthropic.ts` — new
+- `src/provider/gemini.ts` — new
+- `src/provider/ollama.ts` — new
+- `src/provider/registry.ts` — new: `createLlmProviders()` factory
 - `src/config/env.ts` — add provider + model env vars
-- `src/core/agentLoop.ts` — use provider abstraction
-- `src/core/orchestrator.ts` — use provider abstraction
+- `src/runtime/agentLoop.ts` — use provider abstraction
+- `src/runtime/` (orchestrator collapsed into runReActLoop) — use provider abstraction
 - `src/memory/sessionExtractor.ts` — use provider abstraction
-- `src/core/specialists.ts` — pull model names from config
+- `src/runtime/specialists.ts` — pull model names from config
 
 ---
 
@@ -130,9 +161,9 @@ knowledge/
 
 **Files to create/modify:**
 - `src/memory/sessionExtractor.ts` — post-session LLM call writing structured notes
-- `src/agent/tools/definitions/ragMemoryQuery.tool.ts` — wraps `qmd query` CLI
-- `src/core/runReActLoop.ts` — trigger session extractor after each run
-- `src/core/specialists.ts` — add `rag_memory_query` to allowlists + system prompt hint
+- `src/tools/definitions/ragMemoryQuery.tool.ts` — wraps `qmd query` CLI
+- `src/runtime/runReActLoop.ts` — trigger session extractor after each run
+- `src/runtime/specialists.ts` — add `rag_memory_query` to allowlists + system prompt hint
 
 ---
 
@@ -143,7 +174,7 @@ knowledge/
 **Design:** Thin wrapper around the `videoclipper` CLI (`github.com/Bingeljell/videoclipper`).
 
 ```typescript
-// src/agent/tools/definitions/videoClipper.tool.ts
+// src/tools/definitions/videoClipper.tool.ts
 Input: { videoPath, instruction, outputPath? }
 // "clip the steep descent starting at 1:23, 30 seconds"
 Execute: shell call to videoclipper binary with parsed args
@@ -154,40 +185,37 @@ Routes to `ops` specialist. Assumption: `videoclipper` binary on PATH.
 
 ---
 
-### 3. Self-Awareness (Dev Specialist)
+### 3. Self-Awareness ✅ Foundation Done
 
 **Problem:** Alfred can't improve itself. New tools and bug fixes require a human developer session.
 
-**Goal:** Alfred-as-Claude-Code — given "build a tool that does X" or "fix this bug", Alfred reads the codebase, writes code, runs tsc, runs tests, and commits.
+**Goal:** Alfred-as-developer — given "build a tool that does X" or "fix this bug", Alfred reads the codebase, writes code, runs tsc, runs tests, and commits.
+
+**Foundation already in place (2026-03-20):**
+- `SOUL.md` — Alfred's identity document, loaded by reference in the system prompt
+- `AGENTS.md` — codebase conventions + tool contract template, written for Alfred to read
+- `file_read`, `file_list`, `file_write`, `file_edit`, `shell_exec` — all in Alfred's tool allowlist
+- Alfred's system prompt has a `SELF-AWARENESS` section directing him to read code first, discuss approach, then act
+- No separate "dev specialist" — Alfred self-routes to self-development tasks via the unified system prompt
 
 **Design:**
-
 ```
 User: "Build a tool that calls the video clipper CLI"
     │
     ▼
-Orchestrator → "dev" specialist (new)
+Alfred (single agent)
+    │
+    ├─ file_read AGENTS.md          (tool contract template)
+    ├─ file_read src/tools/definitions/search.tool.ts  (pattern reference)
+    ├─ file_read src/runtime/specialists.ts            (allowlist to update)
     │
     ▼
-Reads: src/agent/tools/definitions/search.tool.ts  (pattern reference)
-       src/agent/types.ts                           (tool contract)
-       src/core/specialists.ts                      (allowlist to update)
-    │
-    ▼
-Writes: src/agent/tools/definitions/videoClipper.tool.ts
-Runs:   tsc --noEmit  →  node --test  →  git commit
+Writes: src/tools/definitions/videoClipper.tool.ts
+Runs:   shell_exec: tsc --noEmit  →  node --test  →  scripts/committer
 ```
 
-**Dev specialist config:**
-- Tools: `file_read`, `file_list`, `file_write`, `file_edit`, `shell_exec`, `rag_memory_query`
-- Model: `gpt-4o`, maxIterations: 25
-- System prompt embeds: tool definition contract, specialist pattern, Zod usage, AGENTS.md conventions, compact `src/` file map
-- Safety: `git push` requires `requiresApproval: true` (enforced, not just flagged)
-
-**Files to create/modify:**
-- `src/core/specialists.ts` — add `DEV_SPECIALIST`
-- `src/core/orchestrator.ts` — add heuristic: `build/create/add/fix/refactor + tool/skill/feature/bug → "dev"`
-- `src/agent/tools/definitions/shellExec.tool.ts` — enforce approval for `git push`
+**What's still pending:**
+- `git push` requires `requiresApproval: true` in `shellExec.tool.ts` (currently controlled by `policyMode` only)
 
 ---
 

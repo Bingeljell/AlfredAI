@@ -13,7 +13,8 @@
     "test:unit": "node --import tsx --test tests/unit/**/*.test.ts",
     "test:integration": "node --import tsx --test tests/integration/**/*.test.ts",
     "test:smoke": "node --import tsx --test tests/smoke/**/*.test.ts",
-    "test:security": "node --import tsx --test tests/security/**/*.test.ts"
+    "test:security": "node --import tsx --test tests/security/**/*.test.ts",
+    "lint:layers": "eslint src"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.6",
@@ -27,7 +28,10 @@
   "devDependencies": {
     "@types/node": "^22.18.0",
     "@types/node-telegram-bot-api": "^0.64.14",
+    "eslint": "^10.0.3",
+    "eslint-plugin-boundaries": "^6.0.0",
     "tsx": "^4.20.5",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.57.1"
   }
 }

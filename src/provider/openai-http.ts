@@ -9,7 +9,7 @@ import {
   sleep,
   type FailureClass,
   type RetryPolicy
-} from "../runtime/reliability.js";
+} from "../utils/reliability.js";
 
 interface OpenAiMessage {
   role: "system" | "user" | "assistant";

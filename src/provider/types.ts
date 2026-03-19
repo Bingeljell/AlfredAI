@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import type { FailureClass } from "../runtime/reliability.js";
+import type { FailureClass } from "../utils/reliability.js";
 import type { LlmUsage } from "../types.js";
 
 export interface LlmMessage {

@@ -7,6 +7,8 @@ import type { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline
 import { discoverLeadAgentTools, applyToolAllowlist, executeToolWithEnvelope } from "../agent/tools/registry.js";
 import { getActiveLlmProvider } from "../services/llm/registry.js";
 import type { LlmConversationMessage, LlmToolDef } from "../services/llm/types.js";
+import { readLeadsCsv } from "../tools/csv/writeCsv.js";
+import path from "node:path";
 
 export interface AgentLoopOptions {
   runId: string;
@@ -92,6 +94,20 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     researchSourceCards: []
   };
 
+  // Restore leads from the most recent checkpoint CSV for this session.
+  // This lets follow-up turns (enrich, re-export) pick up where the prior run left off
+  // without the agent needing to re-discover leads.
+  const priorRuns = await runStore.listRuns(sessionId, 10);
+  for (const priorRun of priorRuns) {
+    if (priorRun.runId === runId) continue;
+    const csvPath = path.join(workspaceDir, "artifacts", priorRun.runId, "leads.csv");
+    const loaded = await readLeadsCsv(csvPath);
+    if (loaded.length > 0) {
+      state.leads.push(...loaded);
+      break;
+    }
+  }
+
   const context: LeadAgentToolContext = {
     runId,
     sessionId,
@@ -169,9 +185,18 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
         sessionId,
         phase: "final",
         eventType: "agent_loop_timeout",
-        payload: { iteration, maxIterations },
+        payload: { iteration, maxIterations, artifactCount: state.artifacts.length, leadCount: state.leads.length },
         timestamp: nowIso()
       });
+      // If work was completed before the deadline hit, surface it rather than reporting failure
+      if (state.artifacts.length > 0) {
+        const leadSummary = state.leads.length > 0 ? ` Found ${state.leads.length} leads.` : "";
+        return {
+          status: "completed",
+          assistantText: `Completed the core task but ran out of time to send a full summary.${leadSummary} Results saved to: ${state.artifacts.join(", ")}`,
+          artifactPaths: state.artifacts
+        };
+      }
       return {
         status: "failed",
         assistantText: "The task timed out before completing. Please try again with a simpler request."

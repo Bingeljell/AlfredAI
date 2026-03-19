@@ -194,4 +194,4 @@ app.onError((error, c) => {
   return c.json({ error: message }, 500);
 });
 
-export { app, sessionStore, runStore, chatService };
+export { app, sessionStore, runStore, chatService, searchManager };

@@ -158,12 +158,15 @@ Task:
 Extract REAL company leads from the provided page payloads (one or more pages may be included), aligned to the user objective.
 
 Hard rules:
-- Only return companies that clearly match the requested lead profile.
+- Only return companies that match the requested lead profile. On directory or listing pages, extract ALL companies shown — name + location alone is sufficient to include a lead.
 - NEVER return the aggregator, directory, or listing site itself as a lead.
 - NEVER use ranking labels (for example "#3 provider") as company names.
 - Use ONLY information explicitly visible in the provided page payloads.
 - Do NOT invent any data.
 - When present on the page, extract business emails from contact sections, footers, and explicit mailto links.
+- CRITICAL: Extract ALL matching companies regardless of whether an email is visible on the page. Set email to null if not found. Do NOT skip a company just because no email appears on this page — emails will be sourced separately in an enrichment step.
+- CRITICAL: Broad industry terms qualify as a match. "IT services", "IT support", "technology services", "network support", "managed IT", "IT solutions" all count as matching a managed service provider (MSP) brief. Do NOT require the exact word "MSP" to be present on the page.
+- On directory or listing pages with minimal per-company data (name + location only), set confidence to 0.65.
 
 Employee size parsing rules (CRITICAL):
 - Always attempt to extract the employee count range from the page.
@@ -765,6 +768,29 @@ const AGGREGATOR_DOMAIN_PATTERNS = [
   "msp-seo.agency",
   "mspseo.agency"
 ];
+
+/**
+ * Sites that consistently return bot challenges or near-empty JS shells.
+ * These waste browse slots and should be skipped before fetching.
+ * Distinct from AGGREGATOR_DOMAIN_PATTERNS (which filters extracted company websites);
+ * this filters source URLs we would browse to discover companies.
+ */
+const BROWSE_BLOCKED_DOMAINS = [
+  "clutch.co",        // Cloudflare "Just a moment..." — always bot-blocked
+  "cloudtango.net",   // Cloudflare "Attention Required" — always bot-blocked
+  "mspaa.net"         // JS-heavy map app, renders <100 chars of useful text
+];
+
+function isBrowseBlocked(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+    return BROWSE_BLOCKED_DOMAINS.some(
+      (blocked) => hostname === blocked || hostname.endsWith(`.${blocked}`)
+    );
+  } catch {
+    return false;
+  }
+}
 
 const PERSONAL_EMAIL_DOMAINS = new Set([
   "gmail.com",
@@ -1438,11 +1464,16 @@ function buildExtractionPrompt(
   objectiveBrief: LeadObjectiveBrief,
   executionBrief?: LeadExecutionBrief
 ): string {
+  // Strip requireEmail from extraction filters — email presence is a quality-gate concern,
+  // not an extraction concern. Extracting companies without emails is correct; enrichment
+  // adds emails in a later step.
+  const extractionFilters = filters ? { ...filters, requireEmail: undefined } : {};
+
   return [
     `User request: ${executionBrief?.objectiveBrief.objectiveSummary ?? requestMessage}`,
     `Canonical lead brief: ${JSON.stringify(executionBrief ?? null)}`,
     `Objective brief: ${JSON.stringify(objectiveBrief)}`,
-    `Filters: ${JSON.stringify(filters ?? {})}`,
+    `Filters: ${JSON.stringify(extractionFilters)}`,
     "Page payloads (batched):",
     JSON.stringify(batch)
   ].join("\n");
@@ -2034,8 +2065,8 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
 
   const mergedResults = mergeSearchResults(
     successfulSearches.map((item) => item.results),
-    options.maxPages
-  );
+    options.maxPages * 2 // overfetch to compensate for browse-blocked URLs being dropped
+  ).filter((result) => !isBrowseBlocked(result.url)).slice(0, options.maxPages);
 
   if (hasTimedOut(options)) {
     const timedOutDuringSearch = qualityGate([], requestedLeadCount, options.minConfidence, targetEmployeeRange, emailRequested);
@@ -2073,7 +2104,8 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
       resultCount: item.resultCount
     })),
     searchFailures: failedSearches,
-    urlCount: mergedResults.length
+    urlCount: mergedResults.length,
+    urlsToVisit: mergedResults.map((item) => item.url)
   });
 
   const browserPool = options.pinchtabBaseUrl
@@ -2098,7 +2130,12 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
     urlCount: mergedResults.length,
     pagesVisited: pagePayloads.length,
     failedUrlCount: browseFailures.length,
-    failedUrlSamples: browseFailures.slice(0, 8)
+    failedUrlSamples: browseFailures.slice(0, 8),
+    pageTextSummary: pagePayloads.map((p) => ({
+      url: p.url,
+      title: p.title.slice(0, 80),
+      textLen: p.text.length
+    }))
   });
 
   const batches = chunk(pagePayloads, options.extractionBatchSize);
@@ -2195,7 +2232,7 @@ export async function executeLeadSubReactPipeline(options: LeadSubReactOptions):
         updatedLeadCount: 0,
         failureCount: 0,
         failureSamples: [],
-        stoppedEarlyReason: "planner_disabled_email_enrichment"
+        stoppedEarlyReason: undefined  // caller explicitly disabled enrichment — not an error
       }
     : isSoftStopTriggered(options) || stoppedEarlyReason === "low_remaining_budget"
     ? {

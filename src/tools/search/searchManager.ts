@@ -100,6 +100,7 @@ export class SearchManager {
   private lastPrimaryFailure?: SearchFailureDiagnostic;
   private lastPrimaryRecovery?: PrimaryRecoveryResult;
   private consecutivePrimaryFailures = 0;
+  private spawnedChild?: ReturnType<typeof spawn>;
 
   constructor(options: SearchManagerOptions) {
     this.primary = options.primary;
@@ -277,7 +278,7 @@ export class SearchManager {
     while (Date.now() < deadline) {
       await sleep(this.retryIntervalMs);
       if (await this.primary.healthcheck()) {
-        child.unref();
+        this.spawnedChild = child;
         child.stdout?.destroy();
         child.stderr?.destroy();
         return complete({
@@ -313,7 +314,6 @@ export class SearchManager {
         });
       }
     }
-    child.unref();
     child.stdout?.destroy();
     child.stderr?.destroy();
     return complete({
@@ -327,6 +327,22 @@ export class SearchManager {
       stdoutSnippet: stdoutSnippet ? clipSnippet(stdoutSnippet, 280) : undefined,
       stderrSnippet: stderrSnippet ? clipSnippet(stderrSnippet, 280) : undefined
     });
+  }
+
+  shutdown(): void {
+    if (this.spawnedChild) {
+      try {
+        // Kill the entire process group so shell-spawned children also die
+        if (this.spawnedChild.pid !== undefined) {
+          process.kill(-this.spawnedChild.pid, "SIGTERM");
+        } else {
+          this.spawnedChild.kill("SIGTERM");
+        }
+      } catch {
+        // Process may have already exited
+      }
+      this.spawnedChild = undefined;
+    }
   }
 
   async getProviderStatus(): Promise<ProviderStatus> {

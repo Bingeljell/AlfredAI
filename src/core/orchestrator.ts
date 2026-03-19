@@ -1,12 +1,9 @@
-import { z } from "zod";
 import type { PolicyMode, RunOutcome, SessionPromptContext } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import type { LeadAgentDefaults } from "../agent/types.js";
 import type { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
-import { getActiveLlmProvider } from "../services/llm/registry.js";
-import { appConfig } from "../config/env.js";
-import { getSpecialistConfig } from "./specialists.js";
+import { ALFRED_AGENT } from "./specialists.js";
 import { runAgentLoop } from "./agentLoop.js";
 
 export interface OrchestratorOptions {
@@ -25,80 +22,8 @@ export interface OrchestratorOptions {
   isCancellationRequested: () => Promise<boolean>;
 }
 
-type SpecialistName = "research" | "writing" | "lead" | "ops";
-
-const ClassificationSchema = z.object({
-  specialist: z.enum(["research", "writing", "lead", "ops"]),
-  reasoning: z.string()
-});
-
-const CLASSIFICATION_SYSTEM_PROMPT = `You are a task classifier. Given a user message (and optional session objective context), determine which specialist agent should handle it.
-
-Specialists:
-- research: Answering questions, finding information, building lists, comparisons, lookups, research tasks. Use when the user wants to find or learn something.
-- writing: Producing written content — blog posts, articles, emails, memos, social posts, outlines, rewrites. Use when the user wants a drafted document.
-- lead: Finding business leads, contacts, companies, email addresses, prospect lists. Use when the user wants a list of companies or contacts.
-- ops: File operations, shell commands, running scripts, managing processes, workspace management. Use when the user wants to do something on the filesystem or run code.
-
-IMPORTANT — follow-up messages: If the user message is a follow-up, adjustment, or retry ("try again", "relax the filter", "retry", "same thing but...", "more results", "adjust the criteria") AND the session objective context indicates a prior lead-gen task, classify as "lead". Do not downgrade a lead task to research just because the follow-up message doesn't repeat lead-specific keywords.
-
-Output a JSON object with "specialist" (one of: research, writing, lead, ops) and "reasoning" (one sentence).`;
-
 function nowIso(): string {
   return new Date().toISOString();
-}
-
-async function classifyTask(
-  message: string,
-  sessionContext: SessionPromptContext | undefined
-): Promise<SpecialistName> {
-  // Quick heuristics to skip the LLM call for obvious cases
-  const lower = message.toLowerCase();
-  if (/\b(lead|leads|prospect|contact|email.{0,20}compan|compan.{0,20}email|find.{0,30}compan|list.{0,30}compan)\b/.test(lower)) {
-    return "lead";
-  }
-  // Follow-up / retry messages: if the message has no strong new intent signal,
-  // inherit the last specialist from session memory (deterministic, no pattern matching).
-  const isFollowUp = /\b(retry|retrying|try again|relax|loosen|adjust|same (thing|search|query|criteria)|more results?|fewer results?|expand|broaden|tighten|run it again|redo|re-run|refine|try more)\b/.test(lower);
-  if (isFollowUp && sessionContext?.lastSpecialist) {
-    return sessionContext.lastSpecialist as SpecialistName;
-  }
-  if (/\b(write|draft|article|blog|post|memo|email.{0,20}write|write.{0,20}email|outline|newsletter)\b/.test(lower)) {
-    return "writing";
-  }
-  if (/\b(run|exec|shell|file|folder|directory|script|process|install|mkdir|ls|cat|grep|terminal)\b/.test(lower)) {
-    return "ops";
-  }
-
-  const userContent = sessionContext?.activeObjective
-    ? `User objective context: ${sessionContext.activeObjective}\n\nUser message: ${message}`
-    : message;
-
-  const provider = getActiveLlmProvider();
-  const result = await provider.generateStructured(
-    {
-      model: appConfig.modelFast,
-      messages: [
-        { role: "system", content: CLASSIFICATION_SYSTEM_PROMPT },
-        { role: "user", content: userContent }
-      ],
-      schemaName: "TaskClassification",
-      jsonSchema: {
-        type: "object",
-        properties: {
-          specialist: { type: "string", enum: ["research", "writing", "lead", "ops"] },
-          reasoning: { type: "string" }
-        },
-        required: ["specialist", "reasoning"],
-        additionalProperties: false
-      },
-      timeoutMs: 10_000,
-      maxAttempts: 2
-    },
-    ClassificationSchema
-  );
-
-  return (result.result?.specialist as SpecialistName) ?? "research";
 }
 
 export async function runOrchestrator(options: OrchestratorOptions): Promise<RunOutcome> {
@@ -118,30 +43,24 @@ export async function runOrchestrator(options: OrchestratorOptions): Promise<Run
     isCancellationRequested
   } = options;
 
-  const classifyStart = Date.now();
-  const specialistName = await classifyTask(message, sessionContext);
-  const classifyMs = Date.now() - classifyStart;
-
   await runStore.appendEvent({
     runId,
     sessionId,
     phase: "route",
     eventType: "specialist_selected",
-    payload: { specialist: specialistName, classifyMs },
+    payload: { specialist: ALFRED_AGENT.name, classifyMs: 0 },
     timestamp: nowIso()
   });
-
-  const spec = getSpecialistConfig(specialistName);
 
   const outcome = await runAgentLoop({
     runId,
     sessionId,
     message,
-    model: spec.model,
-    systemPrompt: spec.systemPrompt,
-    toolAllowlist: spec.toolAllowlist,
-    maxIterations: spec.maxIterations,
-    maxDurationMs: maxDurationMs - classifyMs,
+    model: ALFRED_AGENT.model,
+    systemPrompt: ALFRED_AGENT.systemPrompt,
+    toolAllowlist: ALFRED_AGENT.toolAllowlist,
+    maxIterations: ALFRED_AGENT.maxIterations,
+    maxDurationMs,
     openAiApiKey,
     runStore,
     searchManager,
@@ -152,5 +71,6 @@ export async function runOrchestrator(options: OrchestratorOptions): Promise<Run
     sessionContext,
     isCancellationRequested
   });
-  return { ...outcome, specialist: specialistName };
+
+  return { ...outcome, specialist: ALFRED_AGENT.name };
 }

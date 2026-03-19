@@ -29,7 +29,10 @@ export const ExtractedLeadSchema = z.object({
   emailEvidence: z.string().min(2).max(260).nullable().optional(),
   website: z.string().url().nullable().optional(),
   location: z.string().min(2).max(120).nullable().optional(),
-  employeeSizeText: z.string().min(2).max(120),
+  employeeSizeText: z.preprocess(
+    (v) => (typeof v === "string" && v.trim().length === 0 ? "unknown" : v),
+    z.string().min(1).max(120)
+  ),
   employeeMin: z.number().int().min(1).max(100000).nullable().optional(),
   employeeMax: z.number().int().min(1).max(100000).nullable().optional(),
   sizeEvidence: z.string().min(2).max(260).nullable().optional(),

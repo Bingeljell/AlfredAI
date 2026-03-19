@@ -4,58 +4,77 @@
  * Pinchtab runs as a local HTTP server (default: http://127.0.0.1:9867) and
  * provides JS-rendered page content via its accessibility tree + text extraction.
  *
- * Setup requirements:
- *   1. Install Pinchtab: https://pinchtab.com/docs/get-started/
- *   2. Disable IDPI in Pinchtab config (required for external sites):
- *      pinchtab config init  →  set security.idpi = false
- *   3. Start Pinchtab: pinchtab
- *   4. Set PINCHTAB_BASE_URL env var if not using default port
+ * Setup:
+ *   1. Install:  npm install -g pinchtab   OR  brew install pinchtab/tap/pinchtab
+ *   2. Allow external URLs — add to ~/.config/pinchtab/config.json:
+ *        { "security": { "idpi": { "allowedDomains": ["*"] } } }
+ *   3. Set env vars:  ALFRED_ENABLE_PINCHTAB=true  PINCHTAB_START_CMD=pinchtab
  */
 
 import type { PagePayload, PageCollectionFailure, PageCollectionResult } from "./browserPool.js";
 
 export { type PagePayload, type PageCollectionFailure, type PageCollectionResult };
 
-const DEFAULT_NAVIGATE_TIMEOUT_MS = 20_000;
+const DEFAULT_NAVIGATE_TIMEOUT_MS = 25_000;
 const DEFAULT_TEXT_MAX_CHARS = 50_000;
 
 interface PinchtabNavigateResponse {
   tabId: string;
   url: string;
   title: string;
+  idpiWarning?: string;
+  error?: string;
 }
 
 interface PinchtabTextResponse {
   url: string;
   title: string;
   text: string;
-  truncated: boolean;
+  truncated?: boolean;
+  idpiWarning?: string;
 }
 
 interface PinchtabSnapshotNode {
   ref: string;
   role: string;
   name: string;
-  href?: string;
-  value?: string | null;
+  depth?: number;
+  value?: string;
 }
 
 interface PinchtabSnapshotResponse {
-  url: string;
-  title: string;
   nodes: PinchtabSnapshotNode[];
-  count: number;
 }
 
-function compactText(input: string, max = 5000): string {
+// Extract bare URLs from rendered page text (best-effort; used when snapshot has no hrefs)
+function extractUrlsFromText(text: string, baseUrl: string): string[] {
+  const matches = text.match(/https?:\/\/[^\s"'<>)\]]{8,}/g) ?? [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const raw of matches) {
+    const url = raw.replace(/[.,;:!?]+$/, ""); // strip trailing punctuation
+    if (seen.has(url)) continue;
+    seen.add(url);
+    try {
+      const parsed = new URL(url);
+      if (parsed.hostname !== new URL(baseUrl).hostname) {
+        result.push(url);
+      }
+    } catch {
+      // skip malformed
+    }
+  }
+  return result;
+}
+
+function compactText(input: string, max: number): string {
   return input.replace(/\s+/g, " ").trim().slice(0, max);
 }
 
-function computeDeadlineTimeout(defaultMs: number, deadlineAtMs: number | undefined, reserveMs: number): number {
+function computeTimeoutMs(defaultMs: number, deadlineAtMs: number | undefined, reserveMs: number): number {
   if (!deadlineAtMs) return defaultMs;
   const remaining = deadlineAtMs - Date.now() - reserveMs;
-  if (remaining <= 2000) return 2000;
-  return Math.min(defaultMs, remaining);
+  return remaining < 2000 ? 2000 : Math.min(defaultMs, remaining);
 }
 
 export class PinchtabPool {
@@ -70,7 +89,8 @@ export class PinchtabPool {
 
   async health(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/health`, { signal: AbortSignal.timeout(3000) });
+      // Hit the tabs list endpoint — if Pinchtab is up it will respond
+      const res = await fetch(`${this.baseUrl}/tabs`, { signal: AbortSignal.timeout(3000) });
       return res.ok;
     } catch {
       return false;
@@ -81,95 +101,87 @@ export class PinchtabPool {
     const res = await fetch(`${this.baseUrl}/navigate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        url,
-        newTab: true,
-        blockImages: true,
-        waitFor: "networkidle",
-        timeout: timeoutMs
-      }),
+      body: JSON.stringify({ url }),
       signal: AbortSignal.timeout(timeoutMs + 5000)
     });
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`navigate failed ${res.status}: ${body.slice(0, 200)}`);
+      throw new Error(`navigate ${res.status}: ${body.slice(0, 200)}`);
     }
 
     const data = (await res.json()) as PinchtabNavigateResponse;
+    if (data.idpiWarning || (!data.tabId && data.error?.includes("IDPI"))) {
+      throw new Error(
+        `Pinchtab IDPI restriction blocked ${url}. ` +
+        `Add {"security":{"idpi":{"allowedDomains":["*"]}}} to ~/.config/pinchtab/config.json`
+      );
+    }
     return data.tabId;
   }
 
   private async fetchText(tabId: string): Promise<PinchtabTextResponse> {
     const res = await fetch(
-      `${this.baseUrl}/tabs/${encodeURIComponent(tabId)}/text?mode=raw&maxChars=${DEFAULT_TEXT_MAX_CHARS}`,
+      `${this.baseUrl}/tabs/${encodeURIComponent(tabId)}/text?maxChars=${DEFAULT_TEXT_MAX_CHARS}`,
       { signal: AbortSignal.timeout(10_000) }
     );
-    if (!res.ok) throw new Error(`text fetch failed ${res.status}`);
+    if (!res.ok) throw new Error(`text ${res.status}`);
     return res.json() as Promise<PinchtabTextResponse>;
   }
 
-  private async fetchSnapshot(tabId: string): Promise<PinchtabSnapshotResponse> {
-    const res = await fetch(
-      `${this.baseUrl}/tabs/${encodeURIComponent(tabId)}/snapshot?filter=all&format=compact`,
-      { signal: AbortSignal.timeout(10_000) }
-    );
-    if (!res.ok) throw new Error(`snapshot fetch failed ${res.status}`);
-    return res.json() as Promise<PinchtabSnapshotResponse>;
-  }
-
-  private async closeTab(tabId: string): Promise<void> {
-    await fetch(`${this.baseUrl}/tabs/${encodeURIComponent(tabId)}/close`, {
-      method: "POST",
-      signal: AbortSignal.timeout(5000)
-    }).catch(() => {
-      // best-effort close
-    });
+  private async fetchSnapshot(tabId: string): Promise<PinchtabSnapshotResponse | null> {
+    try {
+      const res = await fetch(
+        `${this.baseUrl}/tabs/${encodeURIComponent(tabId)}/snapshot`,
+        { signal: AbortSignal.timeout(8_000) }
+      );
+      if (!res.ok) return null;
+      return res.json() as Promise<PinchtabSnapshotResponse>;
+    } catch {
+      return null;
+    }
   }
 
   private async fetchPage(url: string, deadlineAtMs?: number): Promise<PagePayload> {
-    const timeoutMs = computeDeadlineTimeout(DEFAULT_NAVIGATE_TIMEOUT_MS, deadlineAtMs, 2000);
-
+    const timeoutMs = computeTimeoutMs(DEFAULT_NAVIGATE_TIMEOUT_MS, deadlineAtMs, 2000);
     const tabId = await this.navigateTo(url, timeoutMs);
 
-    try {
-      const [textResult, snapshotResult] = await Promise.all([
-        this.fetchText(tabId),
-        this.fetchSnapshot(tabId).catch(() => null)
-      ]);
+    // Fetch text and snapshot in parallel; snapshot is best-effort
+    const [textResult, snapshotResult] = await Promise.all([
+      this.fetchText(tabId),
+      this.fetchSnapshot(tabId)
+    ]);
 
-      // Extract outbound links from accessibility tree
-      const outboundLinks: string[] = [];
-      const listItems: string[] = [];
+    if (textResult.idpiWarning) {
+      throw new Error(
+        `Pinchtab IDPI warning for ${url}: ${textResult.idpiWarning}. ` +
+        `Set allowedDomains:["*"] in Pinchtab config.`
+      );
+    }
 
-      if (snapshotResult) {
-        for (const node of snapshotResult.nodes) {
-          if (node.href) {
-            try {
-              const resolved = new URL(node.href, url).toString();
-              const label = node.name?.replace(/\s+/g, " ").trim() || node.href;
-              outboundLinks.push(`${label} -> ${resolved}`);
-            } catch {
-              // skip unparseable hrefs
-            }
-          }
-          if (node.role === "listitem" && node.name) {
-            listItems.push(node.name.replace(/\s+/g, " ").trim());
-          }
+    // Extract list items from snapshot (role="listitem")
+    const listItems: string[] = [];
+    if (snapshotResult?.nodes) {
+      for (const node of snapshotResult.nodes) {
+        if (node.role === "listitem" && node.name) {
+          listItems.push(node.name.replace(/\s+/g, " ").trim());
         }
       }
-
-      return {
-        url: textResult.url || url,
-        title: compactText(textResult.title || "", 180),
-        text: compactText(textResult.text || "", 6000),
-        tableRows: [], // Pinchtab accessibility tree doesn't expose table rows directly; text covers this
-        listItems: listItems.map((item) => compactText(item, 220)).slice(0, 80),
-        outboundLinks: outboundLinks.slice(0, 120)
-      };
-    } finally {
-      await this.closeTab(tabId);
     }
+
+    // Extract outbound links from page text (snapshot nodes have no href field)
+    const rawUrls = extractUrlsFromText(textResult.text ?? "", url);
+    const outboundLinks = rawUrls.slice(0, 80).map((u) => `${u} -> ${u}`);
+
+    return {
+      url: textResult.url || url,
+      title: compactText(textResult.title || "", 180),
+      text: compactText(textResult.text || "", 6000),
+      tableRows: [],
+      listItems: listItems.map((item) => compactText(item, 220)).slice(0, 60),
+      outboundLinks
+    };
+    // Note: no close call — Pinchtab has no tab close endpoint; tabs auto-clean when server stops
   }
 
   async collectPages(urls: string[], concurrency: number, deadlineAtMs?: number): Promise<PageCollectionResult> {
@@ -183,8 +195,7 @@ export class PinchtabPool {
         const url = queue.shift();
         if (!url) return;
         try {
-          const page = await this.fetchPage(url, deadlineAtMs);
-          pages.push(page);
+          pages.push(await this.fetchPage(url, deadlineAtMs));
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           failures.push({ url, error: message.slice(0, 220) });
@@ -192,9 +203,7 @@ export class PinchtabPool {
       }
     };
 
-    const workerCount = Math.max(1, Math.min(concurrency, urls.length));
-    await Promise.all(Array.from({ length: workerCount }, () => worker()));
-
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, urls.length)) }, () => worker()));
     return { pages, failures };
   }
 }

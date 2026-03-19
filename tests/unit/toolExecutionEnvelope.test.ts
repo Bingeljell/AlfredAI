@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
-import { executeToolWithEnvelope } from "../../src/agent/tools/registry.js";
-import type { LeadAgentToolContext, LeadAgentToolDefinition } from "../../src/agent/types.js";
+import { executeToolWithEnvelope } from "../../src/tools/registry.js";
+import type { LeadAgentToolContext, LeadAgentToolDefinition } from "../../src/tools/types.js";
 import { RunStore } from "../../src/runs/runStore.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
 

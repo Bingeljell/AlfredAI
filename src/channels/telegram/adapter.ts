@@ -1,7 +1,7 @@
 import TelegramBot from "node-telegram-bot-api";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import type { ChatService } from "../../services/chatService.js";
+import type { ChatService } from "../../runner/chatService.js";
 import type { SessionStore } from "../../memory/sessionStore.js";
 import type { RunStore } from "../../runs/runStore.js";
 import type { ChannelAdapter } from "../types.js";

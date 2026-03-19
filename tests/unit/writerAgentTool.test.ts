@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { RunStore } from "../../src/runs/runStore.js";
-import { toolDefinition as writerAgentTool } from "../../src/agent/tools/definitions/writerAgent.tool.js";
+import { toolDefinition as writerAgentTool } from "../../src/tools/definitions/writerAgent.tool.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
-import type { LeadAgentToolContext } from "../../src/agent/types.js";
-import type { LlmProvider, LlmTextRequest, LlmTextResult } from "../../src/services/llm/types.js";
+import type { LeadAgentToolContext } from "../../src/tools/types.js";
+import type { LlmProvider, LlmTextRequest, LlmTextResult } from "../../src/provider/types.js";
 
 class FakeLlmProvider implements LlmProvider {
   readonly name = "fake";

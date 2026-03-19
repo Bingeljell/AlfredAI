@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { getActiveLlmProvider } from "../services/llm/registry.js";
+import { getActiveLlmProvider } from "../provider/registry.js";
 import { appConfig } from "../config/env.js";
 import { ensureDir } from "../utils/fs.js";
 

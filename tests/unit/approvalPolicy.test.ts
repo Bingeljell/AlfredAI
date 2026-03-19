@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateApprovalNeed } from "../../src/core/approvalPolicy.js";
+import { evaluateApprovalNeed } from "../../src/runtime/approvalPolicy.js";
 
 test("trusted mode skips approvals", () => {
   const decision = evaluateApprovalNeed("send email to team", "trusted");

@@ -7,7 +7,7 @@ import {
   runOpenAiStructuredChatWithDiagnostics,
   type StructuredChatDiagnostic,
   type StructuredChatHttpErrorDetails
-} from "../../services/openAiClient.js";
+} from "../../provider/openai-http.js";
 import { BrowserPool, type PagePayload } from "./browserPool.js";
 import { PinchtabPool } from "./pinchtabPool.js";
 import {

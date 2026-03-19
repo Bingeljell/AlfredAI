@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { RunStore } from "../../src/runs/runStore.js";
-import { toolDefinition as docQaTool } from "../../src/agent/tools/definitions/docQa.tool.js";
+import { toolDefinition as docQaTool } from "../../src/tools/definitions/docQa.tool.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
 
 function buildToolContext(workspace: string, runStore: RunStore) {

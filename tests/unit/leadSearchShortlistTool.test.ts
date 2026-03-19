@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { SearchResult } from "../../src/types.js";
-import { toolDefinition as leadSearchShortlistTool } from "../../src/agent/tools/definitions/leadSearchShortlist.tool.js";
+import { toolDefinition as leadSearchShortlistTool } from "../../src/tools/definitions/leadSearchShortlist.tool.js";
 
 function buildContext(options?: {
   results?: SearchResult[];

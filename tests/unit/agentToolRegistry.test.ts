@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyToolAllowlist, discoverLeadAgentTools } from "../../src/agent/tools/registry.js";
+import { applyToolAllowlist, discoverLeadAgentTools } from "../../src/tools/registry.js";
 
 test("auto-discovers lead agent tools from definitions folder", async () => {
   const tools = await discoverLeadAgentTools();

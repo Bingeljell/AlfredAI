@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { RunStore } from "../../src/runs/runStore.js";
-import { toolDefinition as runDiagnosticsTool } from "../../src/agent/tools/definitions/runDiagnostics.tool.js";
+import { toolDefinition as runDiagnosticsTool } from "../../src/tools/definitions/runDiagnostics.tool.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
 
 function buildToolContext(workspace: string, runStore: RunStore) {

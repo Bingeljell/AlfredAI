@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
-import { runOpenAiStructuredChatWithDiagnostics, runOpenAiChat } from "../../src/services/openAiClient.js";
+import { runOpenAiStructuredChatWithDiagnostics, runOpenAiChat } from "../../src/provider/openai-http.js";
 
 const SimpleSchema = z.object({
   ok: z.boolean()

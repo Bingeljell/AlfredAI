@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
-import { runStructuredWithFallback, runTextWithFallback } from "../../src/services/llm/router.js";
-import type { LlmProvider, LlmStructuredRequest, LlmTextRequest } from "../../src/services/llm/types.js";
+import { runStructuredWithFallback, runTextWithFallback } from "../../src/provider/router.js";
+import type { LlmProvider, LlmStructuredRequest, LlmTextRequest } from "../../src/provider/types.js";
 
 class FakeProvider implements LlmProvider {
   readonly name: string;

@@ -1,0 +1,160 @@
+import type { PolicyMode, RunOutcome, SessionPromptContext } from "../types.js";
+import type { RunStore } from "../runs/runStore.js";
+import type { SearchManager } from "../tools/search/searchManager.js";
+import { evaluateApprovalNeed } from "./approvalPolicy.js";
+import { appendDailyNote } from "../memory/dailyNotes.js";
+import { extractAndSaveSessionNotes } from "../memory/sessionExtractor.js";
+import { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
+import { ALFRED_AGENT } from "./specialists.js";
+import { runAgentLoop } from "./agentLoop.js";
+
+interface RunReActLoopOptions {
+  runStore: RunStore;
+  searchManager: SearchManager;
+  workspaceDir: string;
+  policyMode: PolicyMode;
+  searchMaxResults: number;
+  fastScrapeCount: number;
+  enablePlaywright: boolean;
+  maxSteps: number;
+  openAiApiKey?: string;
+  subReactMaxPages: number;
+  subReactBrowseConcurrency: number;
+  subReactBatchSize: number;
+  subReactLlmMaxCalls: number;
+  subReactMinConfidence: number;
+  pinchtabBaseUrl?: string;
+  leadPipelineExecutor?: typeof executeLeadSubReactPipeline;
+  agentMaxDurationMs?: number;
+  agentMaxToolCalls?: number;
+  agentMaxParallelTools?: number;
+  sessionContext?: SessionPromptContext;
+  isCancellationRequested: () => Promise<boolean>;
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+export async function runReActLoop(
+  sessionId: string,
+  message: string,
+  runId: string,
+  options: RunReActLoopOptions
+): Promise<RunOutcome> {
+  const { runStore } = options;
+
+  await runStore.appendEvent({
+    runId,
+    sessionId,
+    phase: "session",
+    eventType: "loop_started",
+    payload: { maxSteps: options.maxSteps },
+    timestamp: nowIso()
+  });
+
+  if (options.sessionContext) {
+    await runStore.appendEvent({
+      runId,
+      sessionId,
+      phase: "session",
+      eventType: "session_context_loaded",
+      payload: {
+        hasActiveObjective: Boolean(options.sessionContext.activeObjective),
+        hasLastCompletedRun: Boolean(options.sessionContext.lastCompletedRun?.runId),
+        artifactCount:
+          options.sessionContext.lastArtifacts?.length ??
+          options.sessionContext.lastCompletedRun?.artifactPaths?.length ??
+          0,
+        hasSessionSummary: Boolean(options.sessionContext.sessionSummary),
+        recentTurnCount: options.sessionContext.recentTurns?.length ?? 0,
+        recentOutputCount: options.sessionContext.recentOutputs?.length ?? 0
+      },
+      timestamp: nowIso()
+    });
+  }
+
+  await appendDailyNote(options.workspaceDir, sessionId, "user", message);
+
+  const approval = evaluateApprovalNeed(message, options.policyMode);
+  if (approval.needed) {
+    await runStore.appendEvent({
+      runId,
+      sessionId,
+      phase: "approval",
+      eventType: "approval_required",
+      payload: { reason: approval.reason, token: approval.token },
+      timestamp: nowIso()
+    });
+
+    return {
+      status: "needs_approval",
+      approvalToken: approval.token,
+      assistantText: `Approval required (${approval.token}) before executing this request.`
+    };
+  }
+
+  await runStore.appendEvent({
+    runId,
+    sessionId,
+    phase: "thought",
+    eventType: "intent_identified",
+    payload: { intent: "master_orchestration" },
+    timestamp: nowIso()
+  });
+
+  const leadPipelineExecutor = options.leadPipelineExecutor ?? executeLeadSubReactPipeline;
+
+  await runStore.appendEvent({
+    runId,
+    sessionId,
+    phase: "route",
+    eventType: "specialist_selected",
+    payload: { specialist: ALFRED_AGENT.name, classifyMs: 0 },
+    timestamp: nowIso()
+  });
+
+  const agentOutcome = await runAgentLoop({
+    runId,
+    sessionId,
+    message,
+    model: ALFRED_AGENT.model,
+    systemPrompt: ALFRED_AGENT.systemPrompt,
+    toolAllowlist: ALFRED_AGENT.toolAllowlist,
+    maxIterations: ALFRED_AGENT.maxIterations,
+    maxDurationMs: options.agentMaxDurationMs ?? 240_000,
+    openAiApiKey: options.openAiApiKey,
+    runStore,
+    searchManager: options.searchManager,
+    workspaceDir: options.workspaceDir,
+    defaults: {
+      searchMaxResults: options.searchMaxResults,
+      subReactMaxPages: options.subReactMaxPages,
+      subReactBrowseConcurrency: options.subReactBrowseConcurrency,
+      subReactBatchSize: options.subReactBatchSize,
+      subReactLlmMaxCalls: options.subReactLlmMaxCalls,
+      subReactMinConfidence: options.subReactMinConfidence,
+      pinchtabBaseUrl: options.pinchtabBaseUrl
+    },
+    leadPipelineExecutor,
+    policyMode: options.policyMode,
+    sessionContext: options.sessionContext,
+    isCancellationRequested: options.isCancellationRequested
+  });
+
+  const outcome: RunOutcome = { ...agentOutcome, specialist: ALFRED_AGENT.name };
+
+  await appendDailyNote(options.workspaceDir, sessionId, "assistant", outcome.assistantText ?? "");
+
+  // Fire-and-forget: extract facts from this session and persist to knowledge base
+  extractAndSaveSessionNotes({
+    workspaceDir: options.workspaceDir,
+    sessionId,
+    message,
+    assistantText: outcome.assistantText ?? ""
+  }).catch(() => {
+    // Non-fatal — never surface memory errors to the user
+  });
+
+  return outcome;
+}

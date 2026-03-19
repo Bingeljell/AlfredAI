@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runReActLoop } from "../../src/core/runReActLoop.js";
+import { runReActLoop } from "../../src/runtime/runReActLoop.js";
 import { RunStore } from "../../src/runs/runStore.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
 import type { SearchManager } from "../../src/tools/search/searchManager.js";

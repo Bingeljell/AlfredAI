@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   evaluateFetchedPageQuality,
   selectFetchedPagesForStorage
-} from "../../src/agent/tools/definitions/webFetch.tool.js";
+} from "../../src/tools/definitions/webFetch.tool.js";
 
 test("evaluateFetchedPageQuality flags captcha/paywall pages as unusable", () => {
   const quality = evaluateFetchedPageQuality({

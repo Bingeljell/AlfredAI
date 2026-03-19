@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { TurnRuntime } from "../../src/core/turnRuntime.js";
-import { ThreadRuntime, ThreadRuntimeManager } from "../../src/core/threadRuntime.js";
+import { TurnRuntime } from "../../src/runtime/turnRuntime.js";
+import { ThreadRuntime, ThreadRuntimeManager } from "../../src/runtime/threadRuntime.js";
 import { RunStore } from "../../src/runs/runStore.js";
 import { InMemoryQueue } from "../../src/workers/inMemoryQueue.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";

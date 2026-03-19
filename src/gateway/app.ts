@@ -9,7 +9,7 @@ import { BraveProvider } from "../tools/search/providers/braveProvider.js";
 import { BrightDataProvider } from "../tools/search/providers/brightDataProvider.js";
 import { SearchManager } from "../tools/search/searchManager.js";
 import { InMemoryQueue } from "../workers/inMemoryQueue.js";
-import { ChatService } from "../services/chatService.js";
+import { ChatService } from "../runner/chatService.js";
 import { ChannelSessionStore } from "../channels/telegram/channelSessionStore.js";
 
 const SessionPostSchema = z.object({
@@ -80,10 +80,7 @@ const chatService = new ChatService({
   pinchtabBaseUrl: appConfig.enablePinchtab ? appConfig.pinchtabBaseUrl : undefined,
   agentMaxDurationMs: appConfig.agentMaxDurationMs,
   agentMaxToolCalls: appConfig.agentMaxToolCalls,
-  agentMaxParallelTools: appConfig.agentMaxParallelTools,
-  agentPlannerMaxCalls: appConfig.agentPlannerMaxCalls,
-  agentObservationWindow: appConfig.agentObservationWindow,
-  agentDiminishingThreshold: appConfig.agentDiminishingThreshold
+  agentMaxParallelTools: appConfig.agentMaxParallelTools
 });
 
 app.get("/health", (c) => {

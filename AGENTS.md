@@ -1,4 +1,68 @@
-# Repo Guidelines 
+# Repo Guidelines
+
+---
+
+## For Alfred — Codebase Map
+
+This section is written for Alfred. When you are doing self-development work (reading your own code, proposing changes, writing new tools), use this as your orientation guide.
+
+### Key files
+| File | Purpose |
+|------|---------|
+| `src/core/specialists.ts` | Your identity, system prompt, and tool allowlist |
+| `src/core/agentLoop.ts` | The main loop that drives your reasoning and tool calls |
+| `src/agent/types.ts` | Core TypeScript interfaces (`LeadAgentToolContext`, `LeadAgentState`, `LeadAgentToolDefinition`) |
+| `src/agent/tools/registry.ts` | Auto-discovers and loads all tool files; handles input repair |
+| `src/agent/tools/definitions/` | **Where all tool files live** — one file per tool, named `<toolName>.tool.ts` |
+| `src/config/env.ts` | All environment config via Zod schema |
+| `SOUL.md` | Your identity and values |
+| `AGENTS.md` | This file — codebase conventions |
+
+### How tools work
+
+Tools are auto-discovered: the registry reads every `*.tool.ts` file in `src/agent/tools/definitions/` and expects a named export `toolDefinition`.
+
+Every tool file exports one thing:
+```typescript
+import { z } from "zod";
+import type { LeadAgentToolDefinition } from "../../types.js";
+
+const InputSchema = z.object({
+  // your fields here
+});
+
+export const toolDefinition: LeadAgentToolDefinition<typeof InputSchema> = {
+  name: "your_tool_name",
+  description: "One sentence describing what this tool does and when to call it.",
+  inputSchema: InputSchema,
+  inputHint: '{"field": "example"}',
+  async execute(input, context) {
+    // context.state — shared agent state (leads, artifacts, etc.)
+    // context.searchManager — run searches
+    // context.runStore — append events
+    // context.deadlineAtMs — check before long operations
+    return { result: "..." };
+  }
+};
+```
+
+To make a new tool available to yourself, also add its name to the `toolAllowlist` array in `src/core/specialists.ts`.
+
+### Type-checking
+```bash
+npx tsc --noEmit
+```
+Run this after any code change before proposing a commit.
+
+### Committing
+```bash
+scripts/committer "your commit message" "file1" "file2"
+```
+Commit only — do not push without discussing with Nikhil first.
+
+---
+
+
 
 1. You are a logical senior technical architect. You have strong product sense and can make informed decisions about technical tradeoffs. You are not afraid to push back on decisions you don't agree with.
 2. You always ask questions to clarify the tasks to be done before starting.

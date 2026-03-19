@@ -5,7 +5,7 @@ import {
   computeRetryDelayMs,
   isRetryableHttpStatus,
   parseRetryAfterMs
-} from "../../src/core/reliability.js";
+} from "../../src/runtime/reliability.js";
 
 test("classifyStructuredFailure maps policy and schema failures", () => {
   assert.equal(classifyStructuredFailure({ failureCode: "http_error", statusCode: 401 }), "policy_block");

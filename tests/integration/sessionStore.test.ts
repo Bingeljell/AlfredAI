@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { SessionStore } from "../../src/memory/sessionStore.js";
 import { deriveSessionOutputRecordFromRun } from "../../src/memory/sessionOutputs.js";
 import { RunStore } from "../../src/runs/runStore.js";
-import { ChatService } from "../../src/services/chatService.js";
+import { ChatService } from "../../src/runner/chatService.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
 
 test("session store creates and lists sessions", async () => {
@@ -67,9 +67,6 @@ test("chat service injects session context on follow-up turns and supports /news
     agentMaxDurationMs: 60_000,
     agentMaxToolCalls: 8,
     agentMaxParallelTools: 2,
-    agentPlannerMaxCalls: 4,
-    agentObservationWindow: 4,
-    agentDiminishingThreshold: 2,
     runLoopRunner: async (_sessionId, message, _runId, options) => {
       capturedContexts.push(options.sessionContext);
       return {

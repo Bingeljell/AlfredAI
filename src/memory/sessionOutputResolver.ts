@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { RunStore } from "../runs/runStore.js";
 import type { SessionOutputRecord, SessionPromptContext } from "../types.js";
-import { resolvePathInProject } from "../agent/tools/helpers/pathSafety.js";
+import { resolvePathInProject } from "../tools/helpers/pathSafety.js";
 import { deriveSessionOutputRecordFromRun, mergeSessionOutputRecords } from "./sessionOutputs.js";
 
 export interface SessionOutputBodyPreview {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { LeadPipelineToolInputSchema } from "../../src/agent/tools/definitions/leadPipeline.tool.js";
+import { LeadPipelineToolInputSchema } from "../../src/tools/definitions/leadPipeline.tool.js";
 import { normalizeLeadPipelineFilters } from "../../src/tools/lead/filters.js";
 
 test("lead pipeline input schema accepts filters payload", () => {

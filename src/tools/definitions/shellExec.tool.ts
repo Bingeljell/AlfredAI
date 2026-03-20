@@ -1,7 +1,7 @@
 import { exec as execCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
-import type { LeadAgentToolDefinition } from "../types.js";
+import type { ToolDefinition } from "../types.js";
 import { resolvePathInProject, toProjectRelative } from "../helpers/pathSafety.js";
 
 const exec = promisify(execCallback);
@@ -28,7 +28,7 @@ function clipOutput(value: string, max = 6000): string {
   return `${value.slice(0, max)}\n...[truncated]`;
 }
 
-export const toolDefinition: LeadAgentToolDefinition<typeof ShellExecToolInputSchema> = {
+export const toolDefinition: ToolDefinition<typeof ShellExecToolInputSchema> = {
   name: "shell_exec",
   description: "Execute a shell command in the project workspace (trusted mode only).",
   inputSchema: ShellExecToolInputSchema,

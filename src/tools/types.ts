@@ -1,10 +1,8 @@
 import type { z } from "zod";
-import type { LeadCandidate, PolicyMode } from "../types.js";
+import type { PolicyMode } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
-import type { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
-import type { PagePayload } from "../tools/lead/browserPool.js";
-import type { LeadExecutionBrief } from "../tools/lead/schemas.js";
+import type { PagePayload } from "../tools/browser/browserPool.js";
 import type { LlmProvider } from "../provider/types.js";
 
 export interface ResearchSourceCard {
@@ -16,31 +14,21 @@ export interface ResearchSourceCard {
   sourceTool: string;
 }
 
-export interface LeadAgentDefaults {
+export interface ToolDefaults {
   searchMaxResults: number;
-  subReactMaxPages: number;
-  subReactBrowseConcurrency: number;
-  subReactBatchSize: number;
-  subReactLlmMaxCalls: number;
-  subReactMinConfidence: number;
-  pinchtabBaseUrl?: string;
+  browseConcurrency: number;
 }
 
-export interface LeadAgentState {
-  leads: LeadCandidate[];
+export interface ToolState {
   artifacts: string[];
-  requestedLeadCount: number;
   fetchedPages: PagePayload[];
-  shortlistedUrls?: string[];
-  executionBrief?: LeadExecutionBrief;
   researchSourceCards?: ResearchSourceCard[];
 }
 
-export interface LeadAgentToolContext {
+export interface ToolContext {
   runId: string;
   sessionId: string;
   message: string;
-  leadExecutionBrief?: LeadExecutionBrief;
   deadlineAtMs: number;
   policyMode: PolicyMode;
   projectRoot: string;
@@ -49,21 +37,17 @@ export interface LeadAgentToolContext {
   workspaceDir: string;
   openAiApiKey?: string;
   llmProviders?: LlmProvider[];
-  defaults: LeadAgentDefaults;
-  leadPipelineExecutor: typeof executeLeadSubReactPipeline;
-  state: LeadAgentState;
+  defaults: ToolDefaults;
+  state: ToolState;
   isCancellationRequested: () => Promise<boolean>;
-  addLeads: (leads: LeadCandidate[]) => { addedCount: number; totalCount: number };
   addArtifact: (artifactPath: string) => void;
   setFetchedPages: (pages: PagePayload[]) => void;
   getFetchedPages: () => PagePayload[];
-  setShortlistedUrls?: (urls: string[]) => void;
-  getShortlistedUrls?: () => string[];
   setResearchSourceCards?: (cards: ResearchSourceCard[]) => void;
   getResearchSourceCards?: () => ResearchSourceCard[];
 }
 
-export interface LeadAgentToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {
+export interface ToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {
   name: string;
   description: string;
   inputSchema: TSchema;
@@ -71,6 +55,6 @@ export interface LeadAgentToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTyp
   requiresApproval?: boolean;
   execute: (
     input: z.infer<TSchema>,
-    context: LeadAgentToolContext
+    context: ToolContext
   ) => Promise<Record<string, unknown>>;
 }

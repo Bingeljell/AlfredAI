@@ -1,12 +1,12 @@
 import { z } from "zod";
-import type { LeadAgentToolDefinition } from "../types.js";
+import type { ToolDefinition } from "../types.js";
 
 export const ProcessStopToolInputSchema = z.object({
   pid: z.number().int().min(1),
   force: z.boolean().optional()
 });
 
-export const toolDefinition: LeadAgentToolDefinition<typeof ProcessStopToolInputSchema> = {
+export const toolDefinition: ToolDefinition<typeof ProcessStopToolInputSchema> = {
   name: "process_stop",
   description: "Stop a local process by PID (trusted mode only).",
   inputSchema: ProcessStopToolInputSchema,

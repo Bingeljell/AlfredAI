@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { LeadAgentToolDefinition } from "../types.js";
-import { PinchtabPool } from "../lead/pinchtabPool.js";
+import type { ToolDefinition } from "../types.js";
+import { PinchtabPool } from "../browser/pinchtabPool.js";
 import { appConfig } from "../../config/env.js";
 
 const InputSchema = z.object({
@@ -8,7 +8,7 @@ const InputSchema = z.object({
   maxChars: z.number().int().min(500).max(50_000).optional()
 });
 
-export const toolDefinition: LeadAgentToolDefinition<typeof InputSchema> = {
+export const toolDefinition: ToolDefinition<typeof InputSchema> = {
   name: "pinchtab_fetch",
   description:
     "Fetch a URL using Pinchtab (JS-rendered browser). Returns page text, title, and outbound links. Use instead of web_fetch for JS-heavy pages (Clutch, LinkedIn, etc.).",

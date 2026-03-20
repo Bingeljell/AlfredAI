@@ -5,7 +5,7 @@ import path from "node:path";
 import { RunStore } from "../../src/runs/runStore.js";
 import { toolDefinition as writerAgentTool } from "../../src/tools/definitions/writerAgent.tool.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
-import type { LeadAgentToolContext } from "../../src/tools/types.js";
+import type { ToolContext } from "../../src/tools/types.js";
 import type { LlmProvider, LlmTextRequest, LlmTextResult } from "../../src/provider/types.js";
 
 class FakeLlmProvider implements LlmProvider {
@@ -46,11 +46,9 @@ class FakeLlmProvider implements LlmProvider {
   }
 }
 
-function buildToolContext(workspace: string, runStore: RunStore, runId = "writer-run", sessionId = "session-1"): LeadAgentToolContext {
-  const state: LeadAgentToolContext["state"] = {
-    leads: [],
+function buildToolContext(workspace: string, runStore: RunStore, runId = "writer-run", sessionId = "session-1"): ToolContext {
+  const state: ToolContext["state"] = {
     artifacts: [],
-    requestedLeadCount: 0,
     fetchedPages: [],
     researchSourceCards: []
   };
@@ -67,18 +65,10 @@ function buildToolContext(workspace: string, runStore: RunStore, runId = "writer
     openAiApiKey: undefined,
     defaults: {
       searchMaxResults: 15,
-      subReactMaxPages: 10,
-      subReactBrowseConcurrency: 3,
-      subReactBatchSize: 4,
-      subReactLlmMaxCalls: 6,
-      subReactMinConfidence: 0.6
+      browseConcurrency: 3
     },
-    leadPipelineExecutor: (async () => {
-      throw new Error("not used");
-    }) as never,
     state,
     isCancellationRequested: async () => false,
-    addLeads: () => ({ addedCount: 0, totalCount: 0 }),
     addArtifact: (artifactPath) => {
       if (!state.artifacts.includes(artifactPath)) {
         state.artifacts.push(artifactPath);

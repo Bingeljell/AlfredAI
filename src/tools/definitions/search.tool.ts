@@ -1,12 +1,12 @@
 import { z } from "zod";
-import type { LeadAgentToolDefinition } from "../types.js";
+import type { ToolDefinition } from "../types.js";
 
 export const SearchToolInputSchema = z.object({
   query: z.string().min(2).max(400),
   maxResults: z.number().int().min(1).max(15).optional()
 });
 
-export const toolDefinition: LeadAgentToolDefinition<typeof SearchToolInputSchema> = {
+export const toolDefinition: ToolDefinition<typeof SearchToolInputSchema> = {
   name: "search",
   description: "Run provider-backed web search and return top results.",
   inputSchema: SearchToolInputSchema,

@@ -34,11 +34,7 @@ interface ChatServiceOptions {
   enablePlaywright: boolean;
   maxSteps: number;
   openAiApiKey?: string;
-  subReactMaxPages: number;
-  subReactBrowseConcurrency: number;
-  subReactBatchSize: number;
-  subReactLlmMaxCalls: number;
-  subReactMinConfidence: number;
+  browseConcurrency: number;
   pinchtabBaseUrl?: string;
   agentMaxDurationMs: number;
   agentMaxToolCalls: number;
@@ -366,11 +362,7 @@ export class ChatService {
         enablePlaywright: this.options.enablePlaywright,
         maxSteps: this.options.maxSteps,
         openAiApiKey: this.options.openAiApiKey,
-        subReactMaxPages: this.options.subReactMaxPages,
-        subReactBrowseConcurrency: this.options.subReactBrowseConcurrency,
-        subReactBatchSize: this.options.subReactBatchSize,
-        subReactLlmMaxCalls: this.options.subReactLlmMaxCalls,
-        subReactMinConfidence: this.options.subReactMinConfidence,
+        browseConcurrency: this.options.browseConcurrency,
         pinchtabBaseUrl: this.options.pinchtabBaseUrl,
         agentMaxDurationMs: this.options.agentMaxDurationMs,
         agentMaxToolCalls: this.options.agentMaxToolCalls,

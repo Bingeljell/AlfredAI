@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import type { LeadAgentToolDefinition } from "../types.js";
+import type { ToolDefinition } from "../types.js";
 import { resolvePathInProject, toProjectRelative } from "../helpers/pathSafety.js";
 
 export const FileWriteToolInputSchema = z.object({
@@ -11,7 +11,7 @@ export const FileWriteToolInputSchema = z.object({
   createDirs: z.boolean().optional()
 });
 
-export const toolDefinition: LeadAgentToolDefinition<typeof FileWriteToolInputSchema> = {
+export const toolDefinition: ToolDefinition<typeof FileWriteToolInputSchema> = {
   name: "file_write",
   description: "Write or append text content to a file inside the project root.",
   inputSchema: FileWriteToolInputSchema,

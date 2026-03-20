@@ -113,13 +113,6 @@ Your codebase conventions and structure are in AGENTS.md in the project root.
     "search_status",
     "recover_search",
     "run_diagnostics",
-    // Lead generation
-    "lead_search_shortlist",
-    "lead_extract",
-    "lead_pipeline",
-    "lead_resolve_websites",
-    "email_enrich",
-    "write_csv",
     // Writing
     "writer_agent",
     // Ops

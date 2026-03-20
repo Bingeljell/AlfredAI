@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
-import type { LeadAgentToolDefinition } from "../types.js";
+import type { ToolDefinition } from "../types.js";
 import { resolvePathInProject, toProjectRelative } from "../helpers/pathSafety.js";
 
 export const FileEditToolInputSchema = z.object({
@@ -27,7 +27,7 @@ function countMatches(haystack: string, needle: string): number {
   return count;
 }
 
-export const toolDefinition: LeadAgentToolDefinition<typeof FileEditToolInputSchema> = {
+export const toolDefinition: ToolDefinition<typeof FileEditToolInputSchema> = {
   name: "file_edit",
   description: "Perform text replacement edits in an existing file.",
   inputSchema: FileEditToolInputSchema,

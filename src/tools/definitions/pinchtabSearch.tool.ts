@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { LeadAgentToolDefinition } from "../types.js";
-import { PinchtabPool } from "../lead/pinchtabPool.js";
+import type { ToolDefinition } from "../types.js";
+import { PinchtabPool } from "../browser/pinchtabPool.js";
 import { appConfig } from "../../config/env.js";
 
 const InputSchema = z.object({
@@ -14,7 +14,7 @@ interface SearchResult {
   snippet: string;
 }
 
-export const toolDefinition: LeadAgentToolDefinition<typeof InputSchema> = {
+export const toolDefinition: ToolDefinition<typeof InputSchema> = {
   name: "pinchtab_search",
   description:
     "Search Google via Pinchtab (real browser). Returns ranked URLs with titles and snippets. Use for targeted searches where SearxNG quality is insufficient.",

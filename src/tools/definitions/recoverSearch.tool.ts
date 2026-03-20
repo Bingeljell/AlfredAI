@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { LeadAgentToolDefinition } from "../types.js";
+import type { ToolDefinition } from "../types.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -9,7 +9,7 @@ export const RecoverSearchToolInputSchema = z.object({
   reason: z.string().min(1).max(200).optional()
 });
 
-export const toolDefinition: LeadAgentToolDefinition<typeof RecoverSearchToolInputSchema> = {
+export const toolDefinition: ToolDefinition<typeof RecoverSearchToolInputSchema> = {
   name: "recover_search",
   description: "Attempt recovery of the primary search provider (for example restarting local SearXNG).",
   inputSchema: RecoverSearchToolInputSchema,

@@ -19,15 +19,7 @@ const CONTRACT_MAP: Record<string, ToolInputContract> = {
       maxResults: 10
     }
   },
-  lead_search_shortlist: {
-    required: ["query"],
-    bounds: ["query length <= 400", "maxResults <= 15", "maxUrls <= 25"],
-    exampleInput: {
-      query: "managed service providers texas",
-      maxResults: 12,
-      maxUrls: 12
-    }
-  },
+
   web_fetch: {
     required: ["one of: query | urls | useStoredUrls=true"],
     bounds: [
@@ -91,8 +83,8 @@ const CONTRACT_MAP: Record<string, ToolInputContract> = {
     required: ["question"],
     bounds: ["scopePaths <= 8"],
     exampleInput: {
-      question: "What does the lead pipeline do?",
-      scopePaths: ["docs", "src/tools/lead"]
+      question: "How does the agent loop work?",
+      scopePaths: ["docs", "src/runtime"]
     }
   },
   run_diagnostics: {

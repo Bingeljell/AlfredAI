@@ -4,7 +4,6 @@ import type { SearchManager } from "../tools/search/searchManager.js";
 import { evaluateApprovalNeed } from "./approvalPolicy.js";
 import { appendDailyNote } from "../memory/dailyNotes.js";
 import { extractAndSaveSessionNotes } from "../memory/sessionExtractor.js";
-import { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
 import { ALFRED_AGENT } from "./specialists.js";
 import { runAgentLoop } from "./agentLoop.js";
 
@@ -18,13 +17,8 @@ interface RunReActLoopOptions {
   enablePlaywright: boolean;
   maxSteps: number;
   openAiApiKey?: string;
-  subReactMaxPages: number;
-  subReactBrowseConcurrency: number;
-  subReactBatchSize: number;
-  subReactLlmMaxCalls: number;
-  subReactMinConfidence: number;
+  browseConcurrency: number;
   pinchtabBaseUrl?: string;
-  leadPipelineExecutor?: typeof executeLeadSubReactPipeline;
   agentMaxDurationMs?: number;
   agentMaxToolCalls?: number;
   agentMaxParallelTools?: number;
@@ -103,8 +97,6 @@ export async function runReActLoop(
     timestamp: nowIso()
   });
 
-  const leadPipelineExecutor = options.leadPipelineExecutor ?? executeLeadSubReactPipeline;
-
   await runStore.appendEvent({
     runId,
     sessionId,
@@ -129,14 +121,8 @@ export async function runReActLoop(
     workspaceDir: options.workspaceDir,
     defaults: {
       searchMaxResults: options.searchMaxResults,
-      subReactMaxPages: options.subReactMaxPages,
-      subReactBrowseConcurrency: options.subReactBrowseConcurrency,
-      subReactBatchSize: options.subReactBatchSize,
-      subReactLlmMaxCalls: options.subReactLlmMaxCalls,
-      subReactMinConfidence: options.subReactMinConfidence,
-      pinchtabBaseUrl: options.pinchtabBaseUrl
+      browseConcurrency: options.browseConcurrency
     },
-    leadPipelineExecutor,
     policyMode: options.policyMode,
     sessionContext: options.sessionContext,
     isCancellationRequested: options.isCancellationRequested

@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { LeadAgentToolDefinition } from "../types.js";
-import { BrowserPool } from "../lead/browserPool.js";
+import type { ToolDefinition } from "../types.js";
+import { BrowserPool } from "../browser/browserPool.js";
 import { SearchManagerError } from "../search/searchManager.js";
 
 export const WebFetchToolInputSchema = z
@@ -102,14 +102,14 @@ export function selectFetchedPagesForStorage<TPage extends { url: string; title:
   };
 }
 
-export const toolDefinition: LeadAgentToolDefinition<typeof WebFetchToolInputSchema> = {
+export const toolDefinition: ToolDefinition<typeof WebFetchToolInputSchema> = {
   name: "web_fetch",
   description: "Fetch and parse web pages using browser automation from query results or explicit URL list.",
   inputSchema: WebFetchToolInputSchema,
   inputHint: "Use for deterministic page retrieval before extraction. Prefer maxPages <= 12 unless necessary.",
   async execute(input, context) {
     const maxPages = input.maxPages ?? 10;
-    const browseConcurrency = input.browseConcurrency ?? context.defaults.subReactBrowseConcurrency;
+    const browseConcurrency = input.browseConcurrency ?? context.defaults.browseConcurrency;
     const maxResults = input.maxResults ?? context.defaults.searchMaxResults;
 
     let searchProvider: string | undefined;
@@ -143,7 +143,7 @@ export const toolDefinition: LeadAgentToolDefinition<typeof WebFetchToolInputSch
       }
     }
 
-    const storedUrls = input.useStoredUrls ? (context.getShortlistedUrls?.() ?? []) : [];
+    const storedUrls: string[] = [];
     const requestedUrls = [...(input.urls ?? []), ...storedUrls];
     const candidateUrls = dedupeUrls([...requestedUrls, ...searchUrls]);
     const primaryUrls = candidateUrls.slice(0, maxPages);

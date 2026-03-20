@@ -1,7 +1,7 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
-import type { LeadAgentToolDefinition } from "../types.js";
+import type { ToolDefinition } from "../types.js";
 
 const execAsync = promisify(exec);
 
@@ -10,7 +10,7 @@ export const RagMemoryQueryInputSchema = z.object({
   maxResults: z.number().int().min(1).max(10).optional()
 });
 
-export const toolDefinition: LeadAgentToolDefinition<typeof RagMemoryQueryInputSchema> = {
+export const toolDefinition: ToolDefinition<typeof RagMemoryQueryInputSchema> = {
   name: "rag_memory_query",
   description:
     "Search Alfred's long-term knowledge base for facts, findings, and decisions from past sessions. Call this before searching the web when the topic may have been researched or discussed before.",

@@ -1,12 +1,12 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { LeadAgentToolContext, LeadAgentToolDefinition } from "./types.js";
+import type { ToolContext, ToolDefinition } from "./types.js";
 import type { RunStore } from "../runs/runStore.js";
 import { redactValue } from "../utils/redact.js";
 
 interface ToolModule {
-  toolDefinition?: LeadAgentToolDefinition;
+  toolDefinition?: ToolDefinition;
 }
 
 export interface ToolExecutionEnvelope {
@@ -24,8 +24,8 @@ export interface ToolExecutionEnvelope {
 interface ExecuteToolWithEnvelopeArgs {
   toolName: string;
   inputJson: string;
-  tools: Map<string, LeadAgentToolDefinition>;
-  context: LeadAgentToolContext;
+  tools: Map<string, ToolDefinition>;
+  context: ToolContext;
   runStore: RunStore;
   runId: string;
 }
@@ -508,8 +508,8 @@ function definitionsDir(): string {
   return path.join(path.dirname(filePath), "definitions");
 }
 
-export async function discoverLeadAgentTools(): Promise<Map<string, LeadAgentToolDefinition>> {
-  const toolMap = new Map<string, LeadAgentToolDefinition>();
+export async function discoverTools(): Promise<Map<string, ToolDefinition>> {
+  const toolMap = new Map<string, ToolDefinition>();
   const dirPath = definitionsDir();
   const entries = await readdir(dirPath);
 
@@ -540,9 +540,9 @@ export async function discoverLeadAgentTools(): Promise<Map<string, LeadAgentToo
 }
 
 export function applyToolAllowlist(
-  toolMap: Map<string, LeadAgentToolDefinition>,
+  toolMap: Map<string, ToolDefinition>,
   allowlist: string[] | undefined
-): Map<string, LeadAgentToolDefinition> {
+): Map<string, ToolDefinition> {
   const normalizedAllowlist = allowlist?.map((item) => item.trim()).filter(Boolean);
   if (!normalizedAllowlist || normalizedAllowlist.length === 0) {
     return toolMap;

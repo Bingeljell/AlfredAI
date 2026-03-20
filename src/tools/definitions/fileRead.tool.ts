@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import type { LeadAgentToolDefinition } from "../types.js";
+import type { ToolDefinition } from "../types.js";
 import { resolvePathInProject, toProjectRelative } from "../helpers/pathSafety.js";
 
 export const FileReadToolInputSchema = z.object({
@@ -10,7 +10,7 @@ export const FileReadToolInputSchema = z.object({
   maxChars: z.number().int().min(200).max(80_000).optional()
 });
 
-export const toolDefinition: LeadAgentToolDefinition<typeof FileReadToolInputSchema> = {
+export const toolDefinition: ToolDefinition<typeof FileReadToolInputSchema> = {
   name: "file_read",
   description: "Read text file content from the project root with bounded slices.",
   inputSchema: FileReadToolInputSchema,

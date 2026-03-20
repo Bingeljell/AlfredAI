@@ -1,7 +1,7 @@
 import { exec as execCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
-import type { LeadAgentToolDefinition } from "../types.js";
+import type { ToolDefinition } from "../types.js";
 
 const exec = promisify(execCallback);
 
@@ -36,7 +36,7 @@ function parseProcessRows(raw: string): ProcessRow[] {
     .filter((row): row is ProcessRow => row !== undefined && Number.isFinite(row.pid));
 }
 
-export const toolDefinition: LeadAgentToolDefinition<typeof ProcessListToolInputSchema> = {
+export const toolDefinition: ToolDefinition<typeof ProcessListToolInputSchema> = {
   name: "process_list",
   description: "List local processes for diagnostics and lifecycle control.",
   inputSchema: ProcessListToolInputSchema,

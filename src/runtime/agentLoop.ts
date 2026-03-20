@@ -2,13 +2,10 @@ import { z } from "zod";
 import type { PolicyMode, RunOutcome, SessionPromptContext } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
-import type { LeadAgentDefaults, LeadAgentState, LeadAgentToolContext } from "../tools/types.js";
-import type { executeLeadSubReactPipeline } from "../tools/lead/subReactPipeline.js";
-import { discoverLeadAgentTools, applyToolAllowlist, executeToolWithEnvelope } from "../tools/registry.js";
+import type { ToolDefaults, ToolState, ToolContext } from "../tools/types.js";
+import { discoverTools, applyToolAllowlist, executeToolWithEnvelope } from "../tools/registry.js";
 import { getActiveLlmProvider } from "../provider/registry.js";
 import type { LlmConversationMessage, LlmToolDef } from "../provider/types.js";
-import { readLeadsCsv } from "../tools/csv/writeCsv.js";
-import path from "node:path";
 
 export interface AgentLoopOptions {
   runId: string;
@@ -23,8 +20,7 @@ export interface AgentLoopOptions {
   runStore: RunStore;
   searchManager: SearchManager;
   workspaceDir: string;
-  defaults: LeadAgentDefaults;
-  leadPipelineExecutor: typeof executeLeadSubReactPipeline;
+  defaults: ToolDefaults;
   policyMode: PolicyMode;
   sessionContext?: SessionPromptContext;
   isCancellationRequested: () => Promise<boolean>;
@@ -75,7 +71,6 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     searchManager,
     workspaceDir,
     defaults,
-    leadPipelineExecutor,
     policyMode,
     sessionContext,
     isCancellationRequested
@@ -84,31 +79,14 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
   const deadlineAtMs = Date.now() + maxDurationMs;
   const projectRoot = process.cwd();
 
-  // Mutable agent state (shared across all tool executions)
-  const state: LeadAgentState = {
-    leads: [],
+  // Mutable agent state (shared across all tool executions in this run)
+  const state: ToolState = {
     artifacts: [],
-    requestedLeadCount: 0,
     fetchedPages: [],
-    shortlistedUrls: [],
     researchSourceCards: []
   };
 
-  // Restore leads from the most recent checkpoint CSV for this session.
-  // This lets follow-up turns (enrich, re-export) pick up where the prior run left off
-  // without the agent needing to re-discover leads.
-  const priorRuns = await runStore.listRuns(sessionId, 10);
-  for (const priorRun of priorRuns) {
-    if (priorRun.runId === runId) continue;
-    const csvPath = path.join(workspaceDir, "artifacts", priorRun.runId, "leads.csv");
-    const loaded = await readLeadsCsv(csvPath);
-    if (loaded.length > 0) {
-      state.leads.push(...loaded);
-      break;
-    }
-  }
-
-  const context: LeadAgentToolContext = {
+  const context: ToolContext = {
     runId,
     sessionId,
     message,
@@ -120,13 +98,8 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     workspaceDir,
     openAiApiKey,
     defaults,
-    leadPipelineExecutor,
     state,
     isCancellationRequested,
-    addLeads: (leads) => {
-      state.leads.push(...leads);
-      return { addedCount: leads.length, totalCount: state.leads.length };
-    },
     addArtifact: (artifactPath) => {
       state.artifacts.push(artifactPath);
     },
@@ -134,10 +107,6 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
       state.fetchedPages = pages;
     },
     getFetchedPages: () => state.fetchedPages,
-    setShortlistedUrls: (urls) => {
-      state.shortlistedUrls = urls;
-    },
-    getShortlistedUrls: () => state.shortlistedUrls ?? [],
     setResearchSourceCards: (cards) => {
       state.researchSourceCards = cards;
     },
@@ -145,7 +114,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
   };
 
   // Discover and filter tools
-  const allTools = await discoverLeadAgentTools();
+  const allTools = await discoverTools();
   const tools = applyToolAllowlist(allTools, toolAllowlist);
   const llmTools = toolDefsToLlm(tools);
   const provider = getActiveLlmProvider();
@@ -185,15 +154,14 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
         sessionId,
         phase: "final",
         eventType: "agent_loop_timeout",
-        payload: { iteration, maxIterations, artifactCount: state.artifacts.length, leadCount: state.leads.length },
+        payload: { iteration, maxIterations, artifactCount: state.artifacts.length },
         timestamp: nowIso()
       });
       // If work was completed before the deadline hit, surface it rather than reporting failure
       if (state.artifacts.length > 0) {
-        const leadSummary = state.leads.length > 0 ? ` Found ${state.leads.length} leads.` : "";
         return {
           status: "completed",
-          assistantText: `Completed the core task but ran out of time to send a full summary.${leadSummary} Results saved to: ${state.artifacts.join(", ")}`,
+          assistantText: `Completed the core task but ran out of time to send a full summary. Results saved to: ${state.artifacts.join(", ")}`,
           artifactPaths: state.artifacts
         };
       }

@@ -123,26 +123,6 @@ export interface SearchResult {
   rank: number;
 }
 
-export type LeadSizeMatch = "in_range" | "near_range" | "unknown" | "out_of_range";
-export type LeadSelectionMode = "strict" | "relaxed";
-
-export interface LeadCandidate {
-  companyName: string;
-  email?: string;
-  emailEvidence?: string;
-  website?: string;
-  location?: string;
-  employeeSizeText?: string;
-  employeeMin?: number;
-  employeeMax?: number;
-  sizeEvidence?: string;
-  sizeMatch?: LeadSizeMatch;
-  selectionMode?: LeadSelectionMode;
-  shortDesc: string;
-  sourceUrl: string;
-  confidence: number;
-  evidence: string;
-}
 
 export interface ToolCallRecord {
   toolName: string;

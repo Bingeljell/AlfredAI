@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { LlmUsage, TurnOutputShape } from "../../types.js";
-import type { LeadAgentToolDefinition, ResearchSourceCard } from "../types.js";
+import type { ToolDefinition, ResearchSourceCard } from "../types.js";
 import { resolvePathInProject, toProjectRelative } from "../helpers/pathSafety.js";
 import { OpenAiLlmProvider } from "../../provider/openai.js";
 import { runTextWithFallback } from "../../provider/router.js";
@@ -210,7 +210,7 @@ function formatContextSnippets(contextSnippets: string[]): string {
 }
 
 async function emitWriterStageEvent(args: {
-  context: Parameters<LeadAgentToolDefinition["execute"]>[1];
+  context: Parameters<ToolDefinition["execute"]>[1];
   stage: string;
   status: "started" | "completed" | "failed" | "skipped";
   payload?: Record<string, unknown>;
@@ -229,7 +229,7 @@ async function emitWriterStageEvent(args: {
   });
 }
 
-async function maybeRecordUsage(context: Parameters<LeadAgentToolDefinition["execute"]>[1], usage: LlmUsage | undefined): Promise<void> {
+async function maybeRecordUsage(context: Parameters<ToolDefinition["execute"]>[1], usage: LlmUsage | undefined): Promise<void> {
   if (!usage) {
     return;
   }
@@ -257,7 +257,7 @@ async function loadContextSnippets(projectRoot: string, contextPaths: string[] |
   return snippets;
 }
 
-function resolveWriterProviders(context: Parameters<LeadAgentToolDefinition["execute"]>[1]): LlmProvider[] {
+function resolveWriterProviders(context: Parameters<ToolDefinition["execute"]>[1]): LlmProvider[] {
   if (Array.isArray(context.llmProviders) && context.llmProviders.length > 0) {
     return context.llmProviders;
   }
@@ -482,7 +482,7 @@ function buildWriterPrompt(args: {
   ].join("\n\n");
 }
 
-export const toolDefinition: LeadAgentToolDefinition = {
+export const toolDefinition: ToolDefinition = {
   name: "writer_agent",
   description: "Generate a user-facing draft from the current contract and evidence, then optionally persist it.",
   inputSchema: WriterAgentToolInputSchema,

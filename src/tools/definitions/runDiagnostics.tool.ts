@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import type { RunEvent, RunRecord, ToolCallRecord } from "../../types.js";
-import type { LeadAgentToolDefinition } from "../types.js";
+import type { ToolDefinition } from "../types.js";
 import { resolvePathInProject, toProjectRelative } from "../helpers/pathSafety.js";
 
 const RunDiagnosticsToolInputSchema = z
@@ -174,7 +174,7 @@ function buildRecommendations(args: {
   return recommendations;
 }
 
-export const toolDefinition: LeadAgentToolDefinition<typeof RunDiagnosticsToolInputSchema> = {
+export const toolDefinition: ToolDefinition<typeof RunDiagnosticsToolInputSchema> = {
   name: "run_diagnostics",
   description: "Analyze run timeline/tool telemetry and summarize likely failure points with recommendations.",
   inputSchema: RunDiagnosticsToolInputSchema,

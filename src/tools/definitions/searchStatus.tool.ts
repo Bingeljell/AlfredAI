@@ -1,9 +1,9 @@
 import { z } from "zod";
-import type { LeadAgentToolDefinition } from "../types.js";
+import type { ToolDefinition } from "../types.js";
 
 export const SearchStatusToolInputSchema = z.object({});
 
-export const toolDefinition: LeadAgentToolDefinition<typeof SearchStatusToolInputSchema> = {
+export const toolDefinition: ToolDefinition<typeof SearchStatusToolInputSchema> = {
   name: "search_status",
   description: "Check live health of search providers and whether primary recovery is available.",
   inputSchema: SearchStatusToolInputSchema,

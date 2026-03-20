@@ -1,7 +1,7 @@
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import type { LeadAgentToolDefinition } from "../types.js";
+import type { ToolDefinition } from "../types.js";
 import { resolvePathInProject, toProjectRelative } from "../helpers/pathSafety.js";
 
 export const FileListToolInputSchema = z.object({
@@ -58,7 +58,7 @@ async function listEntries(args: {
   return output;
 }
 
-export const toolDefinition: LeadAgentToolDefinition<typeof FileListToolInputSchema> = {
+export const toolDefinition: ToolDefinition<typeof FileListToolInputSchema> = {
   name: "file_list",
   description: "List files/directories inside the project root for navigation and planning edits.",
   inputSchema: FileListToolInputSchema,

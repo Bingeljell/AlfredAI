@@ -3,7 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import type { LlmUsage } from "../../types.js";
 import { runOpenAiStructuredChatWithDiagnostics } from "../../provider/openai-http.js";
-import type { LeadAgentToolDefinition } from "../types.js";
+import type { ToolDefinition } from "../types.js";
 import { resolvePathInProject, toProjectRelative } from "../helpers/pathSafety.js";
 
 const DOC_FILE_EXTENSIONS = new Set([".md", ".mdx", ".txt", ".rst", ".adoc", ".json", ".yaml", ".yml"]);
@@ -191,14 +191,14 @@ function buildFallbackAnswer(question: string, snippets: SnippetMatch[]): string
   return `Using local docs only, here are the strongest matching excerpts for "${question}":\n${preview}`;
 }
 
-async function maybeRecordUsage(context: Parameters<LeadAgentToolDefinition["execute"]>[1], usage: LlmUsage | undefined): Promise<void> {
+async function maybeRecordUsage(context: Parameters<ToolDefinition["execute"]>[1], usage: LlmUsage | undefined): Promise<void> {
   if (!usage) {
     return;
   }
   await context.runStore.addLlmUsage(context.runId, usage, 1);
 }
 
-export const toolDefinition: LeadAgentToolDefinition<typeof DocQaToolInputSchema> = {
+export const toolDefinition: ToolDefinition<typeof DocQaToolInputSchema> = {
   name: "doc_qa",
   description: "Answer questions from local documentation/files with citations and bounded context.",
   inputSchema: DocQaToolInputSchema,

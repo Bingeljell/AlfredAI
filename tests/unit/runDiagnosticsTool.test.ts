@@ -20,11 +20,7 @@ function buildToolContext(workspace: string, runStore: RunStore) {
     openAiApiKey: undefined,
     defaults: {
       searchMaxResults: 15,
-      subReactMaxPages: 10,
-      subReactBrowseConcurrency: 3,
-      subReactBatchSize: 4,
-      subReactLlmMaxCalls: 6,
-      subReactMinConfidence: 0.6
+      browseConcurrency: 3
     },
     leadPipelineExecutor: (async () => {
       throw new Error("not used");

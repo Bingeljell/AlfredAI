@@ -48,6 +48,26 @@ interface GeminiResponse {
   error?: { code?: number; message?: string; status?: string };
 }
 
+// ─── Schema sanitiser ─────────────────────────────────────────────────────────
+// Gemini's function declaration format rejects JSON Schema fields it doesn't
+// recognise. Strip them recursively before sending.
+const GEMINI_UNSUPPORTED_KEYS = new Set(["$schema", "additionalProperties", "default", "$defs"]);
+
+function sanitizeSchemaForGemini(schema: unknown): unknown {
+  if (Array.isArray(schema)) {
+    return schema.map(sanitizeSchemaForGemini);
+  }
+  if (schema !== null && typeof schema === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(schema as Record<string, unknown>)) {
+      if (GEMINI_UNSUPPORTED_KEYS.has(k)) continue;
+      out[k] = sanitizeSchemaForGemini(v);
+    }
+    return out;
+  }
+  return schema;
+}
+
 // ─── Conversion helpers ───────────────────────────────────────────────────────
 
 function toGeminiContents(messages: LlmConversationMessage[]): {
@@ -218,7 +238,7 @@ export class GeminiLlmProvider implements LlmProvider {
     // Use forced function call for structured output
     const body: Record<string, unknown> = {
       contents,
-      tools: [{ functionDeclarations: [{ name: request.schemaName, description: "Extract structured data.", parameters: request.jsonSchema }] }],
+      tools: [{ functionDeclarations: [{ name: request.schemaName, description: "Extract structured data.", parameters: sanitizeSchemaForGemini(request.jsonSchema) as Record<string, unknown> }] }],
       toolConfig: { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [request.schemaName] } }
     };
     if (systemInstruction) {
@@ -261,7 +281,7 @@ export class GeminiLlmProvider implements LlmProvider {
     const functionDeclarations: GeminiFunctionDeclaration[] = request.tools.map((t) => ({
       name: t.name,
       description: t.description,
-      parameters: t.parameters
+      parameters: sanitizeSchemaForGemini(t.parameters) as Record<string, unknown>
     }));
 
     const body: Record<string, unknown> = {

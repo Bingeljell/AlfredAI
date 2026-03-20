@@ -6,6 +6,7 @@ import { TelegramAdapter } from "../channels/telegram/adapter.js";
 
 // Track child processes started by Alfred so they die when Alfred dies
 const managedProcesses: ReturnType<typeof spawn>[] = [];
+let httpServer: { close: (cb?: () => void) => void } | null = null;
 
 function spawnManaged(cmd: string, label: string): void {
   const child = spawn(cmd, {
@@ -36,15 +37,22 @@ function shutdown(): void {
       // Already exited
     }
   }
+  if (httpServer) {
+    httpServer.close(() => process.exit(0));
+    // Force exit if server hasn't closed within 3s
+    setTimeout(() => process.exit(0), 3_000).unref();
+  } else {
+    process.exit(0);
+  }
 }
 
 function handleExit(): void {
   shutdown();
-  process.exit(0);
 }
 
 process.on("SIGINT", handleExit);
 process.on("SIGTERM", handleExit);
+process.on("SIGHUP", handleExit);
 
 async function bootstrap(): Promise<void> {
   const existingSessions = await sessionStore.listSessions(1);
@@ -52,12 +60,15 @@ async function bootstrap(): Promise<void> {
     await sessionStore.createSession("Default Session");
   }
 
-  // Auto-start Pinchtab if configured
+  // Auto-start managed services
+  if (appConfig.searxngStartCommand) {
+    spawnManaged(appConfig.searxngStartCommand, "searxng");
+  }
   if (appConfig.enablePinchtab && appConfig.pinchtabStartCommand) {
     spawnManaged(appConfig.pinchtabStartCommand, "pinchtab");
   }
 
-  serve(
+  httpServer = serve(
     {
       fetch: app.fetch,
       port: appConfig.port

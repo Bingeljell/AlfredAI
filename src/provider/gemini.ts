@@ -22,7 +22,7 @@ interface GeminiLlmProviderOptions {
 // ─── Wire-format types ────────────────────────────────────────────────────────
 
 type GeminiPart =
-  | { text: string }
+  | { text: string; thought?: boolean; thoughtSignature?: string }
   | { functionCall: { name: string; args: unknown } }
   | { functionResponse: { name: string; response: unknown } };
 
@@ -86,6 +86,16 @@ function toGeminiContents(messages: LlmConversationMessage[]): {
     }
 
     if (msg.role === "assistant") {
+      // If raw Gemini parts are stored (from a thinking model response), echo them
+      // back verbatim so the thought_signature is preserved.
+      if (msg._rawGeminiParts?.length) {
+        // Still register toolCall ids so functionResponse lookup works below
+        for (const tc of msg.toolCalls ?? []) {
+          toolCallNames.set(tc.id, tc.name);
+        }
+        contents.push({ role: "model", parts: msg._rawGeminiParts as GeminiPart[] });
+        continue;
+      }
       const parts: GeminiPart[] = [];
       if (msg.content) parts.push({ text: msg.content });
       if (msg.toolCalls?.length) {
@@ -311,7 +321,9 @@ export class GeminiLlmProvider implements LlmProvider {
       toolCalls: toolCalls.length ? toolCalls : undefined,
       finishReason,
       usage: um ? { promptTokens: um.promptTokenCount ?? 0, completionTokens: um.candidatesTokenCount ?? 0, totalTokens: um.totalTokenCount ?? 0 } : undefined,
-      elapsedMs
+      elapsedMs,
+      // Preserve raw parts so thought_signature can be echoed back on next iteration
+      rawAssistantParts: parts.length ? (parts as unknown[]) : undefined
     };
   }
 }

@@ -63,6 +63,13 @@ export interface SessionOutputRecord {
   metadata?: Record<string, string | number | boolean | null>;
 }
 
+export interface ConversationWindowEntry {
+  role: "user" | "assistant";
+  content: string;
+  runId: string;
+  timestamp: string;
+}
+
 export interface SessionWorkingMemory {
   activeObjective?: string;
   lastRunId?: string;
@@ -76,6 +83,8 @@ export interface SessionWorkingMemory {
   recentOutputs?: SessionOutputRecord[];
   unresolvedItems?: string[];
   lastSpecialist?: string;
+  /** Sliding window of last 15 turns (30 entries) for in-session continuity */
+  conversationWindow?: ConversationWindowEntry[];
 }
 
 export interface SessionTurnSnippet {
@@ -103,6 +112,7 @@ export interface SessionPromptContext {
   recentTurns?: SessionTurnSnippet[];
   recentOutputs?: SessionOutputRecord[];
   unresolvedItems?: string[];
+  conversationWindow?: ConversationWindowEntry[];
 }
 
 export interface SessionRecord {

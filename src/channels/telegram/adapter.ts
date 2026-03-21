@@ -191,7 +191,8 @@ export class TelegramAdapter implements ChannelAdapter {
     const result = await this.chatService.handleTurn({
       sessionId,
       message,
-      requestJob: true
+      requestJob: true,
+      channelKey: this.channelKey(chatId)
     });
 
     const runId = result.runId;

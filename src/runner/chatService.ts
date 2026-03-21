@@ -1,4 +1,5 @@
 import type {
+  ConversationWindowEntry,
   RunOutcome,
   RunStatus,
   SessionOutputRecord,
@@ -7,6 +8,7 @@ import type {
   SessionTurnSnippet,
   SessionWorkingMemory
 } from "../types.js";
+import type { GroupChatStore } from "../memory/groupChatStore.js";
 import { runReActLoop } from "../runtime/runReActLoop.js";
 import { TurnRuntime } from "../runtime/turnRuntime.js";
 import { ThreadRuntimeManager } from "../runtime/threadRuntime.js";
@@ -21,6 +23,7 @@ interface ChatTurnInput {
   sessionId: string;
   message: string;
   requestJob?: boolean;
+  channelKey?: string;
 }
 
 interface ChatServiceOptions {
@@ -40,7 +43,10 @@ interface ChatServiceOptions {
   agentMaxToolCalls: number;
   agentMaxParallelTools: number;
   runLoopRunner?: typeof runReActLoop;
+  groupChatStore?: GroupChatStore;
 }
+
+const CONVERSATION_WINDOW_MAX = 30; // 15 turns × 2 entries each
 
 export class ChatService {
   private readonly threadRuntimeManager: ThreadRuntimeManager;
@@ -175,7 +181,8 @@ export class ChatService {
       sessionSummary: memory.sessionSummary,
       recentTurns: memory.recentTurns?.slice(-6),
       recentOutputs: memory.recentOutputs?.slice(-4),
-      unresolvedItems: memory.unresolvedItems?.slice(-6)
+      unresolvedItems: memory.unresolvedItems?.slice(-6),
+      conversationWindow: memory.conversationWindow
     };
 
     return Object.values(context).some((value) => {
@@ -247,6 +254,14 @@ export class ChatService {
       content: outcome.assistantText ?? "",
       runId
     });
+
+    const now = new Date().toISOString();
+    const newWindowEntries: ConversationWindowEntry[] = [
+      { role: "user", content: message, runId, timestamp: now },
+      { role: "assistant", content: outcome.assistantText ?? "", runId, timestamp: now }
+    ];
+    const existingWindow = existingMemory?.conversationWindow ?? [];
+    memoryPatch.conversationWindow = [...existingWindow, ...newWindowEntries].slice(-CONVERSATION_WINDOW_MAX);
 
     const mergedForSummary: SessionWorkingMemory = {
       ...(existingMemory ?? {}),
@@ -438,6 +453,13 @@ export class ChatService {
       const queuedSessionContext = await this.buildSessionContext((await this.options.sessionStore.getSession(input.sessionId)) ?? session);
       void this.executeRun(run.runId, input.sessionId, input.message, queuedSessionContext).then(async (outcome) => {
         await this.persistRunOutcome(input.sessionId, run.runId, input.message, outcome);
+        if (input.channelKey && this.options.groupChatStore) {
+          await this.options.groupChatStore.appendTurn(
+            input.channelKey, run.runId, input.sessionId,
+            input.message, outcome.assistantText ?? "",
+            outcome.artifactPaths ?? []
+          );
+        }
       }).catch(async (error) => {
         const failureOutcome: RunOutcome = {
           status: "failed",
@@ -460,6 +482,13 @@ export class ChatService {
     const sessionContext = await this.buildSessionContext((await this.options.sessionStore.getSession(input.sessionId)) ?? session);
     const outcome = await this.executeRun(run.runId, input.sessionId, input.message, sessionContext);
     await this.persistRunOutcome(input.sessionId, run.runId, input.message, outcome);
+    if (input.channelKey && this.options.groupChatStore) {
+      await this.options.groupChatStore.appendTurn(
+        input.channelKey, run.runId, input.sessionId,
+        input.message, outcome.assistantText ?? "",
+        outcome.artifactPaths ?? []
+      );
+    }
 
     return {
       runId: run.runId,

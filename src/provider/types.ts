@@ -24,7 +24,7 @@ export interface LlmToolCall {
 export type LlmConversationMessage =
   | { role: "system"; content: string }
   | { role: "user"; content: string }
-  | { role: "assistant"; content: string | null; toolCalls?: LlmToolCall[] }
+  | { role: "assistant"; content: string | null; toolCalls?: LlmToolCall[]; _rawGeminiParts?: unknown[] }
   | { role: "tool"; toolCallId: string; toolName: string; content: string };
 
 export interface LlmToolCallRequest {
@@ -46,6 +46,8 @@ export interface LlmToolCallResult {
   statusCode?: number;
   usage?: LlmUsage;
   elapsedMs?: number;
+  /** Raw provider parts (Gemini only) — must be echoed back verbatim for thought_signature */
+  rawAssistantParts?: unknown[];
 }
 
 // ─── Text and structured types ────────────────────────────────────────────────

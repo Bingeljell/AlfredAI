@@ -9,35 +9,38 @@ This section is written for Alfred. When you are doing self-development work (re
 ### Key files
 | File | Purpose |
 |------|---------|
-| `src/core/specialists.ts` | Your identity, system prompt, and tool allowlist |
-| `src/core/agentLoop.ts` | The main loop that drives your reasoning and tool calls |
-| `src/agent/types.ts` | Core TypeScript interfaces (`LeadAgentToolContext`, `LeadAgentState`, `LeadAgentToolDefinition`) |
-| `src/agent/tools/registry.ts` | Auto-discovers and loads all tool files; handles input repair |
-| `src/agent/tools/definitions/` | **Where all tool files live** — one file per tool, named `<toolName>.tool.ts` |
+| `src/runtime/specialists.ts` | Your identity, system prompt, and tool allowlist |
+| `src/runtime/agentLoop.ts` | The main loop that drives your reasoning and tool calls |
+| `src/tools/types.ts` | Core TypeScript interfaces (`ToolContext`, `ToolState`, `ToolDefinition`) |
+| `src/tools/registry.ts` | Auto-discovers and loads all tool files; handles input repair |
+| `src/tools/definitions/` | **Where all tool files live** — one file per tool, named `<toolName>.tool.ts` |
+| `src/runner/chatService.ts` | Handles turn execution, session context, conversation window |
+| `src/memory/sessionStore.ts` | Session working memory and summaries |
+| `src/memory/groupChatStore.ts` | Daily chat logs per channel group |
 | `src/config/env.ts` | All environment config via Zod schema |
 | `SOUL.md` | Your identity and values |
 | `AGENTS.md` | This file — codebase conventions |
 
 ### How tools work
 
-Tools are auto-discovered: the registry reads every `*.tool.ts` file in `src/agent/tools/definitions/` and expects a named export `toolDefinition`.
+Tools are auto-discovered: the registry reads every `*.tool.ts` file in `src/tools/definitions/` and expects a named export `toolDefinition`.
 
 Every tool file exports one thing:
 ```typescript
 import { z } from "zod";
-import type { LeadAgentToolDefinition } from "../../types.js";
+import type { ToolDefinition } from "../types.js";
 
 const InputSchema = z.object({
   // your fields here
 });
 
-export const toolDefinition: LeadAgentToolDefinition<typeof InputSchema> = {
+export const toolDefinition: ToolDefinition<typeof InputSchema> = {
   name: "your_tool_name",
   description: "One sentence describing what this tool does and when to call it.",
   inputSchema: InputSchema,
   inputHint: '{"field": "example"}',
   async execute(input, context) {
-    // context.state — shared agent state (leads, artifacts, etc.)
+    // context.state — shared agent state (artifacts, fetchedPages, etc.)
     // context.searchManager — run searches
     // context.runStore — append events
     // context.deadlineAtMs — check before long operations
@@ -46,11 +49,11 @@ export const toolDefinition: LeadAgentToolDefinition<typeof InputSchema> = {
 };
 ```
 
-To make a new tool available to yourself, also add its name to the `toolAllowlist` array in `src/core/specialists.ts`.
+To make a new tool available to yourself, also add its name to the `toolAllowlist` array in `src/runtime/specialists.ts`.
 
 ### Type-checking
 ```bash
-npx tsc --noEmit
+pnpm tsc --noEmit
 ```
 Run this after any code change before proposing a commit.
 
@@ -62,44 +65,56 @@ Commit only — do not push without discussing with Nikhil first.
 
 ---
 
+## Efficiency Principles
 
+**LLM calls are the scarcest resource — every tool call costs one iteration.**
 
-1. You are a logical senior technical architect. You have strong product sense and can make informed decisions about technical tradeoffs. You are not afraid to push back on decisions you don't agree with.
-2. You always ask questions to clarify the tasks to be done before starting.
-3. All documentation is in the `docs/` folder.
-4. Do not delete any database files
-5. Ensure all git commands are reversible. Commit in small logical chunks using the workflow described below.
-6. Run available tests before committing. Eg: npm run build, pnpm test, etc... 
-7. Always plan first before executing.
-6. Always update `docs/changelog.md` after any changes. Use the following format:
-   - **Date** > File name > methods or functions > what the change does
-   - Each change should be on a new bullet point
-7. Before installing dependencies or creating additional files, get user permission and explain why they are needed.
-9. Git branching/release process is documented in `docs/git_workflow.md` and must be followed.
+- Form a hypothesis first, then read to confirm it — don't read to discover
+- Use `code_discover` over multiple `shell_exec` greps; one call beats five
+- Read files in large chunks (up to 800 lines) rather than multiple 100-line passes
+- Avoid `git diff` and `git log -p` — they dump full file content into context; use `git log --oneline` or `git show --stat` instead
+- Once you have enough context to act, act — one more read rarely changes the answer
+- After reading a large file or command output, summarise what you learned before proceeding
 
-## Commit Workflow
-  - Always commit and push using `scripts/committer`.
-  - Do not use direct `git add` / `git commit` unless explicitly asked.
-  - Default branch policy:
-    - work on feature/fix branches
-    - never commit to `main` unless explicitly instructed
-  - Commit command format:
-    - `scripts/committer "commit message" "<file1>" "<file2>" ...`
-  - If committing to `main` is explicitly requested, use:
-    - `scripts/committer --allow-main "commit message" "<file1>" ...`
+**Large tool outputs pollute every subsequent iteration.**
+A 6,000-char git diff sits in conversation history and is re-sent on every following call. Treat large-output commands as expensive and avoid them unless the content is directly necessary.
 
-## Testing Workflow
-  - Every implementation phase must define:
-    - automated tests (unit/integration/smoke as applicable)
-    - manual test steps that can be executed locally
-  - Before each commit, run all available automated tests relevant to changed files.
-  - If no automated tests exist yet for the scope, explicitly note that gap and add a plan in docs.
-  - New behavior should include either:
-    - at least one automated test, or
-    - a documented defer reason with the next phase where tests will be added
-  - Prefer reproducible script-based test commands under `scripts/` when introducing new test flows.
+---
+
+## Memory Architecture
+
+Alfred's memory has three tiers:
+
+### 1. Within-session (conversation window)
+The last 15 turns of the current session are injected as real message pairs into every run, giving you full in-session continuity without amnesia. This is handled automatically — you do not need to read any files.
+
+### 2. Group chat log (daily)
+Every turn is appended to a daily JSONL log file per channel group:
+```
+workspace/alfred/groups/{channelKey}/logs/YYYY/MM/YYYY-MM-DD.jsonl
+```
+Use `file_read` on this file when Nikhil references something from earlier today that isn't in your conversation window.
+
+### 3. Group daily summaries (on-demand)
+When asked to summarise a day, write a markdown file:
+```
+workspace/alfred/groups/{channelKey}/summaries/YYYY/MM/YYYY-MM-DD.md
+```
+Include: what was worked on, key outcomes, artifacts created, open threads. Nikhil will ask you to generate these explicitly.
+
+---
 
 ## Progress and Changelog Discipline
-  - When any planned task or phase is completed, update `docs/progress.md` in the same commit.
-  - Add a corresponding entry in `docs/changelog.md` in the same commit for every completed task or phase checkpoint.
-  - Do not mark a task complete without both progress and changelog updates.
+- When any planned task or phase is completed, update `docs/progress.md` in the same commit.
+- Add a corresponding entry in `docs/changelog.md` in the same commit for every completed task or phase checkpoint.
+- Format: `- **YYYY-MM-DD** > \`file\` > method/function > what changed`
+- Do not mark a task complete without both progress and changelog updates.
+
+## Testing Workflow
+- Run `pnpm tsc --noEmit` after every code change.
+- Before each commit, run all available automated tests relevant to changed files.
+
+## Commit Workflow
+- Always commit using `scripts/committer`.
+- Do not use direct `git add` / `git commit` unless explicitly asked.
+- Never commit to `main` unless explicitly instructed.

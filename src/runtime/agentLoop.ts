@@ -119,19 +119,33 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
   const llmTools = toolDefsToLlm(tools);
   const provider = getActiveLlmProvider();
 
-  // Build initial conversation
-  let userContent = message;
-  if (sessionContext) {
-    const contextBlock = buildSessionContextBlock(sessionContext);
-    if (contextBlock) {
-      userContent = `${contextBlock}\n\n---\n\n${message}`;
-    }
-  }
+  // Build initial conversation — inject sliding window as proper message pairs
+  // so Gemini's implicit caching benefits from the stable conversation prefix.
+  const contextBlock = sessionContext ? buildSessionContextBlock(sessionContext) : "";
+  const window = sessionContext?.conversationWindow ?? [];
 
   const messages: LlmConversationMessage[] = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userContent }
+    { role: "system", content: systemPrompt }
   ];
+
+  if (window.length > 0) {
+    // Prepend the context summary to the first user entry in the window,
+    // then replay all window turns as real messages before the current one.
+    for (let i = 0; i < window.length; i++) {
+      const entry = window[i]!;
+      const role = entry.role === "user" ? "user" as const : "assistant" as const;
+      if (i === 0 && contextBlock && entry.role === "user") {
+        messages.push({ role: "user", content: `${contextBlock}\n\n---\n\n${entry.content}` });
+      } else {
+        messages.push({ role, content: entry.content });
+      }
+    }
+    messages.push({ role: "user", content: message });
+  } else {
+    // No window yet — existing behaviour: prepend context to the current message.
+    const userContent = contextBlock ? `${contextBlock}\n\n---\n\n${message}` : message;
+    messages.push({ role: "user", content: userContent });
+  }
 
   await runStore.appendEvent({
     runId,
@@ -246,11 +260,13 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
 
     // Model wants to call tools
     if (llmResult.toolCalls?.length) {
-      // Append the assistant's tool-call message to history (unified format)
+      // Append the assistant's tool-call message to history (unified format).
+      // _rawGeminiParts preserves thought_signature for thinking models.
       messages.push({
         role: "assistant",
         content: llmResult.content ?? null,
-        toolCalls: llmResult.toolCalls
+        toolCalls: llmResult.toolCalls,
+        _rawGeminiParts: llmResult.rawAssistantParts
       });
 
       // Execute each tool call and collect results

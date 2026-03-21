@@ -55,6 +55,11 @@ process.on("SIGTERM", handleExit);
 process.on("SIGHUP", handleExit);
 
 async function bootstrap(): Promise<void> {
+  const recovered = await runStore.recoverInterruptedRuns();
+  if (recovered > 0) {
+    console.log(`[startup] Marked ${recovered} interrupted run(s) as failed.`);
+  }
+
   const existingSessions = await sessionStore.listSessions(1);
   if (existingSessions.length === 0) {
     await sessionStore.createSession("Default Session");

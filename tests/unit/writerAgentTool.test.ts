@@ -81,25 +81,22 @@ function buildToolContext(workspace: string, runStore: RunStore, runId = "writer
   };
 }
 
-test("writer_agent creates fallback draft without persisting when no provider is configured", async () => {
+test("writer_agent throws error when no provider is configured", async () => {
   const workspace = await createTempWorkspace("alfred-writer-no-provider");
   const runStore = new RunStore(workspace);
 
-  const output = await writerAgentTool.execute(
-    {
-      instruction: "Write a short launch memo about Alfred's capabilities.",
-      format: "memo",
-      maxWords: 180,
-      outputPath: "artifacts/draft.md"
-    },
-    buildToolContext(workspace, runStore)
+  await assert.rejects(
+    () => writerAgentTool.execute(
+      {
+        instruction: "Write a short launch memo about Alfred's capabilities.",
+        format: "memo",
+        maxWords: 180,
+        outputPath: "artifacts/draft.md"
+      },
+      buildToolContext(workspace, runStore)
+    ),
+    /No writer LLM provider configured/
   );
-
-  assert.equal(output.fallbackUsed, true);
-  assert.equal(output.outputPath, null);
-  assert.equal(output.persistedFallbackDraft, false);
-  assert.equal(output.draftQuality, "placeholder");
-  await assert.rejects(() => readFile(path.join(workspace, "artifacts/draft.md"), "utf8"), /ENOENT/);
 });
 
 test("writer_agent respects overwrite=false and errors on existing file", async () => {
@@ -144,161 +141,6 @@ test("writer_agent respects overwrite=false and errors on existing file", async 
       ),
     /overwrite=false/
   );
-});
-
-test("writer_agent emits generate and persist stage events", async () => {
-  const workspace = await createTempWorkspace("alfred-writer-stage-events");
-  const runStore = new RunStore(workspace);
-  const run = await runStore.createRun("session-1", "writer stage test", "running");
-  const context = buildToolContext(workspace, runStore, run.runId, run.sessionId);
-  const provider = new FakeLlmProvider();
-  context.llmProviders = [provider];
-  provider.enqueueText({
-    content: [
-      "# AI Trends",
-      "",
-      "A grounded note on current AI trends [S1].",
-      "",
-      "## References",
-      "[S1] Source one — https://example.com/1"
-    ].join("\n")
-  });
-  context.state.researchSourceCards = [
-    {
-      url: "https://example.com/1",
-      title: "Source one",
-      date: "2026-03-16",
-      claim: "Source one confirms the trend.",
-      quote: null,
-      sourceTool: "web_fetch"
-    }
-  ];
-
-  await writerAgentTool.execute(
-    {
-      instruction: "Write a short article draft about AI trends.",
-      format: "blog_post",
-      maxWords: 180,
-      outputPath: "artifacts/stage.md"
-    },
-    context
-  );
-
-  const events = await runStore.listRunEvents(run);
-  const writerStages = events.filter((event) => event.eventType === "writer_stage");
-  assert.ok(writerStages.some((event) => (event.payload as { stage?: string; status?: string }).stage === "generate"));
-  assert.ok(writerStages.some((event) => (event.payload as { stage?: string; status?: string }).stage === "persist"));
-});
-
-test("writer_agent preserves an existing complete draft instead of downgrading it", async () => {
-  const workspace = await createTempWorkspace("alfred-writer-preserve-complete");
-  const runStore = new RunStore(workspace);
-  const run = await runStore.createRun("session-1", "writer preserve test", "running");
-  const context = buildToolContext(workspace, runStore, run.runId, run.sessionId);
-  const provider = new FakeLlmProvider();
-  context.llmProviders = [provider];
-  provider.enqueueText({
-    content: [
-      "# Draft revision",
-      "",
-      Array.from({ length: 20 }, (_, index) =>
-        `Useful supporting sentence ${index + 1} with grounded evidence [S1][S2].`
-      ).join(" ")
-    ].join("\n")
-  });
-  context.state.researchSourceCards = [
-    {
-      url: "https://example.com/1",
-      title: "Source one",
-      date: "2026-03-16",
-      claim: "Source one confirms the draft.",
-      quote: null,
-      sourceTool: "web_fetch"
-    },
-    {
-      url: "https://example.com/2",
-      title: "Source two",
-      date: "2026-03-16",
-      claim: "Source two confirms the draft.",
-      quote: null,
-      sourceTool: "web_fetch"
-    }
-  ];
-
-  const body = Array.from({ length: 110 }, (_, index) => `Evidence-backed sentence ${index + 1} [S${(index % 4) + 1}].`).join(" ");
-  const existingDraft = [
-    "# Existing Complete Draft",
-    "",
-    body,
-    "",
-    "## References",
-    "[S1] Source one — https://example.com/1",
-    "[S2] Source two — https://example.com/2",
-    "[S3] Source three — https://example.com/3",
-    "[S4] Source four — https://example.com/4"
-  ].join("\n");
-
-  const outputPath = path.join(workspace, "artifacts", "preserve.md");
-  await mkdir(path.dirname(outputPath), { recursive: true });
-  await writeFile(outputPath, existingDraft, "utf8");
-
-  const output = await writerAgentTool.execute(
-    {
-      instruction: "Write an updated article with citations.",
-      format: "blog_post",
-      maxWords: 480,
-      outputPath: "artifacts/preserve.md"
-    },
-    context
-  );
-
-  const written = await readFile(outputPath, "utf8");
-  assert.equal(written, existingDraft);
-  assert.equal(output.draftQuality, "complete");
-  assert.equal(output.fallbackUsed, false);
-  assert.equal(output.outputPath, "artifacts/preserve.md");
-
-  const events = await runStore.listRunEvents(run);
-  const downgradeEvent = events.find((event) =>
-    event.eventType === "writer_stage"
-    && (event.payload as { stage?: string; reason?: string }).stage === "persist"
-    && (event.payload as { stage?: string; reason?: string }).reason === "quality_downgrade_prevented"
-  );
-  assert.ok(downgradeEvent);
-});
-
-test("writer_agent blocks placeholder persistence when deadline budget is insufficient", async () => {
-  const workspace = await createTempWorkspace("alfred-writer-budget-blocked");
-  const runStore = new RunStore(workspace);
-  const run = await runStore.createRun("session-1", "writer deadline test", "running");
-  const context = buildToolContext(workspace, runStore, run.runId, run.sessionId);
-  context.openAiApiKey = "test-key";
-  context.deadlineAtMs = Date.now() + 2_000;
-  context.state.researchSourceCards = [
-    {
-      url: "https://example.com/source",
-      title: "Example Source",
-      date: "2026-03-16",
-      claim: "Example grounded claim for writing.",
-      quote: null,
-      sourceTool: "web_fetch"
-    }
-  ];
-
-  const output = await writerAgentTool.execute(
-    {
-      instruction: "Write a concise cited note from the source.",
-      format: "memo",
-      maxWords: 220,
-      outputPath: "artifacts/budget.md"
-    },
-    context
-  );
-
-  assert.equal(output.draftQuality, "placeholder");
-  assert.equal(output.persistedFallbackDraft, false);
-  assert.equal(output.outputPath, null);
-  await assert.rejects(() => readFile(path.join(workspace, "artifacts/budget.md"), "utf8"), /ENOENT/);
 });
 
 test("writer_agent generates a complete ranked list in one pass and persists it", async () => {

@@ -136,6 +136,22 @@ export class RunStore {
     await this.eventChannel.flush();
   }
 
+  async recoverInterruptedRuns(): Promise<number> {
+    const runIds = await this.storage.listRunIds();
+    let recovered = 0;
+    for (const runId of runIds) {
+      const run = await this.storage.readRun(runId);
+      if (run && (run.status === "running" || run.status === "queued")) {
+        await this.updateRun(runId, {
+          status: "failed",
+          assistantText: "Run interrupted by server restart."
+        });
+        recovered++;
+      }
+    }
+    return recovered;
+  }
+
   async listRuns(sessionId: string, limit = 20): Promise<RunRecord[]> {
     const runs: RunRecord[] = [];
     const runIds = await this.storage.listRunIds();

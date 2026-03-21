@@ -11,6 +11,7 @@ import { SearchManager } from "../tools/search/searchManager.js";
 import { InMemoryQueue } from "../workers/inMemoryQueue.js";
 import { ChatService } from "../runner/chatService.js";
 import { ChannelSessionStore } from "../channels/telegram/channelSessionStore.js";
+import { GroupChatStore } from "../memory/groupChatStore.js";
 
 const SessionPostSchema = z.object({
   action: z.enum(["create", "list"]).default("list"),
@@ -61,6 +62,8 @@ const searchManager = new SearchManager({
   primaryHealthGraceMs: appConfig.searxngHealthGraceMs
 });
 
+const groupChatStore = new GroupChatStore(appConfig.workspaceDir);
+
 const chatService = new ChatService({
   sessionStore,
   runStore,
@@ -76,7 +79,8 @@ const chatService = new ChatService({
   pinchtabBaseUrl: appConfig.enablePinchtab ? appConfig.pinchtabBaseUrl : undefined,
   agentMaxDurationMs: appConfig.agentMaxDurationMs,
   agentMaxToolCalls: appConfig.agentMaxToolCalls,
-  agentMaxParallelTools: appConfig.agentMaxParallelTools
+  agentMaxParallelTools: appConfig.agentMaxParallelTools,
+  groupChatStore
 });
 
 app.get("/health", (c) => {

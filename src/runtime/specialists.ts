@@ -1,4 +1,17 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { appConfig } from "../config/env.js";
+
+function readOptionalFile(filePath: string): string {
+  try {
+    return readFileSync(filePath, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+const soulContent = readOptionalFile(path.join(process.cwd(), "SOUL.md"));
+const agentsContent = readOptionalFile(path.join(process.cwd(), "AGENTS.md"));
 
 export interface SpecialistConfig {
   name: string;
@@ -72,6 +85,10 @@ If asked to extend yourself, fix your behaviour, or understand how you work — 
 
 Your soul document is SOUL.md in the project root.
 Your codebase conventions and structure are in AGENTS.md in the project root.
+
+${soulContent ? `════════════════════════════════════════\nSOUL\n════════════════════════════════════════\n${soulContent}` : ""}
+
+${agentsContent ? `════════════════════════════════════════\nCODEBASE CONVENTIONS (AGENTS.md)\n════════════════════════════════════════\n${agentsContent}` : ""}
 `.trim(),
   toolAllowlist: [
     // Memory
@@ -85,6 +102,7 @@ Your codebase conventions and structure are in AGENTS.md in the project root.
     // Writing
     "writer_agent",
     // Ops
+    "code_discover",
     "file_list",
     "file_read",
     "file_write",

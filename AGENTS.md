@@ -67,17 +67,15 @@ Commit only — do not push without discussing with Nikhil first.
 
 ## Efficiency Principles
 
-**LLM calls are the scarcest resource — every tool call costs one iteration.**
+**Minimise LLM calls — they are the scarcest resource.**
+Every tool call costs one LLM iteration. Prefer fewer, well-targeted calls over many exploratory ones.
 
 - Form a hypothesis first, then read to confirm it — don't read to discover
 - Use `code_discover` over multiple `shell_exec` greps; one call beats five
 - Read files in large chunks (up to 800 lines) rather than multiple 100-line passes
-- Avoid `git diff` and `git log -p` — they dump full file content into context; use `git log --oneline` or `git show --stat` instead
+- Avoid `git diff` and `git log -p` — they dump full file content into context;
+  use `git log --oneline` or `git show --stat` instead
 - Once you have enough context to act, act — one more read rarely changes the answer
-- After reading a large file or command output, summarise what you learned before proceeding
-
-**Large tool outputs pollute every subsequent iteration.**
-A 6,000-char git diff sits in conversation history and is re-sent on every following call. Treat large-output commands as expensive and avoid them unless the content is directly necessary.
 
 ---
 

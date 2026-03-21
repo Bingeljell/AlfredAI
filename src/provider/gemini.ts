@@ -44,7 +44,7 @@ interface GeminiCandidate {
 
 interface GeminiResponse {
   candidates?: GeminiCandidate[];
-  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number };
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number; cachedContentTokenCount?: number };
   error?: { code?: number; message?: string; status?: string };
 }
 
@@ -232,7 +232,7 @@ export class GeminiLlmProvider implements LlmProvider {
     return {
       provider: this.name,
       content: text,
-      usage: um ? { promptTokens: um.promptTokenCount ?? 0, completionTokens: um.candidatesTokenCount ?? 0, totalTokens: um.totalTokenCount ?? 0 } : undefined,
+      usage: um ? { promptTokens: um.promptTokenCount ?? 0, completionTokens: um.candidatesTokenCount ?? 0, totalTokens: um.totalTokenCount ?? 0, cachedTokens: um.cachedContentTokenCount ?? 0 } : undefined,
       elapsedMs
     };
   }
@@ -277,7 +277,7 @@ export class GeminiLlmProvider implements LlmProvider {
     return {
       provider: this.name,
       result: parseResult.data,
-      usage: um ? { promptTokens: um.promptTokenCount ?? 0, completionTokens: um.candidatesTokenCount ?? 0, totalTokens: um.totalTokenCount ?? 0 } : undefined,
+      usage: um ? { promptTokens: um.promptTokenCount ?? 0, completionTokens: um.candidatesTokenCount ?? 0, totalTokens: um.totalTokenCount ?? 0, cachedTokens: um.cachedContentTokenCount ?? 0 } : undefined,
       elapsedMs
     };
   }
@@ -320,7 +320,7 @@ export class GeminiLlmProvider implements LlmProvider {
       content: text,
       toolCalls: toolCalls.length ? toolCalls : undefined,
       finishReason,
-      usage: um ? { promptTokens: um.promptTokenCount ?? 0, completionTokens: um.candidatesTokenCount ?? 0, totalTokens: um.totalTokenCount ?? 0 } : undefined,
+      usage: um ? { promptTokens: um.promptTokenCount ?? 0, completionTokens: um.candidatesTokenCount ?? 0, totalTokens: um.totalTokenCount ?? 0, cachedTokens: um.cachedContentTokenCount ?? 0 } : undefined,
       elapsedMs,
       // Preserve raw parts so thought_signature can be echoed back on next iteration
       rawAssistantParts: parts.length ? (parts as unknown[]) : undefined

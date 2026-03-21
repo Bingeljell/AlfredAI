@@ -35,6 +35,7 @@ export class RunStore {
       promptTokens: Math.max(0, (current?.promptTokens ?? 0) + Math.max(0, Math.round(usage.promptTokens))),
       completionTokens: Math.max(0, (current?.completionTokens ?? 0) + Math.max(0, Math.round(usage.completionTokens))),
       totalTokens: Math.max(0, (current?.totalTokens ?? 0) + Math.max(0, Math.round(usage.totalTokens))),
+      cachedTokens: (current?.cachedTokens ?? 0) + Math.max(0, Math.round(usage.cachedTokens ?? 0)),
       callCount: Math.max(0, (current?.callCount ?? 0) + Math.max(0, Math.round(callCountDelta)))
     };
   }

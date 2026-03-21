@@ -41,7 +41,7 @@ interface AnthropicTool {
 interface AnthropicResponse {
   content?: AnthropicContentBlock[];
   stop_reason?: string;
-  usage?: { input_tokens?: number; output_tokens?: number };
+  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
   error?: { type?: string; message?: string };
 }
 
@@ -213,7 +213,7 @@ export class AnthropicLlmProvider implements LlmProvider {
       provider: this.name,
       content: text,
       usage: data?.usage
-        ? { promptTokens: data.usage.input_tokens ?? 0, completionTokens: data.usage.output_tokens ?? 0, totalTokens: (data.usage.input_tokens ?? 0) + (data.usage.output_tokens ?? 0) }
+        ? { promptTokens: data.usage.input_tokens ?? 0, completionTokens: data.usage.output_tokens ?? 0, totalTokens: (data.usage.input_tokens ?? 0) + (data.usage.output_tokens ?? 0), cachedTokens: data.usage.cache_read_input_tokens ?? 0 }
         : undefined,
       elapsedMs
     };
@@ -274,7 +274,7 @@ export class AnthropicLlmProvider implements LlmProvider {
       provider: this.name,
       result: parseResult.data,
       usage: data?.usage
-        ? { promptTokens: data.usage.input_tokens ?? 0, completionTokens: data.usage.output_tokens ?? 0, totalTokens: (data.usage.input_tokens ?? 0) + (data.usage.output_tokens ?? 0) }
+        ? { promptTokens: data.usage.input_tokens ?? 0, completionTokens: data.usage.output_tokens ?? 0, totalTokens: (data.usage.input_tokens ?? 0) + (data.usage.output_tokens ?? 0), cachedTokens: data.usage.cache_read_input_tokens ?? 0 }
         : undefined,
       elapsedMs
     };
@@ -322,7 +322,7 @@ export class AnthropicLlmProvider implements LlmProvider {
       toolCalls: toolCalls.length ? toolCalls : undefined,
       finishReason,
       usage: data?.usage
-        ? { promptTokens: data.usage.input_tokens ?? 0, completionTokens: data.usage.output_tokens ?? 0, totalTokens: (data.usage.input_tokens ?? 0) + (data.usage.output_tokens ?? 0) }
+        ? { promptTokens: data.usage.input_tokens ?? 0, completionTokens: data.usage.output_tokens ?? 0, totalTokens: (data.usage.input_tokens ?? 0) + (data.usage.output_tokens ?? 0), cachedTokens: data.usage.cache_read_input_tokens ?? 0 }
         : undefined,
       elapsedMs
     };

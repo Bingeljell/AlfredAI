@@ -35,6 +35,7 @@ interface OpenAiResponse {
     prompt_tokens?: unknown;
     completion_tokens?: unknown;
     total_tokens?: unknown;
+    prompt_tokens_details?: { cached_tokens?: number };
   };
 }
 
@@ -249,10 +250,13 @@ function parseUsage(payload: OpenAiResponse): LlmUsage | undefined {
     return undefined;
   }
 
+  const cachedTokens = payload.usage?.prompt_tokens_details?.cached_tokens ?? 0;
+
   return {
     promptTokens,
     completionTokens,
-    totalTokens
+    totalTokens,
+    ...(cachedTokens > 0 ? { cachedTokens } : {})
   };
 }
 
@@ -473,6 +477,7 @@ interface OpenAiToolCallResponsePayload {
     prompt_tokens?: unknown;
     completion_tokens?: unknown;
     total_tokens?: unknown;
+    prompt_tokens_details?: { cached_tokens?: number };
   };
 }
 

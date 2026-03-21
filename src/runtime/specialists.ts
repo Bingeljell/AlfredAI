@@ -95,6 +95,8 @@ Self-development work spans multiple turns by design — do not try to fit it al
 Your soul document is SOUL.md in the project root.
 Your codebase conventions and structure are in AGENTS.md in the project root.
 
+Do not read src/runtime/specialists.ts — your full system prompt is already injected at startup. Reading it wastes a tool call and bloats context with a large file.
+
 ${soulContent ? `════════════════════════════════════════\nSOUL\n════════════════════════════════════════\n${soulContent}` : ""}
 
 ${agentsContent ? `════════════════════════════════════════\nCODEBASE CONVENTIONS (AGENTS.md)\n════════════════════════════════════════\n${agentsContent}` : ""}
@@ -119,7 +121,8 @@ ${agentsContent ? `════════════════════�
     "shell_exec",
     "process_list",
     "process_stop",
-    "doc_qa"
+    "doc_qa",
+    "lead_extractor"
   ],
   maxIterations: 35
 };

@@ -95,7 +95,7 @@ export const toolDefinition: ToolDefinition<typeof WriterAgentToolInputSchema> =
     const title = titleMatch ? titleMatch.replace(/^#+\s*/, "").slice(0, 160) : "Draft";
 
     let writtenPath: string | null = null;
-    const resolvedOutputPath = input.outputPath ?? path.posix.join("workspace", "alfred", "sessions", context.sessionId, "outputs", `${context.runId}-${format}.md`);
+    const resolvedOutputPath = input.outputPath ?? path.posix.join("workspace", "alfred", "sessions", context.sessionId, "artifacts", `${context.runId}-${format}.md`);
     
     const absoluteOutput = resolvePathInProject(context.projectRoot, resolvedOutputPath);
     await mkdir(path.dirname(absoluteOutput), { recursive: true });

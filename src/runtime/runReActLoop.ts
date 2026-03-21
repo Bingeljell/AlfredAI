@@ -2,8 +2,6 @@ import type { PolicyMode, RunOutcome, SessionPromptContext } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import { evaluateApprovalNeed } from "./approvalPolicy.js";
-import { appendDailyNote } from "../memory/dailyNotes.js";
-import { extractAndSaveSessionNotes } from "../memory/sessionExtractor.js";
 import { ALFRED_AGENT } from "./specialists.js";
 import { runAgentLoop } from "./agentLoop.js";
 
@@ -68,8 +66,6 @@ export async function runReActLoop(
     });
   }
 
-  await appendDailyNote(options.workspaceDir, sessionId, "user", message);
-
   const approval = evaluateApprovalNeed(message, options.policyMode);
   if (approval.needed) {
     await runStore.appendEvent({
@@ -129,18 +125,6 @@ export async function runReActLoop(
   });
 
   const outcome: RunOutcome = { ...agentOutcome, specialist: ALFRED_AGENT.name };
-
-  await appendDailyNote(options.workspaceDir, sessionId, "assistant", outcome.assistantText ?? "");
-
-  // Fire-and-forget: extract facts from this session and persist to knowledge base
-  extractAndSaveSessionNotes({
-    workspaceDir: options.workspaceDir,
-    sessionId,
-    message,
-    assistantText: outcome.assistantText ?? ""
-  }).catch(() => {
-    // Non-fatal — never surface memory errors to the user
-  });
 
   return outcome;
 }

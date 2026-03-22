@@ -20,10 +20,24 @@ export interface RunLifecycleReplay {
 export class RunStore {
   private readonly eventChannel: RunEventChannel;
   private readonly storage: RunStorage;
+  private readonly eventSubscribers = new Map<string, Set<(event: RunEvent) => void>>();
 
   constructor(private readonly workspaceDir: string, storage?: RunStorage) {
     this.storage = storage ?? new JsonFileRunStorage(workspaceDir);
     this.eventChannel = new RunEventChannel((event) => this.appendEventDirect(event));
+  }
+
+  subscribeToRun(runId: string, callback: (event: RunEvent) => void): () => void {
+    if (!this.eventSubscribers.has(runId)) {
+      this.eventSubscribers.set(runId, new Set());
+    }
+    this.eventSubscribers.get(runId)!.add(callback);
+    return () => {
+      this.eventSubscribers.get(runId)?.delete(callback);
+      if (this.eventSubscribers.get(runId)?.size === 0) {
+        this.eventSubscribers.delete(runId);
+      }
+    };
   }
 
   private mergeLlmUsage(
@@ -127,6 +141,12 @@ export class RunStore {
 
   private async appendEventDirect(event: RunEvent): Promise<void> {
     await this.storage.appendEvent(event);
+    const subs = this.eventSubscribers.get(event.runId);
+    if (subs) {
+      for (const cb of subs) {
+        try { cb(event); } catch { /* subscriber errors must not break event flow */ }
+      }
+    }
   }
 
   async appendEvent(event: RunEvent): Promise<void> {

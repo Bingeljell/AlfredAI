@@ -197,16 +197,35 @@ export class TelegramAdapter implements ChannelAdapter {
 
     const runId = result.runId;
 
-    // Send "Working on it..." after WORKING_ON_IT_DELAY_MS if still running
+    // Edit-in-place progress tracking
+    let progressMsgId: number | null = null;
+    let lastStatus = "Working on it...";
+
+    const editProgress = async (text: string) => {
+      lastStatus = text;
+      if (progressMsgId !== null) {
+        await this.bot.editMessageText(text, { chat_id: chatId, message_id: progressMsgId }).catch(() => {});
+      }
+    };
+
+    // Send initial "Working on it..." after delay, then subscribe to events for live updates
     const startedAt = Date.now();
-    const workingTimer = setTimeout(() => {
-      void this.send(chatId, "Working on it...");
+    const workingTimer = setTimeout(async () => {
+      try {
+        const msg = await this.bot.sendMessage(chatId, lastStatus);
+        progressMsgId = msg.message_id;
+      } catch { /* non-fatal */ }
     }, WORKING_ON_IT_DELAY_MS);
 
-    // Send a heartbeat every 15 minutes so you know the run is still alive
+    const unsubscribe = this.runStore.subscribeToRun(runId, (event) => {
+      const line = distillProgressLine(event);
+      if (line) void editProgress(line);
+    });
+
+    // Heartbeat — edit the progress message rather than sending a new one
     const heartbeatTimer = setInterval(() => {
       const elapsedMin = Math.round((Date.now() - startedAt) / 60_000);
-      void this.send(chatId, `Still working... (${elapsedMin}m elapsed)`);
+      void editProgress(`${lastStatus} _(${elapsedMin}m)_`);
     }, HEARTBEAT_INTERVAL_MS);
     heartbeatTimer.unref?.();
 
@@ -214,6 +233,7 @@ export class TelegramAdapter implements ChannelAdapter {
       const run = await this.pollUntilDone(runId);
       clearTimeout(workingTimer);
       clearInterval(heartbeatTimer);
+      unsubscribe();
 
       const responseText = run?.assistantText ?? "Done — no response text.";
       await this.sendResponse(chatId, responseText);
@@ -227,6 +247,7 @@ export class TelegramAdapter implements ChannelAdapter {
     } catch (error) {
       clearTimeout(workingTimer);
       clearInterval(heartbeatTimer);
+      unsubscribe();
       const msg = error instanceof Error ? error.message : "Unknown error";
       await this.send(chatId, `Something went wrong: ${msg}`);
     }
@@ -294,6 +315,72 @@ export class TelegramAdapter implements ChannelAdapter {
       // Markdown parse errors — retry as plain text
       await this.bot.sendMessage(chatId, text);
     });
+  }
+}
+
+// ─── Progress line formatter ──────────────────────────────────────────────────
+// Maps run events to a short human-readable status line for Telegram edit-in-place.
+// Returns null for events not worth surfacing.
+
+function distillProgressLine(event: import("../../types.js").RunEvent): string | null {
+  const p = (event.payload ?? {}) as Record<string, unknown>;
+
+  if (event.phase === "tool" && event.eventType === "tool_action_started") {
+    const tool = String(p.toolName ?? "");
+    const detail = extractToolDetail(tool, p.inputJson as string | undefined);
+    return detail ? `⚙️ ${tool} › ${detail}` : `⚙️ ${tool}...`;
+  }
+
+  if (event.phase === "tool" && event.eventType === "tool_action_failed") {
+    const tool = String(p.toolName ?? "tool");
+    const err = String(p.error ?? "failed").slice(0, 80);
+    return `❌ ${tool} failed — ${err}`;
+  }
+
+  if (event.phase === "thought" && event.eventType === "model_response") {
+    const text = String(p.text ?? p.content ?? "").trim().slice(0, 120);
+    return text ? `💭 ${text}` : null;
+  }
+
+  return null;
+}
+
+function extractToolDetail(toolName: string, inputJson: string | undefined): string | null {
+  if (!inputJson) return null;
+  try {
+    const input = JSON.parse(inputJson) as Record<string, unknown>;
+    switch (toolName) {
+      case "file_read":
+      case "file_write":
+      case "file_edit":
+        return String(input.path ?? "").replace(/^workspace\/alfred\//, "");
+      case "web_fetch":
+        return truncateUrl(String(input.url ?? ""), 60);
+      case "search":
+        return `"${String(input.query ?? "").slice(0, 60)}"`;
+      case "shell_exec":
+        return String(input.command ?? "").slice(0, 60);
+      case "lead_extractor":
+        return truncateUrl(String(input.url ?? ""), 60);
+      case "lead_generation":
+        return String(input.query ?? "").slice(0, 60);
+      case "code_discover":
+        return `"${String(input.pattern ?? "").slice(0, 40)}"`;
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+function truncateUrl(url: string, max: number): string {
+  try {
+    const { hostname, pathname } = new URL(url);
+    const short = `${hostname}${pathname}`.replace(/\/$/, "");
+    return short.length > max ? short.slice(0, max) + "…" : short;
+  } catch {
+    return url.slice(0, max);
   }
 }
 

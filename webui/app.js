@@ -207,9 +207,10 @@ function formatTokenUsage(value) {
   const usage = value || {};
   const total = Number(usage.totalTokens || 0);
   const prompt = Number(usage.promptTokens || 0);
+  const cached = Number(usage.cachedTokens || 0);
   const completion = Number(usage.completionTokens || 0);
   const calls = Number(usage.callCount || 0);
-  return `${total} total | ${prompt} prompt | ${completion} completion | ${calls} calls`;
+  return `${total} total | ${prompt} prompt | ${cached} cached | ${completion} completion | ${calls} calls`;
 }
 
 function isTerminalStatus(status) {
@@ -323,6 +324,33 @@ function compactJson(value, max = 140) {
   }
 }
 
+function extractToolDetail(toolName, inputJson) {
+  if (!inputJson) return null;
+  try {
+    const input = typeof inputJson === 'string' ? JSON.parse(inputJson) : inputJson;
+    switch (toolName) {
+      case 'file_read':
+      case 'file_write':
+      case 'file_edit':
+        return String(input.path || '').replace(/^workspace\/alfred\//, '');
+      case 'web_fetch':
+        try { const u = new URL(input.url || ''); return (u.hostname + u.pathname).replace(/\/$/, '').slice(0, 60); } catch { return String(input.url || '').slice(0, 60); }
+      case 'search':
+        return `"${String(input.query || '').slice(0, 60)}"`;
+      case 'shell_exec':
+        return String(input.command || '').slice(0, 60);
+      case 'lead_extractor':
+        try { const u = new URL(input.url || ''); return (u.hostname + u.pathname).replace(/\/$/, ''); } catch { return String(input.url || '').slice(0, 60); }
+      case 'lead_generation':
+        return String(input.query || '').slice(0, 60);
+      case 'code_discover':
+        return `"${String(input.pattern || '').slice(0, 40)}"`;
+      default:
+        return null;
+    }
+  } catch { return null; }
+}
+
 function distillThoughtForChat(event) {
   const payload = event.payload || {};
   if (event.phase === 'observe' && event.eventType === 'heartbeat') {
@@ -413,12 +441,15 @@ function distillActivityForChat(event) {
 
   if (event.phase === 'tool') {
     if (event.eventType === 'tool_action_started') {
-      return `Action • running ${payload.toolName || 'tool'}...`;
+      const toolName = payload.toolName || 'tool';
+      const detail = extractToolDetail(toolName, payload.inputJson);
+      return detail ? `Action • ${toolName} › ${detail}` : `Action • ${toolName}...`;
     }
     if (event.eventType === 'tool_action_completed') {
       const toolName = payload.toolName || 'tool';
       const duration = Number(payload.durationMs || 0);
-      return `Action • ${toolName} completed (${duration}ms)`;
+      const detail = extractToolDetail(toolName, payload.inputJson);
+      return detail ? `Action • ${toolName} › ${detail} (${duration}ms)` : `Action • ${toolName} completed (${duration}ms)`;
     }
     if (event.eventType === 'tool_action_failed') {
       const toolName = payload.toolName || 'tool';

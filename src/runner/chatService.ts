@@ -46,7 +46,8 @@ interface ChatServiceOptions {
   groupChatStore?: GroupChatStore;
 }
 
-const CONVERSATION_WINDOW_MAX = 30; // 15 turns × 2 entries each
+const CONVERSATION_WINDOW_MAX = 20; // 10 turns × 2 entries each
+const CONVERSATION_WINDOW_ENTRY_MAX_CHARS = 1200; // truncate large responses to keep context lean
 
 export class ChatService {
   private readonly threadRuntimeManager: ThreadRuntimeManager;
@@ -144,7 +145,17 @@ export class ChatService {
     if (memory.recentOutputs?.length) {
       const latest = memory.recentOutputs.at(-1);
       if (latest) {
-        parts.push(`Latest output: ${latest.kind} (${latest.availability}) - ${latest.title}`);
+        let outputDetails = `${latest.kind} (${latest.availability})`;
+        const usageParts: string[] = [];
+        if (latest.metadata) {
+          if (typeof latest.metadata.promptTokens === "number") usageParts.push(`P: ${latest.metadata.promptTokens}`);
+          if (typeof latest.metadata.completionTokens === "number") usageParts.push(`C: ${latest.metadata.completionTokens}`);
+          if (typeof latest.metadata.cachedTokens === "number") usageParts.push(`Cached: ${latest.metadata.cachedTokens}`);
+        }
+        if (usageParts.length > 0) {
+          outputDetails += ` [${usageParts.join(", ")}]`;
+        }
+        parts.push(`Latest output: ${outputDetails} - ${latest.title}`);
       }
     }
     return parts.join(" | ").slice(0, 700);
@@ -256,9 +267,10 @@ export class ChatService {
     });
 
     const now = new Date().toISOString();
+    const clip = (s: string) => s.length > CONVERSATION_WINDOW_ENTRY_MAX_CHARS ? s.slice(0, CONVERSATION_WINDOW_ENTRY_MAX_CHARS) + " …[truncated]" : s;
     const newWindowEntries: ConversationWindowEntry[] = [
-      { role: "user", content: message, runId, timestamp: now },
-      { role: "assistant", content: outcome.assistantText ?? "", runId, timestamp: now }
+      { role: "user", content: clip(message), runId, timestamp: now },
+      { role: "assistant", content: clip(outcome.assistantText ?? ""), runId, timestamp: now }
     ];
     const existingWindow = existingMemory?.conversationWindow ?? [];
     memoryPatch.conversationWindow = [...existingWindow, ...newWindowEntries].slice(-CONVERSATION_WINDOW_MAX);

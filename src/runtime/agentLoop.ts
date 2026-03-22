@@ -4,6 +4,7 @@ import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import type { ToolDefaults, ToolState, ToolContext } from "../tools/types.js";
 import { discoverTools, applyToolAllowlist, executeToolWithEnvelope } from "../tools/registry.js";
+import { scrubToolOutput } from "../tools/outputScrubber.js";
 import { getActiveLlmProvider } from "../provider/registry.js";
 import type { LlmConversationMessage, LlmToolDef } from "../provider/types.js";
 
@@ -295,7 +296,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
         });
 
         const resultContent = envelope.status === "ok"
-          ? JSON.stringify(envelope.result)
+          ? JSON.stringify(scrubToolOutput(envelope.result))
           : JSON.stringify({ error: envelope.error });
 
         messages.push({

@@ -13,6 +13,8 @@
 
 ## Current Status
 
+- 2026-03-22: **Browser Reuse & Timeout Hardening.** Refactored `lead_extractor` and `lead_generation` to share a single browser instance per batch, significantly reducing latency. Added a 45s safety buffer to the lead generation loop to prevent ungraceful turn timeouts. Expanded the directory blacklist. Currently at 17 high-quality leads for the Texas MSP/SI vertical.
+
 - 2026-03-22: **Bugfix + Lead Generation Skill.** Implemented `lead_generation` as a high-level skill (composite tool) and refactored `lead_extractor` for deep extraction. Fixed a bug in `agentLoop.ts` where `llmProviders` was missing from `ToolContext`, which was breaking the new deep extraction pipeline. Standardized token usage reporting across tools.
 
 - 2026-03-21: **Workspace cleanup — remove per-turn knowledge extraction, unify artifact paths.** Deleted `dailyNotes.ts` (per-turn turn logging, superseded by `groupChatStore`) and `sessionExtractor.ts` (fired an extra LLM call after every turn, producing up to 100 fragmented Research/Lead/Decision/Project markdown files per day with marginal value). Removed both call sites from `runReActLoop.ts`. Changed `writer_agent` default artifact path from `sessions/{sessionId}/outputs/` to `sessions/{sessionId}/artifacts/{runId}-{format}.md` — all session outputs now live under a single consistent path.

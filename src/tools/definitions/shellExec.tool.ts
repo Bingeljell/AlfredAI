@@ -12,7 +12,12 @@ const BLOCKED_COMMAND_PATTERNS = [
   /\bmkfs\b/i,
   /\bshutdown\b/i,
   /\breboot\b/i,
-  /\bkillall\b/i
+  /\bkillall\b/i,
+  // Outbound data exfiltration — curl/wget posting data to external services
+  /\bcurl\b.+(-d\s|--data\b|--data-binary\b|--data-raw\b|--upload-file\b|-T\s)/i,
+  /\bwget\b.+(--post-data\b|--post-file\b)/i,
+  // Reading .env files via shell utilities
+  /\b(cat|less|more|head|tail|grep|awk|sed)\b[^|]*\.env\b/i
 ];
 
 export const ShellExecToolInputSchema = z.object({

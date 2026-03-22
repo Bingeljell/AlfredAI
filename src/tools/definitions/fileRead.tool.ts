@@ -10,6 +10,14 @@ export const FileReadToolInputSchema = z.object({
   maxChars: z.number().int().min(200).max(80_000).optional()
 });
 
+const BLOCKED_FILE_PATTERNS = [
+  /^\.env(\..+)?$/i,       // .env, .env.local, .env.production, etc.
+  /\.pem$/i,                // TLS certificates
+  /\.key$/i,                // private keys
+  /\.(p12|pfx)$/i,          // PKCS12 bundles
+  /\.secret$/i              // generic secret files
+];
+
 export const toolDefinition: ToolDefinition<typeof FileReadToolInputSchema> = {
   name: "file_read",
   description: "Read text file content from the project root with bounded slices.",
@@ -17,6 +25,10 @@ export const toolDefinition: ToolDefinition<typeof FileReadToolInputSchema> = {
   inputHint: "Use for precise context gathering before making edits.",
   async execute(input, context) {
     const absolute = resolvePathInProject(context.projectRoot, input.path);
+    const basename = absolute.split("/").pop() ?? "";
+    if (BLOCKED_FILE_PATTERNS.some(p => p.test(basename))) {
+      return { blocked: true, reason: "sensitive_file_blocked", path: input.path };
+    }
     const raw = await readFile(absolute, "utf8");
     if (raw.includes("\u0000")) {
       throw new Error("file appears to be binary and cannot be read as text");

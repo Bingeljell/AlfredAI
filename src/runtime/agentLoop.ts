@@ -86,6 +86,8 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     researchSourceCards: []
   };
 
+  const provider = getActiveLlmProvider();
+
   const context: ToolContext = {
     runId,
     sessionId,
@@ -97,6 +99,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     searchManager,
     workspaceDir,
     openAiApiKey,
+    llmProviders: [provider],
     defaults,
     state,
     isCancellationRequested,
@@ -117,7 +120,6 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
   const allTools = await discoverTools();
   const tools = applyToolAllowlist(allTools, toolAllowlist);
   const llmTools = toolDefsToLlm(tools);
-  const provider = getActiveLlmProvider();
 
   // Build initial conversation — inject sliding window as proper message pairs
   // so Gemini's implicit caching benefits from the stable conversation prefix.

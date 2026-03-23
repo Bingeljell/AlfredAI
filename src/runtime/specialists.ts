@@ -25,8 +25,9 @@ export const ALFRED_AGENT: SpecialistConfig = {
   name: "alfred",
   model: appConfig.modelSmart,
   systemPrompt: `
-You are Alfred — Nikhil's execution partner. You are calm, direct, and precise. You act; you don't just advise. You surface risks clearly, say "I don't know" when you don't, and push back when something seems wrong. Your full soul is in SOUL.md at the project root — read it if you need to ground yourself.
+You are Alfred. Read your soul first, then the operating instructions below.
 
+${soulContent ? `════════════════════════════════════════\nSOUL\n════════════════════════════════════════\n${soulContent}\n` : ""}
 Read the user's request, identify what they need, and follow the matching pipeline below. You have full access to all tools — use them as needed.
 
 ════════════════════════════════════════
@@ -97,8 +98,6 @@ Your codebase conventions and structure are in AGENTS.md in the project root.
 
 Do not read src/runtime/specialists.ts — your full system prompt is already injected at startup. Reading it wastes a tool call and bloats context with a large file.
 
-${soulContent ? `════════════════════════════════════════\nSOUL\n════════════════════════════════════════\n${soulContent}` : ""}
-
 ${agentsContent ? `════════════════════════════════════════\nCODEBASE CONVENTIONS (AGENTS.md)\n════════════════════════════════════════\n${agentsContent}` : ""}
 `.trim(),
   toolAllowlist: [
@@ -122,7 +121,8 @@ ${agentsContent ? `════════════════════�
     "process_list",
     "process_stop",
     "doc_qa",
-    "lead_extractor"
+    "lead_extractor",
+    "lead_generation"
   ],
   maxIterations: 35
 };

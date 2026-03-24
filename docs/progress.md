@@ -13,6 +13,8 @@
 
 ## Current Status
 
+- 2026-03-24: **Modular lead tools for MSP/SI experimentation.** Added `experiments/lead-gen-msp-si.md` to document the proposal-maker outbound motion and the staged lead pipeline for US MSPs and systems integrators. Refactored the new lead logic into small portable modules under `src/tools/lead/`: `leadProfiles.ts` for ICP profiles, `leadScoring.ts` for normalized-domain ranking/dedupe, and `leadPersistence.ts` for CSV/JSON ledger writes. Kept `lead_generation` as a thin Alfred-facing tool wrapper so the business logic can later be extracted into a standalone open-source repo with minimal rewiring.
+
 - 2026-03-22: **Browser Reuse & Timeout Hardening.** Refactored `lead_extractor` and `lead_generation` to share a single browser instance per batch, significantly reducing latency. Added a 45s safety buffer to the lead generation loop to prevent ungraceful turn timeouts. Expanded the directory blacklist. Currently at 17 high-quality leads for the Texas MSP/SI vertical.
 
 - 2026-03-22: **Bugfix + Lead Generation Skill.** Implemented `lead_generation` as a high-level skill (composite tool) and refactored `lead_extractor` for deep extraction. Fixed a bug in `agentLoop.ts` where `llmProviders` was missing from `ToolContext`, which was breaking the new deep extraction pipeline. Standardized token usage reporting across tools.

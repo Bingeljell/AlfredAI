@@ -2,113 +2,186 @@
 
 ![Alfred Masthead](assets/alfred_masthead.jpg)
 
-There is no Batman without Alfred. 
+There is no Batman without Alfred.
 
-## Long-Term Vision
-
-Alfred is intended to become a true personal second brain: a reliable agent that can reason, act, remember context over time, and execute across many workflows (research, outreach, writing, planning, operations, and more).
-
-The target end-state is not a single-purpose bot, but an always-on execution layer that can run practical tasks end-to-end with transparent logs, controlled guardrails, and durable memory.
-
-The intended interaction model is conversational first: Alfred should retain recent session context naturally, form a canonical task brief only when execution begins, and rely on memory compaction/retrieval only when the conversation outgrows the comfortable live context window.
-
-To begin with, Alfred is a local-first AI agent for lead generation. 
-
-## Why Lead Gen First
-
-Lead generation is the initial focused wedge. It gives a measurable, high-value workflow where we can validate real-world outcomes quickly:
-
-- lead quality
-- email coverage
-- cost per lead
-- reliability under real run budgets
-
-Once this workflow is consistently strong, Alfred expands outward into broader general-purpose second-brain capabilities.
+Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reasons, acts, remembers, and can extend his own capabilities. Talk to him via Telegram or the web UI. Give him a task; he figures out how to do it.
 
 ## What Alfred Does Today
 
-- Runs a lead-only agent loop: `plan -> act -> observe -> replan`.
-- Uses SearXNG as primary search (with health checks and recovery hooks).
-- Browses pages with Playwright, extracts structured leads, dedupes, and quality-scores.
-- Performs optional email enrichment from company sites.
-- Persists runs, tool calls, timeline events, and exported debug bundles.
-- Supports session management and run cancellation in the web UI.
-
-## Current Status (March 2026)
-
-- Foundation is in place and operational end-to-end for lead generation.
-- Output quantity has improved significantly; quality tuning is still active.
-- Search reliability and extraction accuracy are the main optimization areas now.
-- Agent budget controls, failure telemetry, and stop-reason reporting are implemented.
-
-## High-Level Plan
-
-1. Improve lead quality and efficiency (better search yield, better extraction precision, tighter scoring).
-2. Expand toolset (stronger enrichment, additional providers, then broader intent coverage).
-3. Harden operations (observability, reliability, and production-safe guardrails).
+- **General-purpose ReAct agent** — research, writing, lead generation, ops, file work, shell commands
+- **Multi-provider LLM** — Gemini, Anthropic, OpenAI; configurable per deployment
+- **Telegram + Web UI** — converse from your phone or browser; live progress updates as he works
+- **Persistent memory** — session context, conversation window, workspace artifacts
+- **Self-extending** — Alfred can read his own codebase and write new tools mid-session
+- **Tool ecosystem** — search (SearXNG), web fetch, file read/write/edit, shell exec, lead extraction, writer agent, RAG memory
 
 ## Quick Start
 
-### 1) Prerequisites
+### 1. Prerequisites
 
-- Node.js 20+
-- `pnpm` (repo is fully on pnpm)
-- Running SearXNG instance (recommended for primary search)
+- Node.js 22+
+- `pnpm`
+- SearXNG instance (for search — self-host or use a public instance)
+- At least one LLM API key (Anthropic, Google Gemini, or OpenAI)
 
-### 2) Install and configure
+### 2. Install
 
 ```bash
+git clone https://github.com/Bingeljell/AlfredAI.git
+cd AlfredAI
 pnpm install
+```
+
+### 3. Configure
+
+```bash
 cp .env.example .env
 ```
 
-Edit `.env` and set at least:
+Edit `.env` — minimum required:
 
-- `OPENAI_API_KEY`
-- `PORT` (default `3000`, can be changed to `9001` or any free port)
-- `SEARXNG_BASE_URL` and related SearXNG settings
+```
+# LLM — set at least one
+ANTHROPIC_API_KEY=
+GEMINI_API_KEY=
+OPENAI_API_KEY=
 
-### 3) Start Alfred gateway
+# Server
+PORT=9001
+
+# Search
+SEARXNG_BASE_URL=http://localhost:8080
+
+# Telegram (optional but recommended)
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_ALLOWED_CHAT_IDS=
+```
+
+### 4. Build and run
+
+```bash
+pnpm run build
+pnpm start
+```
+
+Open `http://localhost:9001/ui` — create a session and start talking to Alfred.
+
+For development (auto-rebuild on save):
 
 ```bash
 pnpm run dev:gateway
 ```
 
-Open:
+### 5. Logs directory
 
-- `http://localhost:<PORT>/ui`
+Alfred writes logs to `logs/`. Create it if it doesn't exist:
 
-### 4) Run a lead request
+```bash
+mkdir -p logs
+```
 
-- Create/select a session in UI.
-- Enter a request like `Find 20 MSP leads in USA with emails`.
-- Watch progress in Run Timeline.
-- Download/debug via run export if needed.
+---
+
+## Run as a background service (macOS launchctl)
+
+To have Alfred start automatically on login and stay running, set it up as a LaunchAgent.
+
+### 1. Find your paths
+
+```bash
+which pnpm          # e.g. /Users/yourname/.nvm/versions/node/v22.x.x/bin/pnpm
+pwd                 # run from the repo root — e.g. /Users/yourname/Projects/AlfredAI
+echo $HOME          # e.g. /Users/yourname
+```
+
+### 2. Create the plist
+
+Copy the template and fill in your paths:
+
+```bash
+cp scripts/com.alfred.plist.template ~/Library/LaunchAgents/com.alfred.plist
+```
+
+Edit `~/Library/LaunchAgents/com.alfred.plist` and replace the four placeholders:
+
+| Placeholder | Replace with |
+|---|---|
+| `PNPM_PATH` | output of `which pnpm` |
+| `PROJECT_DIR` | absolute path to repo root |
+| `HOME_DIR` | your home directory (`$HOME`) |
+| `NODE_BIN_DIR` | the `bin/` directory containing pnpm (parent of `PNPM_PATH`) |
+
+Example for a user `yourname` with nvm node v22:
+
+```xml
+<string>/Users/yourname/.nvm/versions/node/v22.19.0/bin/pnpm</string>
+...
+<string>/Users/yourname/Projects/AlfredAI</string>
+...
+<string>/Users/yourname</string>
+<string>/Users/yourname/.nvm/versions/node/v22.19.0/bin:/usr/local/bin:/usr/bin:/bin</string>
+```
+
+### 3. Load the service
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.alfred.plist
+```
+
+Alfred will start immediately and restart automatically if it crashes.
+
+### 4. Manage Alfred
+
+```bash
+# Stop
+launchctl stop com.alfred
+
+# Start
+launchctl start com.alfred
+
+# Restart (after code changes or config updates)
+launchctl stop com.alfred && launchctl start com.alfred
+
+# Unload completely (disable autostart)
+launchctl unload ~/Library/LaunchAgents/com.alfred.plist
+
+# Watch logs
+tail -f logs/alfred.log
+tail -f logs/alfred-error.log
+```
+
+---
+
+## Key Paths
+
+```
+src/runtime/        — agent loop, system prompt, specialists config
+src/tools/          — all tool definitions (drop a *.tool.ts here to add a tool)
+src/provider/       — LLM adapters (Anthropic, Gemini, OpenAI, Ollama)
+src/channels/       — Telegram + channel adapter interface
+src/runner/         — ChatService, conversation window management
+src/gateway/        — HTTP server, Web UI API
+src/memory/         — session memory, RAG, conversation store
+webui/              — Web UI
+SOUL.md             — Alfred's identity and values
+AGENTS.md           — codebase conventions (also injected into Alfred's system prompt)
+docs/               — architecture docs, spec, changelog
+```
 
 ## Useful Commands
 
 ```bash
-pnpm run build
+pnpm run build          # compile TypeScript
+pnpm start              # run compiled build
+pnpm run dev:gateway    # run with auto-rebuild
 pnpm run test:unit
 pnpm run test:integration
 pnpm run test:smoke
-pnpm run test:security
-pnpm run setup:browsers
 ```
-
-## Key Paths
-
-- Gateway/API: `src/gateway`
-- Agent loop: `src/core`
-- Lead pipeline: `src/tools/lead`
-- Search manager: `src/tools/search`
-- Web UI: `webui`
-- Runtime artifacts: `workspace/alfred`
-- Project docs: `docs/`
 
 ## Documentation
 
-- `docs/spec.md` - product and architecture blueprint
-- `docs/progress.md` - implementation status by phase
-- `docs/changelog.md` - change history
-- `docs/git_workflow.md` - branch and release process
+- `docs/spec.md` — architecture and product blueprint
+- `docs/roadmap.md` — what's done, what's next
+- `docs/changelog.md` — change history
+- `docs/architecture/` — deep dives: security model, Alfred's identity, turn lifecycle, refactor history

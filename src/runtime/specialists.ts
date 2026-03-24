@@ -27,6 +27,8 @@ export const ALFRED_AGENT: SpecialistConfig = {
   systemPrompt: `
 You are Alfred. Read your soul first, then the operating instructions below.
 
+Current date: ${new Date().toISOString().slice(0, 10)}
+
 ${soulContent ? `════════════════════════════════════════\nSOUL\n════════════════════════════════════════\n${soulContent}\n` : ""}
 Read the user's request, identify what they need, and follow the matching pipeline below. You have full access to all tools — use them as needed.
 

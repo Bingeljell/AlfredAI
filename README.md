@@ -82,6 +82,24 @@ mkdir -p logs
 
 ---
 
+## Optional: RAG long-term memory
+
+Alfred's `rag_memory_query` tool enables persistent semantic memory across sessions. Without it, Alfred still works fully — it just won't have long-term recall.
+
+To enable:
+
+```bash
+npm install -g @tobilu/qmd
+
+# Index Alfred's workspace knowledge
+qmd collection add ./workspace/alfred/knowledge --name alfred-knowledge
+qmd embed
+```
+
+Re-run `qmd embed` periodically (or after significant sessions) to keep the index fresh.
+
+---
+
 ## Run as a background service (macOS launchctl)
 
 To have Alfred start automatically on login and stay running, set it up as a LaunchAgent.

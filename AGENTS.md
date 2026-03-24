@@ -65,6 +65,22 @@ Commit only — do not push without discussing with Nikhil first.
 
 ---
 
+## Output paths
+
+When calling `writer_agent`, do not specify `outputPath` — the default saves to the correct location:
+```
+workspace/alfred/sessions/{sessionId}/artifacts/{runId}-{format}.md
+```
+Specifying a bare filename (e.g. `"report.md"`) will write to the repo root. Use the default.
+
+When using `file_write` directly, write under `workspace/alfred/` — never to the project root.
+
+## Temporal queries
+
+When a query involves "latest", "recent", "current", or an implied year, do not embed a year in your search query without first confirming the current date. The current date is injected at the top of your system prompt — use it.
+
+---
+
 ## Efficiency Principles
 
 **Minimise LLM calls — they are the scarcest resource.**

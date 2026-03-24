@@ -65,6 +65,23 @@ export function deriveSessionOutputRecordFromRun(args: {
     return null;
   }
 
+  const llmUsage = args.toolCalls?.reduce(
+    (acc, call) => {
+      // Assuming tool output contains usage info if standardized
+      if (call.outputRedacted && typeof call.outputRedacted === "object" && "usage" in call.outputRedacted) {
+        const usage = (call.outputRedacted as any).usage;
+        if (usage) {
+          if (typeof usage.promptTokens === "number") acc.promptTokens += usage.promptTokens;
+          if (typeof usage.completionTokens === "number") acc.completionTokens += usage.completionTokens;
+          if (typeof usage.totalTokens === "number") acc.totalTokens += usage.totalTokens;
+          if (typeof usage.cachedTokens === "number") acc.cachedTokens += usage.cachedTokens;
+        }
+      }
+      return acc;
+    },
+    { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0 }
+  );
+
   const artifactPath = args.artifactPaths?.[0] ?? null;
   const writerToolCall = [...(args.toolCalls ?? [])]
     .reverse()
@@ -122,6 +139,12 @@ export function deriveSessionOutputRecordFromRun(args: {
   }
   if (artifactPath) {
     metadata.primaryArtifactPath = artifactPath;
+  }
+  if (llmUsage) {
+    if (llmUsage.promptTokens > 0) metadata.promptTokens = llmUsage.promptTokens;
+    if (llmUsage.completionTokens > 0) metadata.completionTokens = llmUsage.completionTokens;
+    if (llmUsage.totalTokens > 0) metadata.totalTokens = llmUsage.totalTokens;
+    if (llmUsage.cachedTokens > 0) metadata.cachedTokens = llmUsage.cachedTokens;
   }
 
   return {

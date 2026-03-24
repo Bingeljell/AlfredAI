@@ -331,6 +331,12 @@ function distillProgressLine(event: import("../../types.js").RunEvent): string |
     return detail ? `⚙️ ${tool} › ${detail}` : `⚙️ ${tool}...`;
   }
 
+  if (event.phase === "tool" && event.eventType === "tool_progress") {
+    const message = String(p.message ?? "");
+    const tool = String(p.toolName ?? "tool");
+    return message ? `⚙️ ${tool} › ${message}` : null;
+  }
+
   if (event.phase === "tool" && event.eventType === "tool_action_failed") {
     const tool = String(p.toolName ?? "tool");
     const err = String(p.error ?? "failed").slice(0, 80);

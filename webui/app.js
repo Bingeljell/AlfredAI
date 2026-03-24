@@ -269,6 +269,9 @@ function latestProgressMessage(payload) {
   const events = Array.isArray(payload?.events) ? payload.events : [];
   const reversed = [...events].reverse();
   for (const event of reversed) {
+    if (event.phase === 'tool' && event.eventType === 'tool_progress') {
+      return event.payload.message || 'Alfred is working on your request...';
+    }
     if ((event.phase === 'thought') || (event.phase === 'observe' && event.eventType === 'heartbeat')) {
       const line = distillThoughtForChat(event);
       if (line) {
@@ -444,6 +447,10 @@ function distillActivityForChat(event) {
       const toolName = payload.toolName || 'tool';
       const detail = extractToolDetail(toolName, payload.inputJson);
       return detail ? `Action • ${toolName} › ${detail}` : `Action • ${toolName}...`;
+    }
+    if (event.eventType === 'tool_progress') {
+      const toolName = payload.toolName || 'tool';
+      return `Action • ${toolName} › ${payload.message || 'working...'}`;
     }
     if (event.eventType === 'tool_action_completed') {
       const toolName = payload.toolName || 'tool';

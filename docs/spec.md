@@ -102,6 +102,12 @@ All tools are Zod-defined, auto-discovered, and tagged (inline/queued, requiresA
 
 **Data & Output**  
 - `read/write/append_csv`, `file_read`, `file_write`, `file_append`
+- `writer_agent` (draft generation from context)
+
+**Introspection & Diagnostics**
+- `run_diagnostics` (telemetry and failure analysis)
+- `recover_search` (primary search provider recovery)
+- `search_status` (live health checks)
 
 **Outreach**  
 - `send_emails` (Resend/SendGrid – approval required)

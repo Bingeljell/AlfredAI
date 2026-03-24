@@ -645,6 +645,17 @@ export async function executeToolWithEnvelope(args: ExecuteToolWithEnvelopeArgs)
     const output = await tool.execute(parsedInput.data, args.context);
     const outputRecord = output as Record<string, unknown>;
     const durationMs = Date.now() - started;
+
+    if (outputRecord.usage && typeof outputRecord.usage === "object") {
+      const toolUsage = outputRecord.usage as any;
+      await args.runStore.addLlmUsage(args.runId, {
+        promptTokens: Number(toolUsage.promptTokens || 0),
+        completionTokens: Number(toolUsage.completionTokens || 0),
+        totalTokens: Number(toolUsage.totalTokens || 0),
+        cachedTokens: Number(toolUsage.cachedTokens || 0)
+      }, Number(toolUsage.callCount || 0));
+    }
+
     await args.runStore.addToolCall(args.runId, {
       toolName: args.toolName,
       inputRedacted: redactValue(parsedInput.data),

@@ -28,6 +28,24 @@ const ChatTurnSchema = z.object({
 
 const app = new Hono();
 
+// ── API key auth — all /v1/* routes ──────────────────────────────────────────
+// Key is resolved at startup by server.ts (auto-generated if not in .env).
+// We read it lazily from process.env so the middleware always sees the final value.
+app.use("/v1/*", async (c, next) => {
+  const key = process.env.ALFRED_API_KEY;
+  if (!key) {
+    await next();
+    return;
+  }
+  const header =
+    c.req.header("X-Api-Key") ??
+    c.req.header("Authorization")?.replace(/^Bearer\s+/i, "");
+  if (header !== key) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  await next();
+});
+
 const sessionStore = new SessionStore(appConfig.workspaceDir);
 const runStore = new RunStore(appConfig.workspaceDir);
 const queue = new InMemoryQueue(appConfig.concurrency);

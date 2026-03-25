@@ -694,13 +694,68 @@ function renderMarkdown(text) {
   }
 }
 
+// ── Auth ─────────────────────────────────────────────────────────
+
+const AUTH_KEY = 'alfred_api_key';
+
+function getStoredKey() {
+  return sessionStorage.getItem(AUTH_KEY) || '';
+}
+
+function initAuth() {
+  const overlay = document.getElementById('auth-overlay');
+  const input = document.getElementById('auth-key-input');
+  const submit = document.getElementById('auth-submit');
+  const error = document.getElementById('auth-error');
+
+  if (!overlay) return;
+
+  if (!getStoredKey()) {
+    overlay.style.display = 'flex';
+  } else {
+    overlay.style.display = 'none';
+  }
+
+  const tryKey = async () => {
+    const key = input.value.trim();
+    if (!key) return;
+    try {
+      const res = await fetch('/v1/sessions', {
+        headers: { 'content-type': 'application/json', 'X-Api-Key': key }
+      });
+      if (res.status === 401) {
+        error.style.display = 'block';
+        return;
+      }
+      sessionStorage.setItem(AUTH_KEY, key);
+      overlay.style.display = 'none';
+      error.style.display = 'none';
+      await init();
+    } catch {
+      error.style.display = 'block';
+    }
+  };
+
+  submit.addEventListener('click', tryKey);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryKey(); });
+}
+
 // ── API ──────────────────────────────────────────────────────────
 
 async function api(path, init = {}) {
+  const key = getStoredKey();
   const res = await fetch(path, {
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      ...(key ? { 'X-Api-Key': key } : {})
+    },
     ...init
   });
+  if (res.status === 401) {
+    sessionStorage.removeItem(AUTH_KEY);
+    location.reload();
+    return;
+  }
   const body = await res.json();
   if (!res.ok) {
     throw new Error(body.error || 'Request failed');
@@ -1658,6 +1713,9 @@ window.addEventListener('beforeunload', () => {
   }
 });
 
-void init().catch(() => {
-  renderAll();
-});
+initAuth();
+if (getStoredKey()) {
+  void init().catch(() => {
+    renderAll();
+  });
+}

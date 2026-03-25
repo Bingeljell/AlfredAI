@@ -91,43 +91,41 @@ Session continuity should be layered instead of forcing all history into every p
 2. **Think of Blog & Post** – “Research + write full 2,500-word blog on TS agents, generate images, schedule to site + LinkedIn.”  
 3. **Build Itself / Better Itself** – “Review logs, study Peter Steinberger’s latest repo, implement better local tool, open PR and update SOUL.md.”
 
-## 5. Full Tool Registry
-All tools are Zod-defined, auto-discovered, and tagged (inline/queued, requiresApproval).
+## 5. Tool Registry
 
-**Research & Lead-Gen**  
-- `web_search`, `browse_and_summarize`  
-- `find_companies`, `find_emails` / `bulk_find_emails` (Hunter, Apollo, Skrapp APIs)  
-- `scrape_public_page` (Playwright – public sites only)  
-- `score_leads`, `summarize_leads`
+All tools are Zod-defined, auto-discovered from `src/tools/definitions/*.tool.ts`, and filtered by the allowlist in `src/runtime/specialists.ts`.
 
-**Data & Output**  
-- `read/write/append_csv`, `file_read`, `file_write`, `file_append`
-- `writer_agent` (draft generation from context)
+**Search & Web**
+- `search` — web search via SearXNG (primary) with Brave/BrightData fallback
+- `web_fetch` — fetch and render pages (Playwright or HTTP)
+- `search_status` — live provider health check
+- `recover_search` — trigger SearXNG recovery
 
-**Introspection & Diagnostics**
-- `run_diagnostics` (telemetry and failure analysis)
-- `recover_search` (primary search provider recovery)
-- `search_status` (live health checks)
+**Memory**
+- `rag_memory_query` — semantic search over `workspace/alfred/knowledge/` via QMD
+- `log_session` — write a session summary to the knowledge base and re-index
 
-**Outreach**  
-- `send_emails` (Resend/SendGrid – approval required)
+**Lead Generation**
+- `lead_generation` — full pipeline: discover → extract → score → persist to CSV
+- `lead_extractor` — deep extraction from a single company URL
 
-**Local Machine Control** (runs on your RPi/VPS/laptop)  
-- `process_list`, `process_kill`  
-- `shell_exec` (safe, approval-gated)  
-- `system_command` (start/stop services, e.g. “searXNG is down → shall I start it?”)  
-- `docker_control`, `service_start/stop/restart`
+**File & Shell**
+- `file_read`, `file_write`, `file_edit`, `file_list` — workspace file operations
+- `shell_exec` — safe shell commands (`.env` read blocked)
+- `code_discover` — BFS code search with regex/semantic modes
 
-**Coding & Self-Improvement**  
-- `code_interpreter` (sandboxed)  
-- `github_tools` (clone, analyze, create PR)  
-- `analyze_github_repo` + `install_oss_tool`
+**Writing**
+- `writer_agent` — long-form draft generation from fetched context
 
-**Memory & Comms**  
-- `rag_memory_query` (QMD over Markdown)  
-- `daily_note_append`  
-- `notify_user` (Telegram, WhatsApp, Slack)  
-- `calendar_search/book`
+**Process**
+- `process_list`, `process_stop` — local process management
+
+**Diagnostics**
+- `run_diagnostics` — telemetry and failure analysis for a run
+
+**Planned / Not Yet Shipped**
+- `send_emails` — outreach via Resend/SendGrid (approval required)
+- `pinchtab_fetch`, `pinchtab_search` — JS-rendered scraping via Pinchtab (optional)
 
 ## 6. Folder Structure
 

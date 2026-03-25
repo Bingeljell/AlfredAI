@@ -15,6 +15,10 @@ Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reas
 - **Self-extending** — Alfred can read his own codebase and write new tools mid-session
 - **Tool ecosystem** — search (SearXNG), web fetch, file read/write/edit, shell exec, lead extraction, writer agent, RAG memory
 
+## Important notes as of 25th March 2026
+- **Personality** - Alfred's personality is meant to be a first principle's thinker, but not one who will overthink.
+- **Ownership** - There's no onboarding right now, so you'll have to edit `SOUL.md` yourself and switch out the name, else Alfred's going to think he's working for me
+- **Features** - Alfred is still very much in development - while he can do a lot of stuff and you can actually build him out the way you want, using him now is likely to be buggy. It's still worth it.
 ## Quick Start
 
 ### 1. Prerequisites

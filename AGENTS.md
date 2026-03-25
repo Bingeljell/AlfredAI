@@ -61,7 +61,11 @@ Run this after any code change before proposing a commit.
 ```bash
 scripts/committer "your commit message" "file1" "file2"
 ```
-Commit only — do not push without discussing with Nikhil first.
+Always use `scripts/committer` — never `git add`/`git commit` directly. Work on feature branches; never commit to `main` unless explicitly instructed. If `main` is required, use:
+```bash
+scripts/committer --allow-main "your commit message" "file1" "file2"
+```
+Commit only — do not push without explicit instruction.
 
 ---
 
@@ -118,17 +122,16 @@ Include: what was worked on, key outcomes, artifacts created, open threads. Nikh
 
 ---
 
-## Progress and Changelog Discipline
-- When any planned task or phase is completed, update `docs/progress.md` in the same commit.
-- Add a corresponding entry in `docs/changelog.md` in the same commit for every completed task or phase checkpoint.
-- Format: `- **YYYY-MM-DD** > \`file\` > method/function > what changed`
-- Do not mark a task complete without both progress and changelog updates.
+## Changelog Discipline
+- Add an entry to `docs/changelog.md` in the same commit for every meaningful change.
+- Format: `- **YYYY-MM-DD** > \`file(s)\` > short description of what changed and why`
 
 ## Testing Workflow
 - Run `pnpm tsc --noEmit` after every code change.
 - Before each commit, run all available automated tests relevant to changed files.
 
 ## Commit Workflow
-- Always commit using `scripts/committer`.
+- Always commit using `scripts/committer "message" "file1" "file2"`.
 - Do not use direct `git add` / `git commit` unless explicitly asked.
-- Never commit to `main` unless explicitly instructed.
+- Never commit to `main` unless explicitly instructed — use `--allow-main` flag if so.
+- Do not push without explicit instruction.

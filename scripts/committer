@@ -3,8 +3,9 @@
 set -euo pipefail
 # Disable glob expansion to handle brackets in file paths
 set -f
+
 usage() {
-  printf 'Usage: %s [--force] "commit message" "file" ["file" ...]\n' "$(basename "$0")" >&2
+  printf 'Usage: %s [--allow-main] [--force] "commit message" "file" ["file" ...]\n' "$(basename "$0")" >&2
   exit 2
 }
 
@@ -12,11 +13,24 @@ if [ "$#" -lt 2 ]; then
   usage
 fi
 
+allow_main=false
 force_delete_lock=false
-if [ "${1:-}" = "--force" ]; then
-  force_delete_lock=true
-  shift
-fi
+
+while true; do
+  case "${1:-}" in
+    --allow-main)
+      allow_main=true
+      shift
+      ;;
+    --force)
+      force_delete_lock=true
+      shift
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 if [ "$#" -lt 2 ]; then
   usage
@@ -40,6 +54,15 @@ if [ "$#" -eq 0 ]; then
 fi
 
 files=("$@")
+
+# Branch protection — never commit to main/master without explicit --allow-main
+current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+if [[ "$current_branch" == "main" || "$current_branch" == "master" ]]; then
+  if [ "$allow_main" = false ]; then
+    printf 'Error: on protected branch "%s". Use --allow-main to commit here intentionally.\n' "$current_branch" >&2
+    exit 1
+  fi
+fi
 
 # Disallow "." because it stages the entire repository and defeats the helper's safety guardrails.
 for file in "${files[@]}"; do

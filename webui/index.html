@@ -160,6 +160,18 @@
     </div>
   </div>
 
+  <!-- API key gate — shown when no key in sessionStorage -->
+  <div id="auth-overlay" style="display:none;position:fixed;inset:0;background:#0a0a0f;z-index:9999;display:flex;align-items:center;justify-content:center;">
+    <div style="background:#13131a;border:1px solid #2a2a3a;border-radius:12px;padding:2rem;width:100%;max-width:420px;display:flex;flex-direction:column;gap:1rem;">
+      <div style="font-size:1.4rem;font-weight:600;color:#e8e8f0;">Alfred</div>
+      <div style="color:#8888aa;font-size:0.9rem;">Enter your API key to continue. Find it in Alfred's startup logs.</div>
+      <input id="auth-key-input" type="password" placeholder="alfred_..." autocomplete="off"
+        style="background:#0a0a0f;border:1px solid #2a2a3a;border-radius:8px;padding:0.75rem 1rem;color:#e8e8f0;font-size:0.95rem;outline:none;width:100%;box-sizing:border-box;" />
+      <div id="auth-error" style="color:#ff6b6b;font-size:0.85rem;display:none;">Invalid key — try again.</div>
+      <button id="auth-submit" style="background:#6c63ff;color:#fff;border:none;border-radius:8px;padding:0.75rem;font-size:0.95rem;cursor:pointer;font-weight:600;">Unlock</button>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script type="module" src="/ui/app.js"></script>
 </body>

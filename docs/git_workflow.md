@@ -1,39 +1,39 @@
 # Git Workflow
 
-This repository follows a small, reversible workflow for safe iteration.
+## Branching
 
-## Branching Rules
+- Work on `feature/<description>` or `fix/<description>` branches.
+- Never commit directly to `main` unless explicitly instructed.
 
-- Never commit directly to `main` unless explicitly requested.
-- Work on feature/fix branches:
-  - `feature/<short-description>`
-  - `fix/<short-description>`
+## Committing
 
-## Commit Rules
+Always use `scripts/committer` — never raw `git add` / `git commit`:
 
-- Always commit with `scripts/committer`.
-- Do not use direct `git add`/`git commit` unless explicitly asked.
-- Keep commits small and logical.
-- Stage only explicit file paths in each commit.
+```bash
+scripts/committer "commit message" "file1" "file2" ...
+```
 
-## Commit Commands
+To commit to `main` (only when explicitly requested):
 
-- Normal commit:
-  - `scripts/committer "your commit message" "path/file1" "path/file2"`
-- If a main-branch commit is explicitly requested:
-  - `scripts/committer --allow-main "your commit message" "path/file1"`
+```bash
+scripts/committer --allow-main "commit message" "file1" "file2" ...
+```
 
-## Push Rules
+The script enforces:
+- No `.` (must list files explicitly — prevents accidental staging of secrets or unrelated changes)
+- No `node_modules` paths
+- Clears the staging area first, then adds only the named files
+- Errors if on `main`/`master` without `--allow-main`
+- `--force` flag removes stale `.git/index.lock` if present
 
-- Push your branch after a successful commit:
-  - `git push -u origin <branch-name>` (first push)
-  - `git push` (subsequent pushes)
+## Pushing
 
-## Validation Before Commit
+Do not push without explicit instruction. When pushing a feature branch for the first time:
 
-- Run available project checks/tests before committing.
-- If no test/build tooling exists yet, record that in your handoff/update.
+```bash
+git push --set-upstream origin feature/<description>
+```
 
-## First-Commit Bootstrap
+## Pull Requests
 
-- `scripts/committer` supports first commits on an unborn branch and can be used for repository bootstrap commits.
+Open PRs against `main`. Squash merge preferred to keep history clean.

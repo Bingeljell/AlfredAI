@@ -3,60 +3,24 @@ import { extractLead } from "./leadExtractor.tool.js";
 import { BrowserPool } from "../browser/browserPool.js";
 import type { ToolDefinition } from "../types.js";
 import path from "node:path";
-import fs from "node:fs/promises";
+import {
+  appendExperimentLedger,
+  appendLeadsToCsv,
+  readExistingLeadDomains
+} from "../lead/leadPersistence.js";
+import { LeadProfileSchema } from "../lead/leadProfiles.js";
+import { dedupeAndRankCandidates, normalizeDomain } from "../lead/leadScoring.js";
 
 const LeadGenerationInputSchema = z.object({
   query: z.string().describe("Natural language search query for finding companies (e.g., 'Small MSPs in Austin, TX')"),
   vertical: z.string().describe("Vertical identifier for the CSV file (e.g., 'msp_si', 'wedding_planners')"),
   maxLeads: z.number().int().min(1).max(50).default(10).describe("Number of unique leads to attempt finding"),
-  filters: z.string().optional().describe("Additional NL filters (e.g. 'less than 50 employees', 'must have a team page')")
+  filters: z.string().optional().describe("Additional NL filters (e.g. 'less than 50 employees', 'must have a team page')"),
+  profile: LeadProfileSchema.default("generic")
+    .describe("ICP profile used to rank search candidates before extraction"),
+  country: z.string().default("us")
+    .describe("Target country code or label used for ranking and future geo filtering")
 });
-
-async function readExistingLeads(csvPath: string): Promise<Set<string>> {
-  try {
-    const data = await fs.readFile(csvPath, "utf-8");
-    const lines = data.split("\n").slice(1); // skip header
-    const urls = new Set<string>();
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      // CSV format: "Company","Contact","Email","URL","Size","Industry","Description"
-      // URL is at index 3
-      const parts = line.split('","');
-      if (parts.length >= 4) {
-        const url = parts[3].replace(/"/g, "").trim();
-        urls.add(url);
-      }
-    }
-    return urls;
-  } catch {
-    return new Set();
-  }
-}
-
-async function appendLeadsToCsv(csvPath: string, leads: any[]) {
-  const header = "Company Name,Contact Name,Email,Source URL,Size,Industry,Description\n";
-  const fileExists = await fs.access(csvPath).then(() => true).catch(() => false);
-  
-  let content = "";
-  if (!fileExists) {
-    content += header;
-  }
-
-  for (const lead of leads) {
-    const row = [
-      lead.companyName || "N/A",
-      lead.contactName || "N/A",
-      (lead.emails || []).join("; "),
-      lead.sourceUrl || "N/A",
-      lead.companySize || "N/A",
-      lead.industry || "N/A",
-      (lead.description || "N/A").replace(/"/g, '""') // escape quotes
-    ].map(v => `"${v}"`).join(",");
-    content += row + "\n";
-  }
-
-  await fs.appendFile(csvPath, content, "utf-8");
-}
 
 export const toolDefinition: ToolDefinition<typeof LeadGenerationInputSchema> = {
   name: "lead_generation",
@@ -64,8 +28,12 @@ export const toolDefinition: ToolDefinition<typeof LeadGenerationInputSchema> = 
   inputSchema: LeadGenerationInputSchema,
   inputHint: '{"query": "MSPs in Texas", "vertical": "msp_tx", "maxLeads": 5}',
   async execute(input, context) {
-    const { query, vertical, maxLeads, filters } = input;
+    const { query, vertical, maxLeads, filters, profile, country } = input;
     const csvPath = path.join(context.workspaceDir, `leads_${vertical}.csv`);
+    const experimentLedgerPath = path.join(
+      context.workspaceDir,
+      `lead_experiment_${vertical}.json`
+    );
 
     const emitProgress = async (message: string) => {
       await context.runStore.appendEvent({
@@ -83,33 +51,26 @@ export const toolDefinition: ToolDefinition<typeof LeadGenerationInputSchema> = 
     
     // 1. Get existing leads for deduping
     await emitProgress(`Checking existing leads for vertical: ${vertical}...`);
-    const existingUrls = await readExistingLeads(csvPath);
+    const existingDomains = await readExistingLeadDomains(csvPath);
     
     // 2. Search for candidates
-    // We search for 2x maxLeads to ensure we have enough after filtering
+    // We search wider than the requested lead count because extraction is the expensive step.
     await emitProgress(`Searching for ${query}...`);
     const searchResponse = await context.searchManager.search(query, maxLeads * 3);
-    const candidateUrls = searchResponse.results
-      .map(r => r.url)
-      .filter(url => {
-        const domain = new URL(url).hostname.toLowerCase();
-        // Robust blacklist to avoid directories, junk, and irrelevant sites
-        const blacklist = [
-          "clutch.co", "yelp.com", "linkedin.com", "facebook.com", "crunchbase.com", 
-          "glassdoor.com", "upcity.com", "designrush.com", "cloudtango.org", "cloudtango.net",
-          "mspdatabase.com", "tceq.texas.gov", "texas.gov", "wikipedia.org", "youtube.com",
-          "instagram.com", "twitter.com", "reddit.com", "quora.com", "business.site",
-          "infomsp.com", "palisade.email", "trgdatacenters.com"
-        ];
-        return !blacklist.some(b => domain.includes(b)) && 
-               !domain.endsWith(".gov") && 
-               !domain.endsWith(".edu") && 
-               !existingUrls.has(url);
-      });
+    const rankedCandidates = dedupeAndRankCandidates(
+      searchResponse.results,
+      existingDomains,
+      profile,
+      country
+    );
+    const candidateUrls = rankedCandidates.map((candidate) => candidate.homepageUrl);
 
-    await emitProgress(`Found ${candidateUrls.length} new candidates. Starting deep extraction...`);
+    await emitProgress(
+      `Ranked ${candidateUrls.length} new candidates for profile ${profile}. Starting deep extraction...`
+    );
     const newLeads: any[] = [];
     let processedCount = 0;
+    const seenRunDomains = new Set<string>();
     const totalUsage = {
       promptTokens: 0,
       completionTokens: 0,
@@ -139,6 +100,10 @@ export const toolDefinition: ToolDefinition<typeof LeadGenerationInputSchema> = 
 
         processedCount++;
         const domain = new URL(url).hostname;
+        if (seenRunDomains.has(domain)) {
+          continue;
+        }
+        seenRunDomains.add(domain);
         await emitProgress(`[${newLeads.length}/${maxLeads}] Deep extracting ${domain}...`);
         
         try {
@@ -170,6 +135,12 @@ export const toolDefinition: ToolDefinition<typeof LeadGenerationInputSchema> = 
                       continue;
                   }
               }
+              const rankingMeta = rankedCandidates.find((candidate) => candidate.homepageUrl === url);
+              result.discoveryProfile = profile;
+              result.discoveryCountry = country;
+              result.normalizedDomain = normalizeDomain(url);
+              result.discoveryScore = rankingMeta?.score ?? 0;
+              result.discoveryReasons = rankingMeta?.reasons ?? [];
               newLeads.push(result);
               await emitProgress(`Extracted lead for ${result.companyName}.`);
           }
@@ -184,14 +155,30 @@ export const toolDefinition: ToolDefinition<typeof LeadGenerationInputSchema> = 
     if (newLeads.length > 0) {
       await emitProgress(`Updating ${vertical} ledger with ${newLeads.length} new leads.`);
       await appendLeadsToCsv(csvPath, newLeads);
+      await appendExperimentLedger(experimentLedgerPath, newLeads.map((lead) => ({
+        companyName: lead.companyName,
+        normalizedDomain: lead.normalizedDomain,
+        sourceUrl: lead.sourceUrl,
+        emails: lead.emails,
+        industry: lead.industry,
+        companySize: lead.companySize,
+        description: lead.description,
+        discoveryProfile: lead.discoveryProfile,
+        discoveryCountry: lead.discoveryCountry,
+        discoveryScore: lead.discoveryScore,
+        discoveryReasons: lead.discoveryReasons,
+        createdAt: new Date().toISOString()
+      })));
     }
 
     return {
       status: "success",
       leadsFound: newLeads.length,
       leadsProcessed: processedCount,
-      totalLeadsInCsv: existingUrls.size + newLeads.length,
+      totalLeadsInCsv: existingDomains.size + newLeads.length,
       csvPath: csvPath,
+      experimentLedgerPath,
+      rankedCandidates: rankedCandidates.slice(0, 10),
       newLeads: newLeads.map(l => ({ name: l.companyName, email: l.emails[0], url: l.sourceUrl })),
       usage: totalUsage
     };

@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { serve } from "@hono/node-server";
 import { appConfig } from "../config/env.js";
 import { app, sessionStore, runStore, chatService, searchManager } from "./app.js";
@@ -54,7 +56,39 @@ process.on("SIGINT", handleExit);
 process.on("SIGTERM", handleExit);
 process.on("SIGHUP", handleExit);
 
+let resolvedApiKey: string | null = null;
+
+export function getApiKey(): string | null {
+  return resolvedApiKey;
+}
+
+function ensureApiKey(): void {
+  if (appConfig.apiKey) {
+    resolvedApiKey = appConfig.apiKey;
+    return;
+  }
+
+  const key = `alfred_${randomBytes(24).toString("hex")}`;
+  const envPath = new URL("../../.env", import.meta.url).pathname;
+  if (existsSync(envPath)) {
+    const content = readFileSync(envPath, "utf8");
+    if (!content.includes("ALFRED_API_KEY=")) {
+      writeFileSync(envPath, content.trimEnd() + `\nALFRED_API_KEY=${key}\n`);
+    }
+  }
+  resolvedApiKey = key;
+  process.env.ALFRED_API_KEY = key;
+
+  console.log("┌──────────────────────────────────────────────────────────┐");
+  console.log("│  Alfred API key generated — save this somewhere safe      │");
+  console.log(`│  ${key}  │`);
+  console.log("│  Required to access the web UI and API                    │");
+  console.log("└──────────────────────────────────────────────────────────┘");
+}
+
 async function bootstrap(): Promise<void> {
+  ensureApiKey();
+
   const recovered = await runStore.recoverInterruptedRuns();
   if (recovered > 0) {
     console.log(`[startup] Marked ${recovered} interrupted run(s) as failed.`);

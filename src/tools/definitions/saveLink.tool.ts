@@ -1,4 +1,4 @@
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { ToolDefinition } from "../types.js";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 const InputSchema = z.object({
   url: z.string().url(),
@@ -57,17 +58,19 @@ export const toolDefinition: ToolDefinition<typeof InputSchema> = {
     const linksDir = path.join(knowledgeDir, "links");
     const monthDir = path.join(linksDir, yearMonth);
 
-    // Duplicate check
+    // Duplicate check — execFile (no shell) with -F so the URL is matched
+    // literally and never interpreted as a shell token or a regex.
     try {
-      const { stdout } = await execAsync(
-        `grep -rl "url: ${input.url}" "${linksDir}" --include="*.md" 2>/dev/null || true`,
+      const { stdout } = await execFileAsync(
+        "grep",
+        ["-rlF", "--include=*.md", "--", `url: ${input.url}`, linksDir],
         { timeout: 5_000 }
       );
       const existing = stdout.trim().split("\n")[0];
       if (existing) {
         return { saved: false, duplicate: true, existingPath: existing };
       }
-    } catch { /* links dir may not exist yet */ }
+    } catch { /* no match (grep exit 1), missing links dir, etc. — treat as not a duplicate */ }
 
     // Write the link file
     const slug = slugify(input.title) || slugify(input.url);

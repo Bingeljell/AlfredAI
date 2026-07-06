@@ -282,9 +282,12 @@ export class TelegramAdapter implements ChannelAdapter {
   }
 
   private async deliverArtifact(chatId: number, artifactPath: string): Promise<void> {
+    // Tools store artifact paths project-relative (see addArtifact callers), and
+    // ToolContext.projectRoot is process.cwd() — resolve against that, not the
+    // workspace dir, which would double the path (workspace/alfred/workspace/...).
     const fullPath = path.isAbsolute(artifactPath)
       ? artifactPath
-      : path.join(this.workspaceDir, artifactPath);
+      : path.resolve(process.cwd(), artifactPath);
 
     let content: Buffer;
     try {

@@ -49,6 +49,8 @@ const EnvSchema = z.object({
   ALFRED_AGENT_MAX_PARALLEL_TOOLS: z.coerce.number().int().min(1).max(5).default(3),
   // ─── Auth ──────────────────────────────────────────────────────────────────
   ALFRED_API_KEY: z.string().optional(),
+  // ─── Integrations ─────────────────────────────────────────────────────────
+  TWITTER_BEARER_TOKEN: z.string().optional(),
   // ─── Channels ─────────────────────────────────────────────────────────────
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   // Comma-separated Telegram user IDs allowed to interact with the bot
@@ -99,6 +101,7 @@ export const appConfig = {
   agentMaxToolCalls: parsed.ALFRED_AGENT_MAX_TOOL_CALLS,
   agentMaxParallelTools: parsed.ALFRED_AGENT_MAX_PARALLEL_TOOLS,
   apiKey: parsed.ALFRED_API_KEY ?? null,
+  twitterBearerToken: parsed.TWITTER_BEARER_TOKEN ?? null,
   telegramBotToken: parsed.TELEGRAM_BOT_TOKEN,
   telegramAllowedUserIds: parsed.TELEGRAM_ALLOWED_USER_IDS
     .split(",")

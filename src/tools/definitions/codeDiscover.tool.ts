@@ -4,6 +4,16 @@ import { z } from "zod";
 import type { ToolDefinition } from "../types.js";
 import { resolvePathInProject, toProjectRelative } from "../helpers/pathSafety.js";
 
+const MAX_SCAN_MS = 2500;
+const MAX_LINE_LEN = 2000;
+
+// Heuristic guard against catastrophic-backtracking (ReDoS) patterns: a group
+// containing an unbounded quantifier that is itself quantified — e.g. (a+)+, (.*)*.
+// Cheap and conservative; not a formal guarantee, but it blocks the classic shapes.
+function looksLikeRedosRisk(pattern: string): boolean {
+  return /\([^()]*[*+][^()]*\)\s*[*+{]/.test(pattern);
+}
+
 export const CodeDiscoverToolInputSchema = z.object({
   path: z.string().min(1).max(600).default("."),
   pattern: z.string().min(1).max(200),
@@ -44,13 +54,30 @@ export const toolDefinition: ToolDefinition<typeof CodeDiscoverToolInputSchema> 
   inputHint: "Use to find where a function is defined, a class is declared, or where a pattern occurs across files.",
   async execute(input, context) {
     const rootPath = resolvePathInProject(context.projectRoot, input.path ?? ".");
+    if (looksLikeRedosRisk(input.pattern)) {
+      return {
+        searchedPath: toProjectRelative(context.projectRoot, rootPath),
+        patternUsed: input.pattern,
+        matchesFound: 0,
+        limitReached: false,
+        rejected: true,
+        rejectedReason: "pattern_rejected_redos_risk",
+        results: []
+      };
+    }
     const regex = buildRegex(input.pattern, input.type ?? "regex", input.isCaseSensitive ?? false);
     const limit = input.limit ?? 20;
+    const deadlineAt = Date.now() + MAX_SCAN_MS;
+    let timedOut = false;
 
     const results: MatchResult[] = [];
     const queue: string[] = [rootPath];
 
     while (queue.length > 0 && results.length < limit) {
+      if (Date.now() > deadlineAt) {
+        timedOut = true;
+        break;
+      }
       const current = queue.shift();
       if (!current) break;
 
@@ -82,9 +109,13 @@ export const toolDefinition: ToolDefinition<typeof CodeDiscoverToolInputSchema> 
           const content = await readFile(current, "utf-8");
           const lines = content.split(/\r?\n/);
           for (let i = 0; i < lines.length; i++) {
+            if ((i & 0x3ff) === 0 && Date.now() > deadlineAt) {
+              timedOut = true;
+              break;
+            }
             const line = lines[i];
             regex.lastIndex = 0;
-            if (regex.test(line)) {
+            if (regex.test(line.length > MAX_LINE_LEN ? line.slice(0, MAX_LINE_LEN) : line)) {
               results.push({
                 file: toProjectRelative(context.projectRoot, current),
                 line: i + 1,
@@ -106,6 +137,7 @@ export const toolDefinition: ToolDefinition<typeof CodeDiscoverToolInputSchema> 
       patternUsed: regex.source,
       matchesFound: results.length,
       limitReached: results.length >= limit,
+      timedOut,
       results
     };
   }

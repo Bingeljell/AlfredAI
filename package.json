@@ -10,10 +10,10 @@
     "start": "tsx src/gateway/server.ts",
     "postinstall": "node scripts/setup-playwright.js",
     "setup:browsers": "pnpm exec playwright install chromium --with-deps",
-    "test:unit": "node --import tsx --test tests/unit/**/*.test.ts",
-    "test:integration": "node --import tsx --test tests/integration/**/*.test.ts",
-    "test:smoke": "node --import tsx --test tests/smoke/**/*.test.ts",
-    "test:security": "node --import tsx --test tests/security/**/*.test.ts",
+    "test:unit": "node --import tsx --import ./tests/setup/env.mjs --test tests/unit/**/*.test.ts",
+    "test:integration": "node --import tsx --import ./tests/setup/env.mjs --test tests/integration/**/*.test.ts",
+    "test:smoke": "node --import tsx --import ./tests/setup/env.mjs --test tests/smoke/**/*.test.ts",
+    "test:security": "node --import tsx --import ./tests/setup/env.mjs --test tests/security/**/*.test.ts",
     "lint:layers": "eslint src"
   },
   "dependencies": {

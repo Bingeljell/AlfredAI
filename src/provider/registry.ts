@@ -15,7 +15,7 @@ let _provider: LlmProvider | null = null;
  * ALFRED_MODEL_SMART is the default model for specialist loops.
  * ALFRED_MODEL_FAST is the default model for cheap/fast calls (classification, extraction).
  *
- * API keys: OPENAI_API_KEY | ANTHROPIC_API_KEY | GOOGLE_GEMINI_API_KEY | OLLAMA_BASE_URL
+ * API keys: OPENAI_API_KEY | ANTHROPIC_API_KEY | GEMINI_API_KEY | OLLAMA_BASE_URL
  */
 export function getActiveLlmProvider(): LlmProvider {
   if (_provider) return _provider;
@@ -34,7 +34,7 @@ export function getActiveLlmProvider(): LlmProvider {
 
     case "gemini": {
       if (!appConfig.geminiApiKey) {
-        throw new Error("GOOGLE_GEMINI_API_KEY is required when ALFRED_LLM_PROVIDER=gemini");
+        throw new Error("GEMINI_API_KEY is required when ALFRED_LLM_PROVIDER=gemini");
       }
       _provider = new GeminiLlmProvider({
         apiKey: appConfig.geminiApiKey,

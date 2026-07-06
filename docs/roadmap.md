@@ -14,6 +14,7 @@
 
 ## Next
 
+- **Security upgrade (July 2026)** — prioritized hardening from the read-only audit; see [`architecture/security-upgrade-2026-07.md`](architecture/security-upgrade-2026-07.md). Phase 0 (mechanical fixes) first, then the Unix-user containment floor, then provenance-based tool downgrade.
 - **`pnpm setup` onboarding script** — first-run CLI wizard: pick LLM provider, paste API key, personalize SOUL.md
 - **Fix OpenAI-hardcoded tools** — `docQa` and `writerAgent` instantiate OpenAI directly; should use active provider from context
 - **Lead-gen as standalone MCP server** — extract lead pipeline into a separate repo, expose as MCP tools usable by any agent (Claude Desktop, Cursor, etc.)

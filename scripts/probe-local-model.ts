@@ -22,7 +22,8 @@
  */
 
 const BASE_URL = (process.env.PROBE_BASE_URL ?? "http://localhost:1234").replace(/\/+$/, "");
-const MODEL = process.env.PROBE_MODEL ?? "local-model";
+const MODEL_EXPLICIT = typeof process.env.PROBE_MODEL === "string" && process.env.PROBE_MODEL.trim() !== "";
+let MODEL = MODEL_EXPLICIT ? process.env.PROBE_MODEL!.trim() : "local-model";
 const API_KEY = process.env.PROBE_API_KEY ?? "not-needed";
 const TIMEOUT_MS = Number(process.env.PROBE_TIMEOUT_MS ?? 120_000);
 const CHAT_ENDPOINT = `${BASE_URL}/v1/chat/completions`;
@@ -111,21 +112,28 @@ function report(name: string, ok: boolean, detail: string, extra?: string): void
 async function preflight(): Promise<boolean> {
   console.log(bold(`\nAlfred local-model probe`));
   console.log(dim(`  server  ${BASE_URL}`));
-  console.log(dim(`  model   ${MODEL}`));
   try {
     const res = await fetch(MODELS_ENDPOINT, {
       headers: { authorization: `Bearer ${API_KEY}` },
       signal: AbortSignal.timeout(10_000)
     });
     if (!res.ok) {
-      console.log(`  ${WARN}  /v1/models returned ${res.status} — continuing anyway`);
+      console.log(dim(`  model   ${MODEL}`));
+      console.log(`  ${WARN}  /v1/models returned ${res.status} — continuing with PROBE_MODEL as-is`);
       return true;
     }
     const data = (await res.json()) as { data?: Array<{ id?: string }> };
     const ids = (data.data ?? []).map((m) => m.id).filter(Boolean) as string[];
     console.log(dim(`  loaded  ${ids.length ? ids.join(", ") : "(none reported)"}`));
-    if (ids.length && !ids.includes(MODEL)) {
-      console.log(`  ${WARN}  PROBE_MODEL="${MODEL}" is not in the loaded list — set PROBE_MODEL to one of the above.`);
+
+    if (!MODEL_EXPLICIT && ids.length >= 1) {
+      MODEL = ids[0];
+      console.log(dim(`  model   ${MODEL}  ${ids.length > 1 ? "(auto-selected first of several — set PROBE_MODEL to choose)" : "(auto-selected)"}`));
+    } else {
+      console.log(dim(`  model   ${MODEL}`));
+      if (ids.length && !ids.includes(MODEL)) {
+        console.log(`  ${WARN}  PROBE_MODEL="${MODEL}" is not in the loaded list above — the server will likely 404.`);
+      }
     }
     return true;
   } catch (error) {

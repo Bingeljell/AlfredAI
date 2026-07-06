@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from "node:fs";
+import path from "node:path";
 import { serve } from "@hono/node-server";
 import { appConfig } from "../config/env.js";
 import { app, sessionStore, runStore, chatService, searchManager } from "./app.js";
@@ -63,27 +64,40 @@ export function getApiKey(): string | null {
 }
 
 function ensureApiKey(): void {
+  // 1. An explicitly configured key (env / .env) always wins.
   if (appConfig.apiKey) {
     resolvedApiKey = appConfig.apiKey;
     return;
   }
 
-  const key = `alfred_${randomBytes(24).toString("hex")}`;
-  const envPath = new URL("../../.env", import.meta.url).pathname;
-  if (existsSync(envPath)) {
-    const content = readFileSync(envPath, "utf8");
-    if (!content.includes("ALFRED_API_KEY=")) {
-      writeFileSync(envPath, content.trimEnd() + `\nALFRED_API_KEY=${key}\n`);
+  const credentialsPath = path.join(appConfig.workspaceDir, "api-key");
+
+  // 2. Reuse a key generated on a previous run.
+  if (existsSync(credentialsPath)) {
+    const stored = readFileSync(credentialsPath, "utf8").trim();
+    if (stored) {
+      resolvedApiKey = stored;
+      process.env.ALFRED_API_KEY = stored;
+      return;
     }
+  }
+
+  // 3. First run: generate and persist to a dedicated credentials file — never
+  //    .env — and point the operator at the file rather than printing the secret
+  //    to stdout, which would otherwise land in logs/alfred.log.
+  const key = `alfred_${randomBytes(24).toString("hex")}`;
+  mkdirSync(path.dirname(credentialsPath), { recursive: true });
+  writeFileSync(credentialsPath, key + "\n", { mode: 0o600 });
+  try {
+    chmodSync(credentialsPath, 0o600);
+  } catch {
+    // best effort — non-POSIX filesystems may not support chmod
   }
   resolvedApiKey = key;
   process.env.ALFRED_API_KEY = key;
 
-  console.log("┌──────────────────────────────────────────────────────────┐");
-  console.log("│  Alfred API key generated — save this somewhere safe      │");
-  console.log(`│  ${key}  │`);
-  console.log("│  Required to access the web UI and API                    │");
-  console.log("└──────────────────────────────────────────────────────────┘");
+  console.log("[startup] Generated an Alfred API key (required for the web UI and API).");
+  console.log(`[startup] Stored at ${credentialsPath} (mode 600). Retrieve it with: cat "${credentialsPath}"`);
 }
 
 async function bootstrap(): Promise<void> {

@@ -1,6 +1,7 @@
 import { appConfig } from "../config/env.js";
 import { AnthropicLlmProvider } from "./anthropic.js";
 import { GeminiLlmProvider } from "./gemini.js";
+import { LmStudioLlmProvider } from "./lmstudio.js";
 import { OllamaLlmProvider } from "./ollama.js";
 import { OpenAiLlmProvider } from "./openai.js";
 import type { LlmProvider } from "./types.js";
@@ -45,6 +46,14 @@ export function getActiveLlmProvider(): LlmProvider {
     case "ollama": {
       _provider = new OllamaLlmProvider({
         baseUrl: appConfig.ollamaBaseUrl,
+        defaultModel: appConfig.modelSmart
+      });
+      break;
+    }
+
+    case "lmstudio": {
+      _provider = new LmStudioLlmProvider({
+        baseUrl: appConfig.lmStudioBaseUrl,
         defaultModel: appConfig.modelSmart
       });
       break;

@@ -10,6 +10,7 @@
     "start": "tsx src/gateway/server.ts",
     "postinstall": "node scripts/setup-playwright.js",
     "setup:browsers": "pnpm exec playwright install chromium --with-deps",
+    "test": "pnpm test:unit && pnpm test:integration && pnpm test:security",
     "test:unit": "node --import tsx --import ./tests/setup/env.mjs --test tests/unit/**/*.test.ts",
     "test:integration": "node --import tsx --import ./tests/setup/env.mjs --test tests/integration/**/*.test.ts",
     "test:smoke": "node --import tsx --import ./tests/setup/env.mjs --test tests/smoke/**/*.test.ts",

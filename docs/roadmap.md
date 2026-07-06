@@ -20,6 +20,10 @@
 - **Lead-gen as standalone MCP server** — extract lead pipeline into a separate repo, expose as MCP tools usable by any agent (Claude Desktop, Cursor, etc.)
 - **Open source packaging** — Dockerfile + docker-compose (Alfred + SearXNG sidecar), GitHub Actions CI
 
+## Deferred
+
+- **Test gate** (deferred from the July 2026 security pass) — an aggregate `pnpm test` script now exists; still to do: GitHub Actions CI running `build` + `lint:layers` + `test` on push/PR, an optional local pre-push hook, and tightening AGENTS.md's Testing Workflow to require updating/adding tests in the same commit as any behavior change. Prompted by two unit tests that sat red unnoticed after refactors.
+
 ## Considering
 
 - WhatsApp adapter (Twilio)

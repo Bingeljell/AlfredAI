@@ -118,15 +118,21 @@ async function bootstrap(): Promise<void> {
   );
 
   if (appConfig.telegramBotToken) {
-    const telegram = new TelegramAdapter(
-      appConfig.telegramBotToken,
-      chatService,
-      sessionStore,
-      runStore,
-      appConfig.workspaceDir,
-      appConfig.telegramAllowedUserIds
-    );
-    await telegram.start();
+    if (appConfig.telegramAllowedUserIds.length === 0) {
+      console.warn(
+        "[telegram] TELEGRAM_BOT_TOKEN is set but TELEGRAM_ALLOWED_USER_IDS is empty — refusing to start the bot (fail closed). Add allowed numeric user IDs to enable Telegram."
+      );
+    } else {
+      const telegram = new TelegramAdapter(
+        appConfig.telegramBotToken,
+        chatService,
+        sessionStore,
+        runStore,
+        appConfig.workspaceDir,
+        appConfig.telegramAllowedUserIds
+      );
+      await telegram.start();
+    }
   }
 }
 

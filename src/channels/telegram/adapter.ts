@@ -82,7 +82,8 @@ export class TelegramAdapter implements ChannelAdapter {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
 
-    if (this.allowedUserIds.length > 0 && (!userId || !this.allowedUserIds.includes(userId))) {
+    // Fail closed: an empty allowlist denies everyone rather than serving all users.
+    if (this.allowedUserIds.length === 0 || !userId || !this.allowedUserIds.includes(userId)) {
       await this.send(chatId, "Unauthorized.");
       return;
     }

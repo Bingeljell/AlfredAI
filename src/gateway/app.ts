@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { serveStatic } from "@hono/node-server/serve-static";
+import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { appConfig } from "../config/env.js";
 import { SessionStore } from "../memory/sessionStore.js";
@@ -28,10 +29,52 @@ const ChatTurnSchema = z.object({
 
 const app = new Hono();
 
+// ── Rate limiting — fixed window per client IP over /v1/* ─────────────────────
+// Bounds credential brute-forcing and general abuse. Sized generously so the
+// polling web UI (a few requests/second at most) is never affected.
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX = 300;
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function rateLimitExceeded(ip: string): boolean {
+  const now = Date.now();
+  const bucket = rateBuckets.get(ip);
+  if (!bucket || now >= bucket.resetAt) {
+    if (rateBuckets.size > 5_000) {
+      for (const [key, value] of rateBuckets) {
+        if (now >= value.resetAt) {
+          rateBuckets.delete(key);
+        }
+      }
+    }
+    rateBuckets.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return false;
+  }
+  bucket.count += 1;
+  return bucket.count > RATE_LIMIT_MAX;
+}
+
+// Constant-time comparison so the key check does not leak length/prefix via timing.
+function safeKeyEqual(provided: string, expected: string): boolean {
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) {
+    return false;
+  }
+  return timingSafeEqual(a, b);
+}
+
 // ── API key auth — all /v1/* routes ──────────────────────────────────────────
 // Key is resolved at startup by server.ts (auto-generated if not in .env).
 // We read it lazily from process.env so the middleware always sees the final value.
 app.use("/v1/*", async (c, next) => {
+  const fwd = c.req.header("x-forwarded-for");
+  const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } };
+  const ip = (fwd ? fwd.split(",")[0]?.trim() : undefined) || env?.incoming?.socket?.remoteAddress || "unknown";
+  if (rateLimitExceeded(ip)) {
+    return c.json({ error: "Too many requests" }, 429);
+  }
+
   const key = process.env.ALFRED_API_KEY;
   if (!key) {
     await next();
@@ -40,7 +83,7 @@ app.use("/v1/*", async (c, next) => {
   const header =
     c.req.header("X-Api-Key") ??
     c.req.header("Authorization")?.replace(/^Bearer\s+/i, "");
-  if (header !== key) {
+  if (!header || !safeKeyEqual(header, key)) {
     return c.json({ error: "Unauthorized" }, 401);
   }
   await next();

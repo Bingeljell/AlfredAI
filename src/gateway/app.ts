@@ -248,8 +248,14 @@ app.get("/ui", serveStatic({ path: "./webui/index.html" }));
 app.get("/", (c) => c.redirect("/ui"));
 
 app.onError((error, c) => {
-  const message = error instanceof Error ? error.message : "Unknown error";
-  return c.json({ error: message }, 500);
+  if (error instanceof z.ZodError) {
+    return c.json(
+      { error: "Invalid request", details: error.issues.map((issue) => ({ path: issue.path, message: issue.message })) },
+      400
+    );
+  }
+  console.error("[gateway] unhandled error:", error);
+  return c.json({ error: "Internal server error" }, 500);
 });
 
 export { app, sessionStore, runStore, chatService, searchManager };

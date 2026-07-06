@@ -688,7 +688,13 @@ function renderMarkdown(text) {
   if (typeof marked === 'undefined') return `<pre style="white-space:pre-wrap">${escapeHtml(text)}</pre>`;
   try {
     marked.setOptions({ breaks: true, gfm: true });
-    return marked.parse(String(text));
+    const rawHtml = marked.parse(String(text));
+    // Sanitize before this reaches innerHTML. Alfred's output can quote untrusted
+    // web content, so strip scripts / event-handler attributes / javascript: URLs
+    // while keeping markdown formatting. Fall back to escaped text if the
+    // sanitizer somehow failed to load, rather than rendering raw HTML.
+    if (typeof DOMPurify === 'undefined') return `<pre style="white-space:pre-wrap">${escapeHtml(text)}</pre>`;
+    return DOMPurify.sanitize(rawHtml);
   } catch {
     return `<pre style="white-space:pre-wrap">${escapeHtml(text)}</pre>`;
   }

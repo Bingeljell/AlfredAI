@@ -153,7 +153,8 @@ ${agentsContent ? `════════════════════�
     "process_stop",
     "doc_qa",
     "lead_extractor",
-    "lead_generation"
+    "lead_generation",
+    "herdr_control"
   ],
   maxIterations: 35
 };

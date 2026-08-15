@@ -9,13 +9,16 @@ const EnvSchema = z.object({
   ALFRED_ENV: z.enum(["dev", "prod"]).default("dev"),
   PORT: z.coerce.number().default(3000),
   // ─── LLM provider ─────────────────────────────────────────────────────────
-  ALFRED_LLM_PROVIDER: z.enum(["openai", "anthropic", "gemini", "ollama"]).default("openai"),
+  ALFRED_LLM_PROVIDER: z.enum(["openai", "anthropic", "gemini", "ollama", "lmstudio", "openrouter"]).default("openai"),
   ALFRED_MODEL_FAST: z.string().default("gpt-4o-mini"),   // cheap/fast: classification, session extractor
   ALFRED_MODEL_SMART: z.string().default("gpt-4o"),       // specialist agent loops
   OPENAI_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
-  GOOGLE_GEMINI_API_KEY: z.string().optional(),
+  GEMINI_API_KEY: z.string().optional(),
   OLLAMA_BASE_URL: z.string().default("http://localhost:11434"),
+  LMSTUDIO_BASE_URL: z.string().default("http://localhost:1234"),
+  OPENROUTER_API_KEY: z.string().optional(),
+  OPENROUTER_BASE_URL: z.string().url().default("https://openrouter.ai/api/v1"),
   SEARXNG_BASE_URL: z.string().url().default("http://127.0.0.1:8888"),
   SEARXNG_SEARCH_PATH: z.string().default("/search"),
   SEARXNG_HEALTH_PATH: z.string().default("/search?q=ping&format=json"),
@@ -48,6 +51,8 @@ const EnvSchema = z.object({
   ALFRED_AGENT_MAX_PARALLEL_TOOLS: z.coerce.number().int().min(1).max(5).default(3),
   // ─── Auth ──────────────────────────────────────────────────────────────────
   ALFRED_API_KEY: z.string().optional(),
+  // ─── Integrations ─────────────────────────────────────────────────────────
+  TWITTER_BEARER_TOKEN: z.string().optional(),
   // ─── Channels ─────────────────────────────────────────────────────────────
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   // Comma-separated Telegram user IDs allowed to interact with the bot
@@ -64,8 +69,11 @@ export const appConfig = {
   modelSmart: parsed.ALFRED_MODEL_SMART,
   openAiApiKey: parsed.OPENAI_API_KEY,
   anthropicApiKey: parsed.ANTHROPIC_API_KEY,
-  geminiApiKey: parsed.GOOGLE_GEMINI_API_KEY,
+  geminiApiKey: parsed.GEMINI_API_KEY,
   ollamaBaseUrl: parsed.OLLAMA_BASE_URL,
+  lmStudioBaseUrl: parsed.LMSTUDIO_BASE_URL,
+  openRouterApiKey: parsed.OPENROUTER_API_KEY,
+  openRouterBaseUrl: parsed.OPENROUTER_BASE_URL,
   searxngBaseUrl: parsed.SEARXNG_BASE_URL,
   searxngSearchPath: parsed.SEARXNG_SEARCH_PATH,
   searxngHealthPath: parsed.SEARXNG_HEALTH_PATH,
@@ -97,6 +105,7 @@ export const appConfig = {
   agentMaxToolCalls: parsed.ALFRED_AGENT_MAX_TOOL_CALLS,
   agentMaxParallelTools: parsed.ALFRED_AGENT_MAX_PARALLEL_TOOLS,
   apiKey: parsed.ALFRED_API_KEY ?? null,
+  twitterBearerToken: parsed.TWITTER_BEARER_TOKEN ?? null,
   telegramBotToken: parsed.TELEGRAM_BOT_TOKEN,
   telegramAllowedUserIds: parsed.TELEGRAM_ALLOWED_USER_IDS
     .split(",")

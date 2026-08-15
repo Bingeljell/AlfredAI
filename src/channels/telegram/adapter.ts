@@ -82,7 +82,8 @@ export class TelegramAdapter implements ChannelAdapter {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
 
-    if (this.allowedUserIds.length > 0 && (!userId || !this.allowedUserIds.includes(userId))) {
+    // Fail closed: an empty allowlist denies everyone rather than serving all users.
+    if (this.allowedUserIds.length === 0 || !userId || !this.allowedUserIds.includes(userId)) {
       await this.send(chatId, "Unauthorized.");
       return;
     }
@@ -281,9 +282,12 @@ export class TelegramAdapter implements ChannelAdapter {
   }
 
   private async deliverArtifact(chatId: number, artifactPath: string): Promise<void> {
+    // Tools store artifact paths project-relative (see addArtifact callers), and
+    // ToolContext.projectRoot is process.cwd() — resolve against that, not the
+    // workspace dir, which would double the path (workspace/alfred/workspace/...).
     const fullPath = path.isAbsolute(artifactPath)
       ? artifactPath
-      : path.join(this.workspaceDir, artifactPath);
+      : path.resolve(process.cwd(), artifactPath);
 
     let content: Buffer;
     try {

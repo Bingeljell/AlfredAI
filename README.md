@@ -9,7 +9,7 @@ Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reas
 ## What Alfred Does Today
 
 - **General-purpose ReAct agent** — research, writing, lead generation, ops, file work, shell commands
-- **Multi-provider LLM** — Gemini, Anthropic, OpenAI; configurable per deployment
+- **Multi-provider LLM** — Gemini, Anthropic, OpenAI, OpenRouter; configurable per deployment
 - **Telegram + Web UI** — converse from your phone or browser; live progress updates as he works
 - **Persistent memory** — session context, conversation window, workspace artifacts
 - **Self-extending** — Alfred can read his own codebase and write new tools mid-session
@@ -179,7 +179,7 @@ tail -f logs/alfred-error.log
 ```
 src/runtime/        — agent loop, system prompt, specialists config
 src/tools/          — all tool definitions (drop a *.tool.ts here to add a tool)
-src/provider/       — LLM adapters (Anthropic, Gemini, OpenAI, Ollama)
+src/provider/       — LLM adapters (Anthropic, Gemini, OpenAI, Ollama, LM Studio, OpenRouter)
 src/channels/       — Telegram + channel adapter interface
 src/runner/         — ChatService, conversation window management
 src/gateway/        — HTTP server, Web UI API

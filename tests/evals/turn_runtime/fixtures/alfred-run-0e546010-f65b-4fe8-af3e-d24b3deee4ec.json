@@ -28,7 +28,7 @@
           "scoredCount": 10,
           "shortlistedCount": 10,
           "shortlistedUrls": [
-            "https://www.stratifyit.tech/msp-services-houston-tx",
+            "https://www.example.com/msp-services-houston-tx",
             "https://www.cloudtango.net/msp/san-antonio",
             "https://www.the20msp.com/san-antonio-managed-it-services/",
             "https://clutch.co/it-services/msp/plano",
@@ -41,7 +41,7 @@
           ],
           "shortlistDiagnostics": [
             {
-              "url": "https://www.stratifyit.tech/msp-services-houston-tx",
+              "url": "https://www.example.com/msp-services-houston-tx",
               "score": 29,
               "reasons": [
                 "msp_signal",
@@ -160,9 +160,9 @@
               "textPreview": "Get Listed MSPs CyberSec Work Awards Events Data About IT Services MSPs San Antonio Top Managed Service Providers in San Antonio 7tech San Antonio, Texas 4.8 (10 reviews) 7tech is the new brand name for Juern Technology."
             },
             {
-              "url": "https://www.stratifyit.tech/msp-services-houston-tx",
+              "url": "https://www.example.com/msp-services-houston-tx",
               "title": "Houston, TX Managed IT Services | Award-Winning MSP",
-              "textPreview": "meetus@stratifyit.tech (646) 258 0307 42 Broadway, Suite 12-201 - New York, NY 10004 Get a Quote Managed IT Services IT Strategy & Projects Cybersecurity Industries Featured Resources About Us Managed IT Services Experts"
+              "textPreview": "contact@example.com (000) 000 0000 123 Example St - Anytown, US 00000 Get a Quote Managed IT Services IT Strategy & Projects Cybersecurity Industries Featured Resources About Us Managed IT Services Experts"
             },
             {
               "url": "https://clutch.co/it-services/msp/plano",
@@ -261,7 +261,7 @@
           "candidateCount": 0
         },
         "outputRedacted": {
-          "csvPath": "/Users/nikhil/Projects/Alfredv1/workspace/alfred/artifacts/0e546010-f65b-4fe8-af3e-d24b3deee4ec/leads.csv"
+          "csvPath": "/Users/yourname/Projects/Alfredv1/workspace/alfred/artifacts/0e546010-f65b-4fe8-af3e-d24b3deee4ec/leads.csv"
         },
         "durationMs": 1,
         "status": "ok",
@@ -269,7 +269,7 @@
       }
     ],
     "artifactPaths": [
-      "/Users/nikhil/Projects/Alfredv1/workspace/alfred/artifacts/0e546010-f65b-4fe8-af3e-d24b3deee4ec/leads.csv"
+      "/Users/yourname/Projects/Alfredv1/workspace/alfred/artifacts/0e546010-f65b-4fe8-af3e-d24b3deee4ec/leads.csv"
     ],
     "assistantText": "I can run another targeted lead-generation pass, but I need a couple quick clarifications so the results meet your needs. Please answer any or all — if you prefer, I’ll proceed with the suggested defaults.\n\n1) Preferred contact roles? (e.g., Owner/CEO/Founder, Head of Sales, Head of IT, Technical Lead). Default: Owner/CEO/Founder or Head of IT.\n2) Email type acceptance: Are role-based emails OK (info@, contact@) or do you require personal/professional emails (first.last@, ceo@ allowed)? Default: prefer personal/professional but accept role-based if no personal found.\n3) Output CSV columns: you asked for \"company_name, company_city, company_size (if known), contact_f\" — please confirm what contact_f should contain (contact full name, or full contact object including role and email?). Default: I will output columns: company_name, company_city, company_size (if known), contact_full_name, contact_role, contact_email, source_url.\n4) Geography: All Texas is fine, or limit to specific metro areas (Dallas, Houston, Austin, San Antonio, etc.)? Default: statewide Texas.\n5) Must company size be <50 or just preferred? Default: prefer <50 but include slightly larger firms if needed to reach 12 leads.\n\nIf you confirm (or tell me to proceed with defaults), I will delegate to the lead_agent and run the lead_pipeline + email_enrich to collect 12 validated MSP/SI leads with emails and export the CSV. Estimated runtime: ~2–6 minutes. Risk: some small MSPs have limited public email exposure; role emails may be required for a few leads. Proceed with defaults? If you want any other constraints (e.g., exclude MSPs that are pure resellers, include only MSSPs), tell me now."
   },
@@ -844,7 +844,7 @@
               "scoredCount": 10,
               "shortlistedCount": 10,
               "shortlistedUrls": [
-                "https://www.stratifyit.tech/msp-services-houston-tx",
+                "https://www.example.com/msp-services-houston-tx",
                 "https://www.cloudtango.net/msp/san-antonio",
                 "https://www.the20msp.com/san-antonio-managed-it-services/",
                 "https://clutch.co/it-services/msp/plano",
@@ -857,7 +857,7 @@
               ],
               "shortlistDiagnostics": [
                 {
-                  "url": "https://www.stratifyit.tech/msp-services-houston-tx",
+                  "url": "https://www.example.com/msp-services-houston-tx",
                   "score": 29,
                   "reasons": [
                     "msp_signal",
@@ -1155,9 +1155,9 @@
                   "textPreview": "Get Listed MSPs CyberSec Work Awards Events Data About IT Services MSPs San Antonio Top Managed Service Providers in San Antonio 7tech San Antonio, Texas 4.8 (10 reviews) 7tech is the new brand name for Juern Technology."
                 },
                 {
-                  "url": "https://www.stratifyit.tech/msp-services-houston-tx",
+                  "url": "https://www.example.com/msp-services-houston-tx",
                   "title": "Houston, TX Managed IT Services | Award-Winning MSP",
-                  "textPreview": "meetus@stratifyit.tech (646) 258 0307 42 Broadway, Suite 12-201 - New York, NY 10004 Get a Quote Managed IT Services IT Strategy & Projects Cybersecurity Industries Featured Resources About Us Managed IT Services Experts"
+                  "textPreview": "contact@example.com (000) 000 0000 123 Example St - Anytown, US 00000 Get a Quote Managed IT Services IT Strategy & Projects Cybersecurity Industries Featured Resources About Us Managed IT Services Experts"
                 },
                 {
                   "url": "https://clutch.co/it-services/msp/plano",
@@ -1776,7 +1776,7 @@
       "phase": "persist",
       "eventType": "artifact_written",
       "payload": {
-        "csvPath": "/Users/nikhil/Projects/Alfredv1/workspace/alfred/artifacts/0e546010-f65b-4fe8-af3e-d24b3deee4ec/leads.csv",
+        "csvPath": "/Users/yourname/Projects/Alfredv1/workspace/alfred/artifacts/0e546010-f65b-4fe8-af3e-d24b3deee4ec/leads.csv",
         "candidateCount": 0,
         "totalToolCalls": 4,
         "plannerCallsUsed": 4,
@@ -1847,7 +1847,7 @@
         "deficitCount": 12,
         "emailLeadCount": 0,
         "emailCoverageRatio": 0,
-        "csvPath": "/Users/nikhil/Projects/Alfredv1/workspace/alfred/artifacts/0e546010-f65b-4fe8-af3e-d24b3deee4ec/leads.csv",
+        "csvPath": "/Users/yourname/Projects/Alfredv1/workspace/alfred/artifacts/0e546010-f65b-4fe8-af3e-d24b3deee4ec/leads.csv",
         "stopReason": "budget_exhausted",
         "totalToolCalls": 4,
         "plannerCallsUsed": 4,

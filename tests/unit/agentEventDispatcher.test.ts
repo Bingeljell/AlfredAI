@@ -132,7 +132,7 @@ test("formatApprovalAlert matches the spec example shape", () => {
     payload: {
       promptText: "Allow command: git push origin main [y/n]?",
       suggestedAction: "confirm",
-      cwd: "/Users/nikhilshahane/projects/AlfredAI",
+      cwd: "/Users/yourname/projects/AlfredAI",
       details: "git push origin main"
     }
   });

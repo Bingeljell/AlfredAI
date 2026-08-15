@@ -17,7 +17,7 @@
       {
         "toolName": "file_read",
         "inputRedacted": {
-          "path": "/Users/nikhil/Projects/Alfredv1/workspace/alfred/artifacts/0e546010-f65b-4fe8-af3e-d24b3deee4ec/leads.csv"
+          "path": "/Users/yourname/Projects/Alfredv1/workspace/alfred/artifacts/0e546010-f65b-4fe8-af3e-d24b3deee4ec/leads.csv"
         },
         "outputRedacted": {
           "path": "workspace/alfred/artifacts/0e546010-f65b-4fe8-af3e-d24b3deee4ec/leads.csv",
@@ -257,7 +257,7 @@
       "eventType": "alfred_plan_created",
       "payload": {
         "iteration": 1,
-        "thought": "User asks for the leads already found and wants them in a CSV. The session shows a completed run with an artifact at /Users/nikhil/Projects/Alfredv1/workspace/alfred/artifacts/0e546010-f65b-4fe8-af3e-d24b3deee4ec/leads.csv. I'll read that file and return its contents. If it's missing or unreadable I'll report back and ask how to proceed.",
+        "thought": "User asks for the leads already found and wants them in a CSV. The session shows a completed run with an artifact at /Users/yourname/Projects/Alfredv1/workspace/alfred/artifacts/0e546010-f65b-4fe8-af3e-d24b3deee4ec/leads.csv. I'll read that file and return its contents. If it's missing or unreadable I'll report back and ask how to proceed.",
         "actionType": "call_tool",
         "delegateAgent": null,
         "toolName": "file_read",
@@ -287,7 +287,7 @@
             "actionType": "call_tool",
             "name": "file_read",
             "status": "planned",
-            "summary": "User asks for the leads already found and wants them in a CSV. The session shows a completed run with an artifact at /Users/nikhil/Projects/Alfredv1/workspace/alfred/artifacts/0e546010-f65b-4fe8-af3e-d24b3deee4ec/leads.csv. I'll read that file and return its contents. If it's missing or unreadable I'll report back and ask how to proceed."
+            "summary": "User asks for the leads already found and wants them in a CSV. The session shows a completed run with an artifact at /Users/yourname/Projects/Alfredv1/workspace/alfred/artifacts/0e546010-f65b-4fe8-af3e-d24b3deee4ec/leads.csv. I'll read that file and return its contents. If it's missing or unreadable I'll report back and ask how to proceed."
           }
         }
       },

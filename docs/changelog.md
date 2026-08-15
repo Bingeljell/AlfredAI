@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-08-15** > `src/provider/openrouter.ts`, `src/config/env.ts`, `.env.example`, `.env` > OpenRouter base URL fix > The client appends `/v1/chat/completions` to `baseUrl`, so setting `OPENROUTER_BASE_URL` to OpenRouter's documented `.../api/v1` produced `/api/v1/v1/...` and a 404 (Vercel HTML page). Corrected the default to `https://openrouter.ai/api` everywhere and added trailing-`/v1` normalization in `OpenRouterLlmProvider` so either form works.
+
 - **2026-08-15** > `src/provider/openrouter.ts`, `src/provider/registry.ts`, `src/config/env.ts`, `.env.example`, `.env`, `README.md` > OpenRouter provider > Added a dedicated `openrouter` LLM provider so Alfred can run against OpenRouter's OpenAI-compatible gateway (default `https://openrouter.ai/api/v1`). `OpenRouterLlmProvider` is a thin subclass of `OpenAiLlmProvider` — no translation needed; native tool-calling works for any OpenRouter model with function calling, and `json_schema` structured output works on models that support it (the `lead_extractor` path already degrades to regex extraction on failure). Added `"openrouter"` to `ALFRED_LLM_PROVIDER`, `OPENROUTER_API_KEY` / `OPENROUTER_BASE_URL` env vars, wired the registry case, and documented selection in `.env.example`. Use OpenRouter model IDs (e.g. `openai/gpt-oss-20b`) in `ALFRED_MODEL_FAST` / `ALFRED_MODEL_SMART`.
 
 - **2026-07-06** > _Session batch — entries reference commit hashes; these were committed directly, ahead of adopting inline changelog discipline._

@@ -1,15 +1,23 @@
 import { OpenAiLlmProvider } from "./openai.js";
 
-// OpenRouter serves an OpenAI-compatible API at {baseUrl}/v1/chat/completions
-// (default https://openrouter.ai/api/v1). No translation needed — just point the
-// OpenAI provider at OpenRouter's endpoint. Tool calling works for any model with
-// function calling; strict json_schema structured output is model-dependent
-// (the lead_extractor path degrades to regex extraction if the model rejects it).
+// OpenRouter serves an OpenAI-compatible API at
+// https://openrouter.ai/api/v1/chat/completions. This client appends
+// "/v1/chat/completions" to baseUrl itself, so the base must be the origin
+// plus "/api" — NOT the documented ".../api/v1" form (which would double the
+// /v1 and 404). normalizeBaseUrl also strips a trailing /v1 defensively, so
+// either form works.
 
 interface OpenRouterLlmProviderOptions {
   apiKey: string;
   baseUrl?: string;
   defaultModel?: string;
+}
+
+function normalizeBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  // ".../api/v1" (OpenRouter's documented base) -> ".../api";
+  // origin-based form is unchanged. Client then appends /v1/chat/completions.
+  return trimmed.endsWith("/api/v1") ? trimmed.slice(0, -3) : trimmed;
 }
 
 export class OpenRouterLlmProvider extends OpenAiLlmProvider {
@@ -18,7 +26,7 @@ export class OpenRouterLlmProvider extends OpenAiLlmProvider {
       name: "openrouter",
       apiKey: options.apiKey,
       defaultModel: options.defaultModel ?? "openai/gpt-4o",
-      baseUrl: options.baseUrl ?? "https://openrouter.ai/api/v1"
+      baseUrl: normalizeBaseUrl(options.baseUrl ?? "https://openrouter.ai/api")
     });
   }
 }

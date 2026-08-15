@@ -18,7 +18,7 @@ const EnvSchema = z.object({
   OLLAMA_BASE_URL: z.string().default("http://localhost:11434"),
   LMSTUDIO_BASE_URL: z.string().default("http://localhost:1234"),
   OPENROUTER_API_KEY: z.string().optional(),
-  OPENROUTER_BASE_URL: z.string().url().default("https://openrouter.ai/api/v1"),
+  OPENROUTER_BASE_URL: z.string().url().default("https://openrouter.ai/api"),
   SEARXNG_BASE_URL: z.string().url().default("http://127.0.0.1:8888"),
   SEARXNG_SEARCH_PATH: z.string().default("/search"),
   SEARXNG_HEALTH_PATH: z.string().default("/search?q=ping&format=json"),

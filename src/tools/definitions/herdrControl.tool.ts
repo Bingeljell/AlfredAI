@@ -81,12 +81,12 @@ export const toolDefinition: ToolDefinition<typeof HerdrControlInputSchema> = {
       }
 
       case "capture_pane": {
-        const target = input.paneId ? `--pane "${input.paneId}"` : (input.agentName ? `--agent "${input.agentName}"` : "");
+        const target = input.paneId ? `"${input.paneId}"` : (input.agentName ? `--agent "${input.agentName}"` : "");
         if (!target) {
           return { error: "capture_pane requires either paneId or agentName" };
         }
         const lines = input.tailLines ?? 80;
-        const res = await runHerdrCli(`pane capture ${target} --lines ${lines}`);
+        const res = await runHerdrCli(`pane read ${target} --lines ${lines}`);
         if (!res.success) {
           return { error: `Failed to capture pane: ${res.error}`, raw: res.raw };
         }

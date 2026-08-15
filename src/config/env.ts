@@ -51,12 +51,17 @@ const EnvSchema = z.object({
   ALFRED_AGENT_MAX_PARALLEL_TOOLS: z.coerce.number().int().min(1).max(5).default(3),
   // ─── Auth ──────────────────────────────────────────────────────────────────
   ALFRED_API_KEY: z.string().optional(),
+  // Shared secret for POST /api/events/agent (agent event webhook). When unset,
+  // the endpoint accepts loopback callers only (127.0.0.1 / ::1).
+  ALFRED_AGENT_EVENT_TOKEN: z.string().optional(),
   // ─── Integrations ─────────────────────────────────────────────────────────
   TWITTER_BEARER_TOKEN: z.string().optional(),
   // ─── Channels ─────────────────────────────────────────────────────────────
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   // Comma-separated Telegram user IDs allowed to interact with the bot
-  TELEGRAM_ALLOWED_USER_IDS: z.string().default("")
+  TELEGRAM_ALLOWED_USER_IDS: z.string().default(""),
+  // Destination chat ID for proactive agent-event pushes (approval gates etc.)
+  TELEGRAM_ALERT_CHAT_ID: z.coerce.number().optional()
 });
 
 const parsed = EnvSchema.parse(process.env);
@@ -105,8 +110,10 @@ export const appConfig = {
   agentMaxToolCalls: parsed.ALFRED_AGENT_MAX_TOOL_CALLS,
   agentMaxParallelTools: parsed.ALFRED_AGENT_MAX_PARALLEL_TOOLS,
   apiKey: parsed.ALFRED_API_KEY ?? null,
+  agentEventToken: parsed.ALFRED_AGENT_EVENT_TOKEN ?? null,
   twitterBearerToken: parsed.TWITTER_BEARER_TOKEN ?? null,
   telegramBotToken: parsed.TELEGRAM_BOT_TOKEN,
+  telegramAlertChatId: parsed.TELEGRAM_ALERT_CHAT_ID,
   telegramAllowedUserIds: parsed.TELEGRAM_ALLOWED_USER_IDS
     .split(",")
     .map((s) => s.trim())

@@ -8,3 +8,8 @@
 // repopulating it (dotenv defaults to override: false), so the middleware sees
 // no key and runs open. Tests that need to exercise auth can set it explicitly.
 process.env.ALFRED_API_KEY = "";
+
+// Same reasoning for the agent-event webhook: give tests a deterministic shared
+// secret so the /api/events/agent auth path is exercised (loopback-only mode is
+// covered by unit tests of src/agentEvents/auth.ts).
+process.env.ALFRED_AGENT_EVENT_TOKEN = "test-agent-event-token";

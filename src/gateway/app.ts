@@ -13,6 +13,15 @@ import { InMemoryQueue } from "../workers/inMemoryQueue.js";
 import { ChatService } from "../runner/chatService.js";
 import { ChannelSessionStore } from "../channels/telegram/channelSessionStore.js";
 import { GroupChatStore } from "../memory/groupChatStore.js";
+import { AgentEventSchema } from "../agentEvents/schema.js";
+import { authorizeAgentEvent } from "../agentEvents/auth.js";
+import { AgentEventDispatcher } from "../agentEvents/dispatcher.js";
+import {
+  ConsoleAgentEventNotifier,
+  TelegramAgentEventNotifier
+} from "../agentEvents/notifier.js";
+import type { AgentEventNotifier } from "../agentEvents/notifier.js";
+import { AgentEventStore } from "../agentEvents/eventStore.js";
 
 const SessionPostSchema = z.object({
   action: z.enum(["create", "list"]).default("list"),
@@ -124,6 +133,20 @@ const searchManager = new SearchManager({
 });
 
 const groupChatStore = new GroupChatStore(appConfig.workspaceDir);
+
+// ── Agent event webhook (docs/architecture/agent_event_webhook_spec.md) ──────
+// Push notifications go to Telegram when both a bot token and an alert chat id
+// are configured; otherwise events are logged to the console so they are never
+// silently dropped.
+const agentEventNotifier: AgentEventNotifier =
+  appConfig.telegramBotToken && appConfig.telegramAlertChatId
+    ? new TelegramAgentEventNotifier(appConfig.telegramBotToken, appConfig.telegramAlertChatId)
+    : new ConsoleAgentEventNotifier();
+const agentEventStore = new AgentEventStore(appConfig.workspaceDir);
+const agentEventDispatcher = new AgentEventDispatcher({
+  notifier: agentEventNotifier,
+  store: agentEventStore
+});
 
 const chatService = new ChatService({
   sessionStore,
@@ -237,6 +260,37 @@ app.get("/v1/channels", async (c) => {
   return c.json({ channelSessions });
 });
 
+// ── Agent event webhook ─ POST /api/events/agent ─────────────────────────────
+// Decoupled ingress for external agents / terminal wrappers (Herdr, tmux/Zellij
+// hooks, standalone agent hooks). Auth: shared X-Agent-Event-Token secret, or
+// loopback-only when no token is configured. Zod errors fall through to
+// app.onError which maps them to 400 with issue details.
+app.post("/api/events/agent", async (c) => {
+  const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } };
+  const authorized = authorizeAgentEvent({
+    remoteAddress: env?.incoming?.socket?.remoteAddress,
+    providedToken: c.req.header("X-Agent-Event-Token"),
+    configuredToken: appConfig.agentEventToken
+  });
+  if (!authorized) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  let json: unknown;
+  try {
+    json = await c.req.json();
+  } catch {
+    return c.json(
+      { error: "Invalid request", details: [{ path: [], message: "Body must be valid JSON" }] },
+      400
+    );
+  }
+
+  const event = AgentEventSchema.parse(json);
+  const result = await agentEventDispatcher.dispatch(event);
+  return c.json({ ok: true, ...result });
+});
+
 app.use(
   "/ui/*",
   serveStatic({
@@ -258,4 +312,4 @@ app.onError((error, c) => {
   return c.json({ error: "Internal server error" }, 500);
 });
 
-export { app, sessionStore, runStore, chatService, searchManager };
+export { app, sessionStore, runStore, chatService, searchManager, agentEventDispatcher, agentEventStore };

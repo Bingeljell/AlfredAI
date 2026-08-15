@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-08-15** > `src/provider/openrouter.ts`, `src/provider/registry.ts`, `src/config/env.ts`, `.env.example`, `.env`, `README.md` > OpenRouter provider > Added a dedicated `openrouter` LLM provider so Alfred can run against OpenRouter's OpenAI-compatible gateway (default `https://openrouter.ai/api/v1`). `OpenRouterLlmProvider` is a thin subclass of `OpenAiLlmProvider` — no translation needed; native tool-calling works for any OpenRouter model with function calling, and `json_schema` structured output works on models that support it (the `lead_extractor` path already degrades to regex extraction on failure). Added `"openrouter"` to `ALFRED_LLM_PROVIDER`, `OPENROUTER_API_KEY` / `OPENROUTER_BASE_URL` env vars, wired the registry case, and documented selection in `.env.example`. Use OpenRouter model IDs (e.g. `openai/gpt-oss-20b`) in `ALFRED_MODEL_FAST` / `ALFRED_MODEL_SMART`.
+
 - **2026-07-06** > _Session batch — entries reference commit hashes; these were committed directly, ahead of adopting inline changelog discipline._
   - `fa2e113` / `2150c49` — chore: remove orphaned `Gemini.md`; add aggregate `pnpm test` script and defer the full test gate (CI / pre-push hook / AGENTS.md testing rule) to the roadmap.
   - `6b02f04` — test: update stale unit assertions (post-refactor lead tool names, `cachedTokens` field). Unit suite 57/57.

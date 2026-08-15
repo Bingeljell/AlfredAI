@@ -103,6 +103,61 @@ const CONTRACT_MAP: Record<string, ToolInputContract> = {
     required: [],
     bounds: [],
     exampleInput: {}
+  },
+  browser_navigate: {
+    required: ["url"],
+    bounds: ["url must be http(s)"],
+    exampleInput: {
+      url: "https://example.com"
+    }
+  },
+  browser_snapshot: {
+    required: [],
+    bounds: [],
+    exampleInput: {}
+  },
+  browser_click: {
+    required: ["one of: index | text"],
+    bounds: ["index < interactive element count from browser_snapshot"],
+    exampleInput: {
+      index: 3
+    }
+  },
+  browser_type: {
+    required: ["value", "one of: index | text"],
+    bounds: ["value length <= 50000"],
+    exampleInput: {
+      index: 1,
+      value: "hello world",
+      pressEnter: true
+    }
+  },
+  browser_nav: {
+    required: ["action"],
+    bounds: ["action in back|forward|reload|press", "key required when action=press"],
+    exampleInput: {
+      action: "press",
+      key: "Enter"
+    }
+  },
+  browser_screenshot: {
+    required: [],
+    bounds: ["name matches [\\w.-]{1,80}"],
+    exampleInput: {
+      name: "checkout-step-2"
+    }
+  },
+  browser_tabs: {
+    required: ["action"],
+    bounds: ["action in list|open|activate|close", "url required when action=open", "index required when action in activate|close"],
+    exampleInput: {
+      action: "list"
+    }
+  },
+  browser_close: {
+    required: [],
+    bounds: [],
+    exampleInput: {}
   }
 };
 

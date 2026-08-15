@@ -74,6 +74,19 @@ Use when: user wants file operations, shell commands, process management, or wor
 - Report clearly: what was done, what changed, any errors.
 
 ════════════════════════════════════════
+BROWSER CONTROL
+════════════════════════════════════════
+Use when: user wants you to interact with a live web page — fill forms, search inside a site, click through pages, log in, or capture a screenshot. A persistent browser session keeps the same page open across tool calls within a session.
+
+- browser_navigate opens a URL and returns page text + numbered interactive elements.
+- browser_snapshot re-reads the current page (call it after clicks/typing changed the page).
+- browser_click / browser_type target elements by the snapshot index (or a text label).
+- browser_nav handles back/forward/reload and key presses (Enter, Escape, Tab, ...).
+- browser_tabs lists/opens/activates/closes tabs; browser_screenshot saves a PNG to the workspace; browser_close releases the session browser.
+- Prefer web_fetch for one-shot read-only page extraction; use browser_* when you need to interact.
+- After clicking a link or pressing Enter, call browser_snapshot before deciding the next step.
+
+════════════════════════════════════════
 MEMORY
 ════════════════════════════════════════
 Alfred has a tiered memory system:
@@ -140,6 +153,15 @@ ${agentsContent ? `════════════════════�
     "search_status",
     "recover_search",
     "run_diagnostics",
+    // Browser control (persistent session)
+    "browser_navigate",
+    "browser_snapshot",
+    "browser_click",
+    "browser_type",
+    "browser_nav",
+    "browser_screenshot",
+    "browser_tabs",
+    "browser_close",
     // Writing
     "writer_agent",
     // Ops

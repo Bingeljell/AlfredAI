@@ -22,6 +22,14 @@ test("auto-discovers lead agent tools from definitions folder", async () => {
   assert.ok(tools.has("shell_exec"));
   assert.ok(tools.has("process_list"));
   assert.ok(tools.has("process_stop"));
+  assert.ok(tools.has("browser_navigate"));
+  assert.ok(tools.has("browser_snapshot"));
+  assert.ok(tools.has("browser_click"));
+  assert.ok(tools.has("browser_type"));
+  assert.ok(tools.has("browser_nav"));
+  assert.ok(tools.has("browser_screenshot"));
+  assert.ok(tools.has("browser_tabs"));
+  assert.ok(tools.has("browser_close"));
 
   const searchTool = tools.get("search");
   assert.ok(searchTool);

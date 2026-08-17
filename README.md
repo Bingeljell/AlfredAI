@@ -59,6 +59,11 @@ Alfred auto-discovers tools from `src/tools/definitions/` — each `*.tool.ts` f
 | `doc_qa` | Answers questions from local docs/files with citations |
 | `lead_extractor` / `lead_generation` | Lead pipeline (extract, score, persist) |
 | `herdr_control` | Inspect/monitor/dispatch tasks to coding agents in Herdr workspaces (see `docs/features/herdr_control.md`) |
+| **Autonomous scheduling** | |
+| `schedule_reminder` | Deliver a durable reminder to the originating Telegram or web channel |
+| `schedule_wake` | Start a bounded autonomous Alfred turn at a later time |
+| `schedule_watch` | Watch a run, safe relative file path, or Herdr agent for a meaningful transition |
+| `list_scheduled_tasks` / `cancel_scheduled_task` | Inspect or cancel the current user's scheduled tasks |
 
 ## Configuration
 
@@ -98,7 +103,34 @@ For **OpenRouter**, use model slugs exactly as OpenRouter lists them (e.g. `anth
 | `TELEGRAM_ALLOWED_USER_IDS` | — | Comma-separated numeric user IDs allowed to talk to the bot (fail-closed when empty) |
 | `TELEGRAM_ALERT_CHAT_ID` | — | Chat ID for proactive agent-event pushes (approval gates, failures); leave blank to disable |
 
-Autonomous wakeups and reminders are opt-in. Set `ALFRED_SCHEDULER_ENABLED=true` to enable the durable scheduler inside the gateway. It persists tasks and delivery ledgers under `workspace/alfred/scheduler/`, exposes `schedule_reminder`, `schedule_wake`, `schedule_watch`, `list_scheduled_tasks`, and `cancel_scheduled_task`, and provides `GET /v1/scheduler/status`. Scheduler-origin turns are bounded and cannot use mutating tools or schedule nested tasks.
+### Autonomous wakeups, reminders, and watches
+
+The scheduler is disabled by default. Set `ALFRED_SCHEDULER_ENABLED=true` to run it inside the existing gateway process:
+
+```bash
+ALFRED_SCHEDULER_ENABLED=true pnpm start
+```
+
+Interactive turns can use these tools when the scheduler is enabled:
+
+- `schedule_reminder` sends text to the originating channel once, or at a fixed-delay interval.
+- `schedule_wake` starts a bounded autonomous turn with a short instruction. The turn can inspect the explicitly available read-only probes and must finish with a scheduler completion or reschedule action.
+- `schedule_watch` polls `run_status`, `file_exists`, or `herdr_agent` state and notifies when a meaningful transition occurs. Agent lifecycle webhooks can nudge matching watches immediately.
+- `list_scheduled_tasks` and `cancel_scheduled_task` manage tasks belonging to the current user and session.
+
+Tasks, leases, task-cycle logs, and deterministic delivery ledgers are stored under `workspace/alfred/scheduler/` (or under `ALFRED_WORKSPACE_DIR/scheduler`). The store is recovered on restart; expired work is reclaimed, and recurring tasks use fixed-delay scheduling from cycle completion so an outage does not create a catch-up storm. Notifications are delivered only to the originating `web:<sessionId>` or allowed `telegram:<chatId>` destination.
+
+Scheduler-origin turns are deliberately constrained: they have a separate execution profile, a bounded duration and tool budget, no mutating tools, no direct messaging tools, no nested scheduling, and no interactive conversation-memory writes. The scheduler also enforces per-principal and global active-task quotas, a minimum 60-second interval, and a maximum cycle count.
+
+The gateway exposes read/control endpoints for web integrations:
+
+```bash
+curl http://localhost:9001/v1/scheduler/status
+curl 'http://localhost:9001/v1/scheduled-tasks?sessionId=<session-id>'
+curl -X POST 'http://localhost:9001/v1/scheduled-tasks/<task-id>/cancel?sessionId=<session-id>'
+```
+
+`GET /v1/scheduler/status` reports whether the engine is running, its concurrency, tick timing, and task counts. The scheduler remains opt-in so existing Alfred deployments continue to behave as interactive-only agents.
 
 ### Search
 
@@ -400,9 +432,11 @@ src/provider/       — LLM adapters (Anthropic, Gemini, OpenAI, Ollama, LM Stud
 src/channels/       — Telegram + channel adapter interface
 src/runner/         — ChatService, conversation window management
 src/gateway/        — HTTP server, Web UI API, agent event endpoint
+src/scheduler/      — durable task store, leases, delivery ledger, probes, and autonomous execution
 src/memory/         — session memory, group chat store, RAG
 src/utils/          — redaction (credential scrubbing), path safety
 webui/              — Web UI
+workspace/alfred/scheduler/ — persisted scheduler tasks, deliveries, and cycle logs
 SOUL.md             — Alfred's identity and values
 AGENTS.md           — codebase conventions (also injected into Alfred's system prompt)
 docs/               — architecture docs, spec, changelog, feature specs

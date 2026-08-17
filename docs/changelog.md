@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-08-17** > `README.md` > Document autonomous scheduling setup, task behavior, safety boundaries, persistence, and HTTP controls
+
 - **2026-08-17** > `src/scheduler/`, `src/tools/definitions/{scheduleReminder,scheduleWake,scheduleWatch,cancelScheduledTask,listScheduledTasks,schedulerTaskComplete,schedulerTaskReschedule,runStatus,fileExists,herdrStatus}.tool.ts`, `src/{runner/chatService,runtime, gateway,agentEvents,config,channels,types}.ts`, `tests/{unit,integration}/scheduler*.test.ts`, `README.md`, `.env.example` > autonomous wake, reminder, watch, and supervision system > Added an opt-in durable scheduler with atomic JSON snapshots and leases, deterministic delivery idempotency, provenance-aware notifications, bounded scheduler-origin turns, read-only run/file/Herdr probes, event-driven nudging, restart recovery, public scheduling tools, HTTP controls, and lifecycle integration inside the existing gateway.
 
 - **2026-08-17** > `src/provider/codex/{auth,oauth,provider,sse,transport}.ts`, `src/provider/types.ts`, `tests/{unit,integration}/codex*.test.ts`, `tests/fixtures/codex/*.sse`, `docs/changelog.md` > Codex provider release-blocker fixes > Kept device-login polling alive with abort-listener cleanup, applied one absolute timeout budget through authentication, retries, headers, and SSE, propagated attempts/status/timeout diagnostics across all provider methods, classified nested subscription-limit errors, and rejected repository-targeting credential-path ancestors.

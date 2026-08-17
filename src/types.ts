@@ -188,6 +188,11 @@ export interface RunRecord {
   approvalToken?: string;
   llmUsage?: LlmUsageTotals;
   toolCalls: ToolCallRecord[];
+  scheduler?: {
+    taskId: string;
+    cycleId: string;
+    origin: "scheduler";
+  };
 }
 
 export interface RunOutcome {

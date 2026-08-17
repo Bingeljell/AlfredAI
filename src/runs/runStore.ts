@@ -54,7 +54,7 @@ export class RunStore {
     };
   }
 
-  async createRun(sessionId: string, message: string, status: RunStatus): Promise<RunRecord> {
+  async createRun(sessionId: string, message: string, status: RunStatus, scheduler?: RunRecord["scheduler"]): Promise<RunRecord> {
     const now = new Date().toISOString();
     const run: RunRecord = {
       runId: randomUUID(),
@@ -71,13 +71,24 @@ export class RunStore {
       },
       toolCalls: []
     };
+    if (scheduler) run.scheduler = scheduler;
     const safeRun = redactValue(run) as RunRecord;
+    if (scheduler) safeRun.scheduler = scheduler;
     await this.storage.writeRun(safeRun.runId, safeRun);
     return safeRun;
   }
 
   async getRun(runId: string): Promise<RunRecord | undefined> {
     return this.storage.readRun(runId);
+  }
+
+  async findRunBySchedulerCycle(taskId: string, cycleId: string): Promise<RunRecord | undefined> {
+    const runIds = await this.storage.listRunIds();
+    for (const runId of runIds) {
+      const run = await this.storage.readRun(runId);
+      if (run?.scheduler?.taskId === taskId && run.scheduler.cycleId === cycleId) return run;
+    }
+    return undefined;
   }
 
   async updateRun(runId: string, patch: Partial<RunRecord>): Promise<RunRecord> {
@@ -90,6 +101,7 @@ export class RunStore {
       ...redactValue(patch) as Partial<RunRecord>,
       updatedAt: new Date().toISOString()
     }) as RunRecord;
+    if (patch.scheduler) updated.scheduler = patch.scheduler;
     await this.storage.writeRun(runId, updated);
     return updated;
   }
@@ -164,7 +176,7 @@ export class RunStore {
     let recovered = 0;
     for (const runId of runIds) {
       const run = await this.storage.readRun(runId);
-      if (run && (run.status === "running" || run.status === "queued")) {
+      if (run && !run.scheduler && (run.status === "running" || run.status === "queued")) {
         await this.updateRun(runId, {
           status: "failed",
           assistantText: "Run interrupted by server restart."

@@ -7,6 +7,10 @@ import { discoverTools, applyToolAllowlist, executeToolWithEnvelope } from "../t
 import { scrubToolOutput } from "../tools/outputScrubber.js";
 import { getActiveLlmProvider } from "../provider/registry.js";
 import type { LlmConversationMessage, LlmToolCallResult, LlmToolDef } from "../provider/types.js";
+import type { SchedulerTaskApi } from "../scheduler/api.js";
+import type { SchedulerProvenance } from "../scheduler/notifier.js";
+import type { SchedulerTurnControl } from "../scheduler/api.js";
+import type { TurnExecutionProfile } from "./executionProfile.js";
 
 export interface AgentLoopOptions {
   runId: string;
@@ -25,6 +29,11 @@ export interface AgentLoopOptions {
   policyMode: PolicyMode;
   sessionContext?: SessionPromptContext;
   isCancellationRequested: () => Promise<boolean>;
+  scheduler?: SchedulerTaskApi;
+  provenance?: SchedulerProvenance;
+  executionProfile?: TurnExecutionProfile;
+  schedulerControl?: SchedulerTurnControl;
+  maxToolCalls?: number;
 }
 
 function nowIso(): string {
@@ -74,7 +83,11 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     defaults,
     policyMode,
     sessionContext,
-    isCancellationRequested
+    isCancellationRequested,
+    scheduler,
+    provenance,
+    schedulerControl,
+    maxToolCalls
   } = options;
 
   const deadlineAtMs = Date.now() + maxDurationMs;
@@ -114,7 +127,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     setResearchSourceCards: (cards) => {
       state.researchSourceCards = cards;
     },
-    getResearchSourceCards: () => state.researchSourceCards ?? []
+    getResearchSourceCards: () => state.researchSourceCards ?? [],
+    scheduler,
+    provenance,
+    schedulerControl
   };
 
   // Discover and filter tools
@@ -160,6 +176,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
   });
 
   let iteration = 0;
+  let toolCallCount = 0;
 
   while (iteration < maxIterations) {
     iteration += 1;
@@ -338,6 +355,18 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
 
       // Execute each tool call and collect results
       for (const toolCall of llmResult.toolCalls) {
+        if (toolCallCount >= (maxToolCalls ?? Number.MAX_SAFE_INTEGER)) {
+          await runStore.appendEvent({
+            runId,
+            sessionId,
+            phase: "final",
+            eventType: "agent_loop_tool_limit",
+            payload: { iteration, maxToolCalls, toolCallCount },
+            timestamp: nowIso()
+          });
+          return { status: "failed", assistantText: "The scheduled task reached its tool-call limit." };
+        }
+        toolCallCount += 1;
         const toolName = toolCall.name;
         const inputJson = toolCall.arguments;
 

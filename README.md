@@ -98,6 +98,8 @@ For **OpenRouter**, use model slugs exactly as OpenRouter lists them (e.g. `anth
 | `TELEGRAM_ALLOWED_USER_IDS` | — | Comma-separated numeric user IDs allowed to talk to the bot (fail-closed when empty) |
 | `TELEGRAM_ALERT_CHAT_ID` | — | Chat ID for proactive agent-event pushes (approval gates, failures); leave blank to disable |
 
+Autonomous wakeups and reminders are opt-in. Set `ALFRED_SCHEDULER_ENABLED=true` to enable the durable scheduler inside the gateway. It persists tasks and delivery ledgers under `workspace/alfred/scheduler/`, exposes `schedule_reminder`, `schedule_wake`, `schedule_watch`, `list_scheduled_tasks`, and `cancel_scheduled_task`, and provides `GET /v1/scheduler/status`. Scheduler-origin turns are bounded and cannot use mutating tools or schedule nested tasks.
+
 ### Search
 
 | Variable | Default | Purpose |
@@ -128,6 +130,10 @@ For **OpenRouter**, use model slugs exactly as OpenRouter lists them (e.g. `anth
 | `ALFRED_AGENT_MAX_DURATION_MS` | `600000` | Hard deadline per run |
 | `ALFRED_AGENT_MAX_TOOL_CALLS` | `18` | Tool-call budget per run |
 | `ALFRED_AGENT_MAX_PARALLEL_TOOLS` | `3` | Parallel tool calls |
+| `ALFRED_SCHEDULER_ENABLED` | `false` | Enable autonomous reminders, wake turns, and watches |
+| `ALFRED_SCHEDULER_TICK_MAX_MS` | `15000` | Maximum scheduler recovery/tick interval |
+| `ALFRED_SCHEDULER_MAX_CONCURRENCY` | `1` | Concurrent scheduler cycles (hard capped at 2) |
+| `ALFRED_SCHEDULER_GLOBAL_WAKE_INTERVAL_MS` | `30000` | Minimum interval between autonomous LLM wake starts |
 | `ALFRED_FAST_SCRAPE_COUNT` | `10` | Fast-scrape page budget |
 | `TWITTER_BEARER_TOKEN` | — | Twitter API (for `fetch_tweet`) |
 

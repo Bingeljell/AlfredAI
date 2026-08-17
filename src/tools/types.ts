@@ -4,6 +4,9 @@ import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import type { PagePayload } from "../tools/browser/browserPool.js";
 import type { LlmProvider } from "../provider/types.js";
+import type { SchedulerTaskApi } from "../scheduler/api.js";
+import type { SchedulerTurnControl } from "../scheduler/api.js";
+import type { SchedulerProvenance } from "../scheduler/notifier.js";
 
 export interface ResearchSourceCard {
   url: string;
@@ -45,6 +48,9 @@ export interface ToolContext {
   getFetchedPages: () => PagePayload[];
   setResearchSourceCards?: (cards: ResearchSourceCard[]) => void;
   getResearchSourceCards?: () => ResearchSourceCard[];
+  scheduler?: SchedulerTaskApi;
+  provenance?: SchedulerProvenance;
+  schedulerControl?: SchedulerTurnControl;
 }
 
 export interface ToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {

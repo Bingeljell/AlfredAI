@@ -124,7 +124,7 @@ export class TelegramAdapter implements ChannelAdapter {
     }
 
     // Normal message — run Alfred
-    await this.handleRun(chatId, text);
+    await this.handleRun(chatId, text, String(userId));
   }
 
   // ─── commands ─────────────────────────────────────────────────────────────
@@ -179,7 +179,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
   // ─── run execution ─────────────────────────────────────────────────────────
 
-  private async handleRun(chatId: number, text: string): Promise<void> {
+  private async handleRun(chatId: number, text: string, principalId: string): Promise<void> {
     const sessionId = await this.getOrCreateSessionId(chatId);
     const record = await this.channelStore.get(this.channelKey(chatId));
 
@@ -193,7 +193,9 @@ export class TelegramAdapter implements ChannelAdapter {
       sessionId,
       message,
       requestJob: true,
-      channelKey: this.channelKey(chatId)
+      channelKey: this.channelKey(chatId),
+      principalId,
+      origin: "telegram"
     });
 
     const runId = result.runId;

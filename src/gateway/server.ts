@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from "n
 import path from "node:path";
 import { serve } from "@hono/node-server";
 import { appConfig } from "../config/env.js";
-import { app, sessionStore, runStore, chatService, searchManager } from "./app.js";
+import { app, sessionStore, runStore, chatService, searchManager, schedulerEngine } from "./app.js";
 import { TelegramAdapter } from "../channels/telegram/adapter.js";
 
 // Track child processes started by Alfred so they die when Alfred dies
@@ -27,30 +27,39 @@ function spawnManaged(cmd: string, label: string): void {
   console.log(`[${label}] started (pid ${child.pid ?? "?"})`);
 }
 
-function shutdown(): void {
-  searchManager.shutdown();
-  for (const child of managedProcesses) {
-    try {
-      if (child.pid !== undefined) {
-        process.kill(-child.pid, "SIGTERM");
-      } else {
-        child.kill("SIGTERM");
+let shutdownPromise: Promise<void> | undefined;
+
+async function shutdown(): Promise<void> {
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = (async () => {
+    if (appConfig.schedulerEnabled) await schedulerEngine.stop();
+    searchManager.shutdown();
+    for (const child of managedProcesses) {
+      try {
+        if (child.pid !== undefined) {
+          process.kill(-child.pid, "SIGTERM");
+        } else {
+          child.kill("SIGTERM");
+        }
+      } catch {
+        // Already exited
       }
-    } catch {
-      // Already exited
     }
-  }
-  if (httpServer) {
-    httpServer.close(() => process.exit(0));
-    // Force exit if server hasn't closed within 3s
-    setTimeout(() => process.exit(0), 3_000).unref();
-  } else {
-    process.exit(0);
-  }
+    if (httpServer) {
+      await Promise.race([
+        new Promise<void>((resolve) => httpServer?.close(() => resolve())),
+        new Promise<void>((resolve) => setTimeout(resolve, 3_000))
+      ]);
+      process.exit(0);
+    } else {
+      process.exit(0);
+    }
+  })();
+  return shutdownPromise;
 }
 
 function handleExit(): void {
-  shutdown();
+  void shutdown();
 }
 
 process.on("SIGINT", handleExit);
@@ -147,6 +156,11 @@ async function bootstrap(): Promise<void> {
       );
       await telegram.start();
     }
+  }
+
+  if (appConfig.schedulerEnabled) {
+    await schedulerEngine.start();
+    console.log("[scheduler] autonomous wake/reminder engine started");
   }
 }
 

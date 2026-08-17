@@ -1,5 +1,7 @@
 import type { RunOutcome, SessionPromptContext } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
+import type { SchedulerProvenance } from "../scheduler/notifier.js";
+import type { TurnExecutionProfile } from "./executionProfile.js";
 
 export type TurnRuntimeState = "idle" | "running" | "completed" | "aborted" | "shutdown";
 
@@ -11,6 +13,9 @@ export type TurnOp =
         sessionId: string;
         message: string;
         sessionContext?: SessionPromptContext;
+        provenance?: SchedulerProvenance;
+        executionProfile?: TurnExecutionProfile;
+        schedulerControl?: import("../scheduler/api.js").SchedulerTurnControl;
       };
     }
   | {
@@ -69,6 +74,9 @@ interface TurnRuntimeOptions {
     sessionId: string;
     message: string;
     sessionContext?: SessionPromptContext;
+    provenance?: SchedulerProvenance;
+    executionProfile?: TurnExecutionProfile;
+    schedulerControl?: import("../scheduler/api.js").SchedulerTurnControl;
   }) => Promise<RunOutcome>;
   requestCancellation: (runId: string) => Promise<void>;
 }
@@ -123,6 +131,9 @@ export class TurnRuntime {
     sessionId: string;
     message: string;
     sessionContext?: SessionPromptContext;
+    provenance?: SchedulerProvenance;
+    executionProfile?: TurnExecutionProfile;
+    schedulerControl?: import("../scheduler/api.js").SchedulerTurnControl;
   }): Promise<TurnRuntimeDispatchResult> {
     if (this.state === "running") {
       return {

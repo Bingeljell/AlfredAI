@@ -1,0 +1,10 @@
+data: {"type":"response.output_item.added","item":{"id":"item_1","type":"function_call","call_id":"call_1","name":"search","arguments":""}}
+
+data: {"type":"response.function_call_arguments.delta","item_id":"item_1","call_id":"call_1","name":"search","delta":"{\"query\":"}
+
+data: {"type":"response.function_call_arguments.delta","item_id":"item_1","call_id":"call_1","delta":"\"Alfred\"}"}
+
+data: {"type":"response.output_item.done","item":{"id":"item_1","type":"function_call","call_id":"call_1","name":"search","arguments":"{\"query\":\"Alfred\"}"}}
+
+data: {"type":"response.done","response":{"status":"completed","output":[{"id":"item_1","type":"function_call","call_id":"call_1","name":"search","arguments":"{\"query\":\"Alfred\"}"}]}}
+

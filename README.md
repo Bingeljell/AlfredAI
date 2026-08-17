@@ -9,7 +9,7 @@ Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reas
 ## What Alfred Does Today
 
 - **General-purpose ReAct agent** — research, writing, lead generation, ops, file work, shell commands
-- **Multi-provider LLM** — Gemini, Anthropic, OpenAI, Ollama, LM Studio, **OpenRouter**; configurable per deployment, with fast/smart model tiers
+- **Multi-provider LLM** — Gemini, Anthropic, OpenAI, Ollama, LM Studio, OpenRouter, and Codex subscription auth; configurable per deployment, with fast/smart model tiers
 - **Headless browser control** — Alfred can drive a live browser session: navigate, click, type, fill forms, take screenshots
 - **Remote agent orchestration** — monitors and dispatches tasks to coding agents (Claude, Codex, Pi, …) running in Herdr workspaces
 - **Decoupled agent event webhook** — external agents/terminal wrappers push lifecycle events (`needs_approval`, `completed`, `failed`, `progress`) to Alfred, which routes them to Telegram
@@ -72,7 +72,7 @@ cp .env.example .env
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ALFRED_LLM_PROVIDER` | `openai` | `openai` \| `anthropic` \| `gemini` \| `ollama` \| `lmstudio` \| `openrouter` |
+| `ALFRED_LLM_PROVIDER` | `openai` | `openai` \| `anthropic` \| `gemini` \| `ollama` \| `lmstudio` \| `openrouter` \| `codex` |
 | `OPENAI_API_KEY` | — | OpenAI |
 | `ANTHROPIC_API_KEY` | — | Anthropic |
 | `GEMINI_API_KEY` | — | Google Gemini (Google's naming convention) |
@@ -80,10 +80,11 @@ cp .env.example .env
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api` | OpenRouter API root — the code appends `/v1/chat/completions`, so **do not** set the `/api/v1` form |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama (OpenAI-compatible) |
 | `LMSTUDIO_BASE_URL` | `http://localhost:1234` | Local LM Studio (OpenAI-compatible) |
+| `ALFRED_CODEX_AUTH_FILE` | `~/.alfred/codex-auth.json` | Optional Alfred Codex credential path; use `pnpm codex:login`, not `OPENAI_API_KEY` |
 | `ALFRED_MODEL_SMART` | `gpt-4o` | Main agent loop |
 | `ALFRED_MODEL_FAST` | `gpt-4o-mini` | Cheap/fast calls (classification, session extraction) |
 
-For **OpenRouter**, use model slugs exactly as OpenRouter lists them (e.g. `anthropic/claude-sonnet-4-20250514`, `openai/gpt-4o`). With Ollama/LM Studio use the model id the local server reports (e.g. `gemma-4-31b-it-qat`). `pnpm probe:model` helps discover locally served models.
+For **OpenRouter**, use model slugs exactly as OpenRouter lists them (e.g. `anthropic/claude-sonnet-4-20250514`, `openai/gpt-4o`). With Ollama/LM Studio use the model id the local server reports (e.g. `gemma-4-31b-it-qat`). For **Codex**, run `pnpm codex:login` (or `pnpm codex:login -- --device`) and set compatible model IDs in both `ALFRED_MODEL_SMART` and `ALFRED_MODEL_FAST`. `pnpm probe:model` helps discover locally served models.
 
 ### Server, auth & channels
 
@@ -137,7 +138,7 @@ For **OpenRouter**, use model slugs exactly as OpenRouter lists them (e.g. `anth
 - Node.js 22+
 - `pnpm`
 - SearXNG instance (for search — self-host or use a public instance), or Bright Data / Brave keys as fallback
-- At least one LLM API key (Anthropic, Google Gemini, OpenAI, or OpenRouter)
+- At least one LLM API key (Anthropic, Google Gemini, OpenAI, or OpenRouter), or a Codex subscription login
 
 ### 2. Install
 
@@ -389,7 +390,7 @@ src/agentEvents/    — agent event webhook (schema, auth, dispatcher, Telegram 
 src/tools/          — all tool definitions (drop a *.tool.ts here to add a tool)
 src/tools/browser/  — persistent browser control engine (session registry, DOM helpers)
 src/tools/search/   — search providers (SearXNG, Bright Data, Brave)
-src/provider/       — LLM adapters (Anthropic, Gemini, OpenAI, Ollama, LM Studio, OpenRouter)
+src/provider/       — LLM adapters (Anthropic, Gemini, OpenAI, Ollama, LM Studio, OpenRouter, Codex)
 src/channels/       — Telegram + channel adapter interface
 src/runner/         — ChatService, conversation window management
 src/gateway/        — HTTP server, Web UI API, agent event endpoint

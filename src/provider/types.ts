@@ -21,18 +21,28 @@ export interface LlmToolCall {
   arguments: string; // JSON string
 }
 
+export interface LlmProviderState {
+  provider: string;
+  data: unknown;
+}
+
 export type LlmConversationMessage =
   | { role: "system"; content: string }
   | { role: "user"; content: string }
-  | { role: "assistant"; content: string | null; toolCalls?: LlmToolCall[]; _rawGeminiParts?: unknown[] }
+  | { role: "assistant"; content: string | null; toolCalls?: LlmToolCall[]; providerState?: LlmProviderState }
   | { role: "tool"; toolCallId: string; toolName: string; content: string };
 
-export interface LlmToolCallRequest {
-  messages: LlmConversationMessage[];
-  tools: LlmToolDef[];
+export interface LlmBaseRequest {
   model?: string;
   timeoutMs?: number;
   maxAttempts?: number;
+  sessionId?: string;
+  signal?: AbortSignal;
+}
+
+export interface LlmToolCallRequest extends LlmBaseRequest {
+  messages: LlmConversationMessage[];
+  tools: LlmToolDef[];
 }
 
 export interface LlmToolCallResult {
@@ -46,17 +56,13 @@ export interface LlmToolCallResult {
   statusCode?: number;
   usage?: LlmUsage;
   elapsedMs?: number;
-  /** Raw provider parts (Gemini only) — must be echoed back verbatim for thought_signature */
-  rawAssistantParts?: unknown[];
+  providerState?: LlmProviderState;
 }
 
 // ─── Text and structured types ────────────────────────────────────────────────
 
-export interface LlmTextRequest {
+export interface LlmTextRequest extends LlmBaseRequest {
   messages: LlmMessage[];
-  model?: string;
-  timeoutMs?: number;
-  maxAttempts?: number;
 }
 
 export interface LlmStructuredRequest extends LlmTextRequest {

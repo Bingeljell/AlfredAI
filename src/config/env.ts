@@ -9,7 +9,7 @@ const EnvSchema = z.object({
   ALFRED_ENV: z.enum(["dev", "prod"]).default("dev"),
   PORT: z.coerce.number().default(3000),
   // ─── LLM provider ─────────────────────────────────────────────────────────
-  ALFRED_LLM_PROVIDER: z.enum(["openai", "anthropic", "gemini", "ollama", "lmstudio", "openrouter"]).default("openai"),
+  ALFRED_LLM_PROVIDER: z.enum(["openai", "anthropic", "gemini", "ollama", "lmstudio", "openrouter", "codex"]).default("openai"),
   ALFRED_MODEL_FAST: z.string().default("gpt-4o-mini"),   // cheap/fast: classification, session extractor
   ALFRED_MODEL_SMART: z.string().default("gpt-4o"),       // specialist agent loops
   OPENAI_API_KEY: z.string().optional(),
@@ -19,6 +19,7 @@ const EnvSchema = z.object({
   LMSTUDIO_BASE_URL: z.string().default("http://localhost:1234"),
   OPENROUTER_API_KEY: z.string().optional(),
   OPENROUTER_BASE_URL: z.string().url().default("https://openrouter.ai/api"),
+  ALFRED_CODEX_AUTH_FILE: z.string().optional(),
   SEARXNG_BASE_URL: z.string().url().default("http://127.0.0.1:8888"),
   SEARXNG_SEARCH_PATH: z.string().default("/search"),
   SEARXNG_HEALTH_PATH: z.string().default("/search?q=ping&format=json"),
@@ -79,6 +80,7 @@ export const appConfig = {
   lmStudioBaseUrl: parsed.LMSTUDIO_BASE_URL,
   openRouterApiKey: parsed.OPENROUTER_API_KEY,
   openRouterBaseUrl: parsed.OPENROUTER_BASE_URL,
+  codexAuthFile: parsed.ALFRED_CODEX_AUTH_FILE,
   searxngBaseUrl: parsed.SEARXNG_BASE_URL,
   searxngSearchPath: parsed.SEARXNG_SEARCH_PATH,
   searxngHealthPath: parsed.SEARXNG_HEALTH_PATH,

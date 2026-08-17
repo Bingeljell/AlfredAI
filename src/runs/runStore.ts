@@ -71,8 +71,9 @@ export class RunStore {
       },
       toolCalls: []
     };
-    await this.storage.writeRun(run.runId, run);
-    return run;
+    const safeRun = redactValue(run) as RunRecord;
+    await this.storage.writeRun(safeRun.runId, safeRun);
+    return safeRun;
   }
 
   async getRun(runId: string): Promise<RunRecord | undefined> {
@@ -84,11 +85,11 @@ export class RunStore {
     if (!current) {
       throw new Error(`Run not found: ${runId}`);
     }
-    const updated: RunRecord = {
+    const updated = redactValue({
       ...current,
-      ...patch,
+      ...redactValue(patch) as Partial<RunRecord>,
       updatedAt: new Date().toISOString()
-    };
+    }) as RunRecord;
     await this.storage.writeRun(runId, updated);
     return updated;
   }
@@ -118,11 +119,11 @@ export class RunStore {
     if (!current) {
       throw new Error(`Run not found: ${runId}`);
     }
-    const updated: RunRecord = {
+    const updated = redactValue({
       ...current,
-      toolCalls: [...current.toolCalls, call],
+      toolCalls: [...current.toolCalls, redactValue(call) as ToolCallRecord],
       updatedAt: new Date().toISOString()
-    };
+    }) as RunRecord;
     await this.storage.writeRun(runId, updated);
   }
 
@@ -131,26 +132,27 @@ export class RunStore {
     if (!current) {
       throw new Error(`Run not found: ${runId}`);
     }
-    const updated: RunRecord = {
+    const updated = redactValue({
       ...current,
       llmUsage: this.mergeLlmUsage(current.llmUsage, usage, callCountDelta),
       updatedAt: new Date().toISOString()
-    };
+    }) as RunRecord;
     await this.storage.writeRun(runId, updated);
   }
 
   private async appendEventDirect(event: RunEvent): Promise<void> {
-    await this.storage.appendEvent(event);
-    const subs = this.eventSubscribers.get(event.runId);
+    const safeEvent = redactValue(event) as RunEvent;
+    await this.storage.appendEvent(safeEvent);
+    const subs = this.eventSubscribers.get(safeEvent.runId);
     if (subs) {
       for (const cb of subs) {
-        try { cb(event); } catch { /* subscriber errors must not break event flow */ }
+        try { cb(safeEvent); } catch { /* subscriber errors must not break event flow */ }
       }
     }
   }
 
   async appendEvent(event: RunEvent): Promise<void> {
-    await this.eventChannel.push(event);
+    await this.eventChannel.push(redactValue(event) as RunEvent);
   }
 
   async flushEvents(): Promise<void> {

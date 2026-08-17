@@ -53,6 +53,24 @@ test("Codex auth rejects repository-local paths and existing symlinks", async ()
   });
 });
 
+test("Codex auth rejects symlinked parent directories before creating credentials", async () => {
+  await withTemp(async (dir) => {
+    const linkedParent = path.join(dir, "linked-parent");
+    await symlink(process.cwd(), linkedParent);
+    await assert.rejects(
+      () => writeCodexCredentials({
+        version: 1,
+        provider: "codex",
+        accessToken: token("acct-parent"),
+        refreshToken: "refresh-parent",
+        expiresAtMs: Date.now() + 3_600_000,
+        accountId: "acct-parent"
+      }, path.join(linkedParent, "codex-auth.json")),
+      /outside the Alfred repository/
+    );
+  });
+});
+
 test("Codex refresh is deduplicated and persists rotated tokens", async () => {
   await withTemp(async (_dir, authPath) => {
     const oldToken = token("acct-old");

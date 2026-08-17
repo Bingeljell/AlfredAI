@@ -50,13 +50,22 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       reject(new Error("Codex login cancelled."));
       return;
     }
-    const timer = setTimeout(resolve, ms);
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
     const onAbort = () => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       reject(new Error("Codex login cancelled."));
     };
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
     signal?.addEventListener("abort", onAbort, { once: true });
-    timer.unref?.();
   });
 }
 
@@ -244,8 +253,10 @@ export async function loginCodexBrowser(options: CodexOAuthFlowOptions = {}): Pr
   const callback = await startCodexCallbackServer(state);
   const timeoutMs = options.browserTimeoutMs ?? CODEX_OAUTH_CONSTANTS.deviceTimeoutMs;
   const timeout = setTimeout(() => callback.server.close(), timeoutMs);
-  timeout.unref?.();
   options.onAuthUrl?.(authUrl.toString());
+  const waitController = new AbortController();
+  const onAbort = () => waitController.abort(options.signal?.reason ?? "caller_cancellation");
+  options.signal?.addEventListener("abort", onAbort, { once: true });
   try {
     assertNotAborted(options.signal);
     try {
@@ -255,7 +266,7 @@ export async function loginCodexBrowser(options: CodexOAuthFlowOptions = {}): Pr
     }
     const code = await Promise.race([
       callback.waitForCode,
-      sleep(timeoutMs, options.signal).then(() => { throw new Error("Codex browser login timed out."); })
+      sleep(timeoutMs, waitController.signal).then(() => { throw new Error("Codex browser login timed out."); })
     ]);
     return exchangeCodexAuthorizationCode({
       code,
@@ -265,6 +276,8 @@ export async function loginCodexBrowser(options: CodexOAuthFlowOptions = {}): Pr
     });
   } finally {
     clearTimeout(timeout);
+    waitController.abort("browser_callback_complete");
+    options.signal?.removeEventListener("abort", onAbort);
     callback.server.close();
   }
 }

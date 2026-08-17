@@ -54,9 +54,13 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+function isTimeoutReason(reason: unknown): boolean {
+  return reason === "deadline" || reason === "timeout" || reason === "deadline_abort"
+    || (reason instanceof Error && /deadline|timed out|timeout/i.test(reason.message));
+}
+
 function abortFailure(signal: AbortSignal, elapsedMs: number, attempts: number, timeoutMs?: number): CodexTransportResult {
-  const reason = signal.reason;
-  const deadline = reason === "deadline" || reason === "timeout" || reason === "deadline_abort";
+  const deadline = isTimeoutReason(signal.reason);
   return {
     ok: false,
     failureCode: "cancelled",
@@ -116,16 +120,29 @@ export class CodexTransport {
     request.signal?.addEventListener("abort", onAbort, { once: true });
     if (request.signal?.aborted) onAbort();
     const timeout = setTimeout(() => controller.abort("timeout"), timeoutMs);
-    timeout.unref?.();
+    const deadlineAt = startedAt + timeoutMs;
+    let retainedForStream = false;
+    const cleanup = () => {
+      if (retainedForStream) retainedForStream = false;
+      clearTimeout(timeout);
+      request.signal?.removeEventListener("abort", onAbort);
+    };
+    const ensureBudget = (): boolean => {
+      if (controller.signal.aborted) return false;
+      if (Date.now() >= deadlineAt) {
+        controller.abort("timeout");
+        return false;
+      }
+      return true;
+    };
     let credentials;
     try {
       credentials = await getCodexCredentials({ authFilePath: this.authFilePath, fetchImpl: this.fetchImpl, signal: controller.signal });
     } catch (error) {
-      const result = controller.signal.aborted
+      const result = controller.signal.aborted || !ensureBudget()
         ? abortFailure(controller.signal, Date.now() - startedAt, 0, timeoutMs)
         : authFailure(error, Date.now() - startedAt, 0, timeoutMs);
-      clearTimeout(timeout);
-      request.signal?.removeEventListener("abort", onAbort);
+      cleanup();
       return result;
     }
 
@@ -135,6 +152,7 @@ export class CodexTransport {
 
     try {
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        if (!ensureBudget()) return abortFailure(controller.signal, Date.now() - startedAt, attempts, timeoutMs);
         attempts += 1;
         const requestId = randomUUID();
         const body = buildCodexRequestBody({
@@ -164,9 +182,17 @@ export class CodexTransport {
           });
         } catch (error) {
           if (controller.signal.aborted) return abortFailure(controller.signal, Date.now() - startedAt, attempts, timeoutMs);
+          if (!ensureBudget()) return abortFailure(controller.signal, Date.now() - startedAt, attempts, timeoutMs);
           if (attempt < maxAttempts && isTransientError(error)) {
+            const remainingBudget = Math.max(0, deadlineAt - Date.now());
+            const backoff = Math.min(2_500, 300 * 2 ** (attempt - 1));
+            const delay = Math.min(60_000, remainingBudget, backoff);
+            if (delay <= 0) {
+              controller.abort("timeout");
+              return abortFailure(controller.signal, Date.now() - startedAt, attempts, timeoutMs);
+            }
             try {
-              await sleep(Math.min(2_500, 300 * 2 ** (attempt - 1)), controller.signal);
+              await sleep(delay, controller.signal);
             } catch {
               return abortFailure(controller.signal, Date.now() - startedAt, attempts, timeoutMs);
             }
@@ -186,9 +212,14 @@ export class CodexTransport {
         }
 
         if (response.ok) {
+          if (!ensureBudget()) return abortFailure(controller.signal, Date.now() - startedAt, attempts, timeoutMs);
+          retainedForStream = true;
           return {
             ok: true,
             response,
+            signal: controller.signal,
+            cleanup,
+            statusCode: response.status,
             attempts,
             elapsedMs: Date.now() - startedAt,
             softTimeoutMs: timeoutMs,
@@ -208,7 +239,7 @@ export class CodexTransport {
               forceRefresh: true
             });
           } catch {
-            if (controller.signal.aborted) return abortFailure(controller.signal, Date.now() - startedAt, attempts, timeoutMs);
+            if (controller.signal.aborted || !ensureBudget()) return abortFailure(controller.signal, Date.now() - startedAt, attempts, timeoutMs);
             return {
               ok: false,
               failureCode: "codex_login_expired",
@@ -227,6 +258,7 @@ export class CodexTransport {
 
         if (response.status === 401) {
           await response.arrayBuffer().catch(() => undefined);
+          if (controller.signal.aborted) return abortFailure(controller.signal, Date.now() - startedAt, attempts, timeoutMs);
           return {
             ok: false,
             failureCode: "codex_login_expired",
@@ -242,11 +274,16 @@ export class CodexTransport {
 
         let errorBody = "";
         try { errorBody = await response.text(); } catch { /* diagnostics never need the body */ }
+        if (controller.signal.aborted) return abortFailure(controller.signal, Date.now() - startedAt, attempts, timeoutMs);
         if (attempt < maxAttempts && isRetryableStatus(response.status) && !(response.status === 429 && isTerminalUsageLimit(errorBody))) {
           const serverDelay = retryAfterMs(response.headers);
           const backoff = Math.min(2_500, 300 * 2 ** (attempt - 1));
-          const remainingBudget = Math.max(0, timeoutMs - (Date.now() - startedAt));
+          const remainingBudget = Math.max(0, deadlineAt - Date.now());
           const delay = Math.min(60_000, remainingBudget, Math.max(backoff, serverDelay ?? 0));
+          if (delay <= 0) {
+            controller.abort("timeout");
+            return abortFailure(controller.signal, Date.now() - startedAt, attempts, timeoutMs);
+          }
           try {
             await sleep(delay, controller.signal);
           } catch {
@@ -271,8 +308,7 @@ export class CodexTransport {
         };
       }
     } finally {
-      clearTimeout(timeout);
-      request.signal?.removeEventListener("abort", onAbort);
+      if (!retainedForStream) cleanup();
     }
 
     return {

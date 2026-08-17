@@ -52,6 +52,7 @@ test("Codex transport sends the private Responses request with semantic headers"
     assert.equal(body.instructions, "system");
     assert.equal(body.tools[0].type, "function");
     assert.equal(JSON.stringify(body).includes("session-secret"), false);
+    if (result.ok) result.cleanup();
   });
 });
 
@@ -76,5 +77,6 @@ test("Codex transport refreshes once after 401 and resends without exposing auth
     assert.equal(result.ok, true);
     assert.equal(responseCalls, 2);
     assert.equal(refreshCalls, 1);
+    if (result.ok) result.cleanup();
   });
 });

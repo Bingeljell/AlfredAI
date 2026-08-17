@@ -34,6 +34,16 @@ test("Codex SSE maps incomplete and failed terminal events safely", async () => 
   assert.equal(failed.failureMessage?.includes("server_error"), false);
 });
 
+test("Codex SSE maps nested subscription and rate-limit failures", async () => {
+  const usageLimit = await parseCodexSseText(await fixture("usage-limit-response.sse"));
+  assert.equal(usageLimit.failureCode, "rate_limit");
+  assert.equal(usageLimit.failureMessage, "Codex subscription usage limit reached.");
+
+  const rateLimit = await parseCodexSseText(await fixture("rate-limit-response.sse"));
+  assert.equal(rateLimit.failureCode, "rate_limit");
+  assert.equal(rateLimit.failureMessage, "Codex subscription usage limit reached.");
+});
+
 test("Codex SSE rejects malformed data without echoing the frame", async () => {
   await assert.rejects(
     () => parseCodexSseText("data: {\"secret\":\"canary\"}\ndata: not-json\n\n"),

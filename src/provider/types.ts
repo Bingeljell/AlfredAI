@@ -54,8 +54,12 @@ export interface LlmToolCallResult {
   failureClass?: FailureClass;
   failureMessage?: string;
   statusCode?: number;
+  attempts?: number;
   usage?: LlmUsage;
   elapsedMs?: number;
+  softTimeoutMs?: number;
+  hardTimeoutMs?: number;
+  softTimeoutExceeded?: boolean;
   providerState?: LlmProviderState;
 }
 
@@ -76,6 +80,7 @@ export interface LlmTextResult {
   failureCode?: string;
   failureClass?: FailureClass;
   failureMessage?: string;
+  statusCode?: number;
   attempts?: number;
   usage?: LlmUsage;
   elapsedMs?: number;

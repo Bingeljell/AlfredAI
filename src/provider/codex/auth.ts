@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, open, readFile, readdir, rename, rm, stat, lstat, unlink } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, readdir, rename, rm, stat, lstat, realpath, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -53,19 +53,32 @@ export function resolveCodexAuthPath(explicitPath?: string): string {
   return absolute;
 }
 
-async function rejectSymlink(filePath: string): Promise<void> {
-  try {
-    const info = await lstat(filePath);
-    if (info.isSymbolicLink()) throw new Error("Codex auth file must not be a symlink.");
-  } catch (error) {
-    if (error instanceof Error && error.message === "Codex auth file must not be a symlink.") throw error;
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+async function assertSafeCodexAuthPath(authPath: string): Promise<void> {
+  const root = await realpath(repositoryRoot()).catch(() => repositoryRoot());
+  let current = authPath;
+  while (true) {
+    try {
+      const info = await lstat(current);
+      if (info.isSymbolicLink()) {
+        if (current === authPath) throw new Error("Codex auth file must not be a symlink.");
+        const resolved = await realpath(current).catch(() => { throw new Error("Codex auth path must not contain dangling symlinked components."); });
+        if (isInside(root, resolved)) throw new Error("Codex auth file must be outside the Alfred repository.");
+      } else {
+        const resolved = await realpath(current);
+        if (isInside(root, resolved)) throw new Error("Codex auth file must be outside the Alfred repository.");
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
   }
 }
 
 export async function readCodexCredentials(explicitPath?: string): Promise<CodexCredentialFileV1> {
   const authPath = resolveCodexAuthPath(explicitPath);
-  await rejectSymlink(authPath);
+  await assertSafeCodexAuthPath(authPath);
   let raw: string;
   try {
     raw = await readFile(authPath, "utf8");
@@ -92,7 +105,7 @@ export async function writeCodexCredentials(credentials: CodexCredentialFileV1, 
   const parsed = CodexCredentialSchema.safeParse(credentials);
   if (!parsed.success) throw new Error(CODEX_LOGIN_INVALID);
   const authPath = resolveCodexAuthPath(explicitPath);
-  await rejectSymlink(authPath);
+  await assertSafeCodexAuthPath(authPath);
   const directory = path.dirname(authPath);
   await ensureParentDirectory(directory);
   const temporaryPath = path.join(directory, `.codex-auth-${path.basename(authPath)}-${process.pid}-${randomUUID()}.tmp`);
@@ -133,6 +146,7 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 async function acquireLock(authPath: string, signal?: AbortSignal): Promise<() => Promise<void>> {
   const filePath = lockPath(authPath);
+  await assertSafeCodexAuthPath(authPath);
   await ensureParentDirectory(path.dirname(authPath));
   for (;;) {
     if (signal?.aborted) throw new Error("Codex login cancelled.");
@@ -208,7 +222,7 @@ export async function getCodexCredentials(options: CodexAuthOptions = {}): Promi
 
 export async function removeCodexCredentials(explicitPath?: string): Promise<void> {
   const authPath = resolveCodexAuthPath(explicitPath);
-  await rejectSymlink(authPath);
+  await assertSafeCodexAuthPath(authPath);
   await unlink(authPath).catch(() => undefined);
   await unlink(lockPath(authPath)).catch(() => undefined);
   const directory = path.dirname(authPath);

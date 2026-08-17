@@ -168,7 +168,8 @@ function toUsage(response: CodexResponseWire | undefined) {
 }
 
 function safeEventFailure(event: CodexSseEvent): { code: string; message: string } {
-  const errorCode = typeof event.error?.code === "string" ? event.error.code : undefined;
+  const error = event.error ?? event.response?.error;
+  const errorCode = typeof error?.code === "string" ? error.code : undefined;
   if (errorCode === "rate_limit" || errorCode === "usage_limit") return { code: "rate_limit", message: "Codex subscription usage limit reached." };
   return { code: "provider_error", message: "Codex returned a failed response." };
 }

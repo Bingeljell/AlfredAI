@@ -30,11 +30,17 @@ interface CodexCallResult {
   failureClass?: FailureClass;
   failureMessage?: string;
   statusCode?: number;
+  attempts?: number;
   usage?: LlmUsage;
   elapsedMs: number;
   softTimeoutMs?: number;
   hardTimeoutMs?: number;
   softTimeoutExceeded?: boolean;
+}
+
+function isTimeoutReason(reason: unknown): boolean {
+  return reason === "deadline" || reason === "timeout" || reason === "deadline_abort"
+    || (reason instanceof Error && /deadline|timed out|timeout/i.test(reason.message));
 }
 
 function asConversationMessages(messages: LlmMessage[]): LlmConversationMessage[] {
@@ -47,6 +53,7 @@ function failureFromTransport(result: CodexTransportFailure): CodexCallResult {
     failureClass: result.failureClass,
     failureMessage: result.failureMessage,
     statusCode: result.statusCode,
+    attempts: result.attempts,
     usage: undefined,
     elapsedMs: result.elapsedMs,
     softTimeoutMs: result.softTimeoutMs,
@@ -55,24 +62,28 @@ function failureFromTransport(result: CodexTransportFailure): CodexCallResult {
   };
 }
 
-function safeUnexpectedFailure(error: unknown, elapsedMs: number, signal?: AbortSignal): CodexCallResult {
+function safeUnexpectedFailure(error: unknown, elapsedMs: number, signal?: AbortSignal, timeoutMs?: number): CodexCallResult {
   if (signal?.aborted) {
-    const deadline = signal.reason === "deadline" || signal.reason === "timeout";
+    const deadline = isTimeoutReason(signal.reason);
     return {
       failureCode: "cancelled",
       failureClass: deadline ? "timeout" : "unknown",
       failureMessage: deadline ? "Codex request timed out." : "Codex request was cancelled.",
-      elapsedMs
+      attempts: 0,
+      elapsedMs,
+      softTimeoutMs: timeoutMs,
+      hardTimeoutMs: timeoutMs,
+      softTimeoutExceeded: deadline
     };
   }
   const message = error instanceof Error ? error.message : "";
   if (message === CODEX_LOGIN_EXPIRED) {
-    return { failureCode: "codex_login_expired", failureClass: "policy_block", failureMessage: CODEX_LOGIN_EXPIRED, elapsedMs };
+    return { failureCode: "codex_login_expired", failureClass: "policy_block", failureMessage: CODEX_LOGIN_EXPIRED, attempts: 0, elapsedMs, softTimeoutMs: timeoutMs, hardTimeoutMs: timeoutMs };
   }
   if (message === CODEX_LOGIN_INVALID) {
-    return { failureCode: "codex_login_invalid", failureClass: "policy_block", failureMessage: CODEX_LOGIN_INVALID, elapsedMs };
+    return { failureCode: "codex_login_invalid", failureClass: "policy_block", failureMessage: CODEX_LOGIN_INVALID, attempts: 0, elapsedMs, softTimeoutMs: timeoutMs, hardTimeoutMs: timeoutMs };
   }
-  return { failureCode: "network_error", failureClass: "network", failureMessage: "Codex request failed.", elapsedMs };
+  return { failureCode: "network_error", failureClass: "network", failureMessage: "Codex request failed.", attempts: 0, elapsedMs, softTimeoutMs: timeoutMs, hardTimeoutMs: timeoutMs };
 }
 
 export class CodexLlmProvider implements LlmProvider {
@@ -114,16 +125,18 @@ export class CodexLlmProvider implements LlmProvider {
         signal: args.signal
       });
     } catch (error) {
-      return safeUnexpectedFailure(error, Date.now() - start, args.signal);
+      return safeUnexpectedFailure(error, Date.now() - start, args.signal, args.timeoutMs ?? 90_000);
     }
     if (!transportResult.ok) return failureFromTransport(transportResult);
 
     if (!transportResult.response.body) {
+      transportResult.cleanup();
       return {
         failureCode: "protocol_error",
         failureClass: "unknown",
         failureMessage: "Codex returned an empty response stream.",
-        statusCode: undefined,
+        statusCode: transportResult.statusCode,
+        attempts: transportResult.attempts,
         elapsedMs: Date.now() - start,
         softTimeoutMs: transportResult.softTimeoutMs,
         hardTimeoutMs: transportResult.hardTimeoutMs,
@@ -132,30 +145,37 @@ export class CodexLlmProvider implements LlmProvider {
     }
 
     let parsed: CodexParsedResponse;
-    const streamController = new AbortController();
-    const onAbort = () => streamController.abort(args.signal?.reason ?? "caller_cancellation");
-    args.signal?.addEventListener("abort", onAbort, { once: true });
-    if (args.signal?.aborted) onAbort();
-    const streamTimeoutMs = transportResult.hardTimeoutMs ?? 90_000;
-    const streamTimeout = setTimeout(() => streamController.abort("timeout"), streamTimeoutMs);
-    streamTimeout.unref?.();
     try {
-      parsed = await parseCodexSse(transportResult.response.body, streamController.signal);
+      parsed = await parseCodexSse(transportResult.response.body, transportResult.signal);
     } catch (error) {
-      if (streamController.signal.aborted) return safeUnexpectedFailure(error, Date.now() - start, streamController.signal);
+      if (transportResult.signal.aborted) {
+        const timedOut = isTimeoutReason(transportResult.signal.reason);
+        return {
+          failureCode: "cancelled",
+          failureClass: timedOut ? "timeout" : "unknown",
+          failureMessage: timedOut ? "Codex request timed out." : "Codex request was cancelled.",
+          statusCode: transportResult.statusCode,
+          attempts: transportResult.attempts,
+          elapsedMs: Date.now() - start,
+          softTimeoutMs: transportResult.softTimeoutMs,
+          hardTimeoutMs: transportResult.hardTimeoutMs,
+          softTimeoutExceeded: timedOut || Date.now() - start >= (transportResult.hardTimeoutMs ?? Number.POSITIVE_INFINITY)
+        };
+      }
       const protocol = error instanceof CodexProtocolError;
       return {
         failureCode: protocol ? "protocol_error" : "protocol_error",
         failureClass: "unknown",
         failureMessage: "Codex response stream was invalid.",
+        statusCode: transportResult.statusCode,
+        attempts: transportResult.attempts,
         elapsedMs: Date.now() - start,
         softTimeoutMs: transportResult.softTimeoutMs,
         hardTimeoutMs: transportResult.hardTimeoutMs,
         softTimeoutExceeded: transportResult.softTimeoutExceeded
       };
     } finally {
-      clearTimeout(streamTimeout);
-      args.signal?.removeEventListener("abort", onAbort);
+      transportResult.cleanup();
     }
 
     const elapsedMs = Date.now() - start;
@@ -165,6 +185,8 @@ export class CodexLlmProvider implements LlmProvider {
         failureCode: parsed.failureCode,
         failureClass,
         failureMessage: parsed.failureMessage ?? "Codex did not complete the response.",
+        statusCode: transportResult.statusCode,
+        attempts: transportResult.attempts,
         usage: parsed.usage,
         elapsedMs,
         softTimeoutMs: transportResult.softTimeoutMs,
@@ -175,8 +197,13 @@ export class CodexLlmProvider implements LlmProvider {
     if (parsed.status === "cancelled") {
       return {
         failureCode: "cancelled",
-        failureClass: args.signal?.reason === "deadline" ? "timeout" : "unknown",
-        failureMessage: args.signal?.reason === "deadline" ? "Codex request timed out." : "Codex request was cancelled.",
+        failureClass: isTimeoutReason(transportResult.signal.reason) ? "timeout" : "unknown",
+        failureMessage: isTimeoutReason(transportResult.signal.reason) ? "Codex request timed out." : "Codex request was cancelled.",
+        statusCode: transportResult.statusCode,
+        attempts: transportResult.attempts,
+        softTimeoutMs: transportResult.softTimeoutMs,
+        hardTimeoutMs: transportResult.hardTimeoutMs,
+        softTimeoutExceeded: isTimeoutReason(transportResult.signal.reason),
         usage: parsed.usage,
         elapsedMs
       };
@@ -184,6 +211,8 @@ export class CodexLlmProvider implements LlmProvider {
     return {
       parsed,
       transport: transportResult,
+      statusCode: transportResult.statusCode,
+      attempts: transportResult.attempts,
       usage: parsed.usage,
       elapsedMs,
       softTimeoutMs: transportResult.softTimeoutMs,
@@ -207,6 +236,8 @@ export class CodexLlmProvider implements LlmProvider {
         failureCode: result.failureCode,
         failureClass: result.failureClass,
         failureMessage: result.failureMessage,
+        statusCode: result.statusCode,
+        attempts: result.attempts,
         usage: result.usage,
         elapsedMs: result.elapsedMs,
         softTimeoutMs: result.softTimeoutMs,
@@ -221,13 +252,20 @@ export class CodexLlmProvider implements LlmProvider {
         failureCode: "empty_content",
         failureClass: "unknown",
         failureMessage: "Codex returned no text.",
+        statusCode: result.statusCode,
+        attempts: result.attempts,
         usage: result.usage,
-        elapsedMs: result.elapsedMs
+        elapsedMs: result.elapsedMs,
+        softTimeoutMs: result.softTimeoutMs,
+        hardTimeoutMs: result.hardTimeoutMs,
+        softTimeoutExceeded: result.softTimeoutExceeded
       };
     }
     return {
       provider: this.name,
       content,
+      statusCode: result.statusCode,
+      attempts: result.attempts,
       usage: result.usage,
       elapsedMs: result.elapsedMs,
       softTimeoutMs: result.softTimeoutMs,
@@ -258,6 +296,8 @@ export class CodexLlmProvider implements LlmProvider {
       failureCode: result.failureCode,
       failureClass: result.failureClass,
       failureMessage: result.failureMessage,
+      statusCode: result.statusCode,
+      attempts: result.attempts,
       usage: result.usage,
       elapsedMs: result.elapsedMs,
       softTimeoutMs: result.softTimeoutMs,
@@ -294,9 +334,13 @@ export class CodexLlmProvider implements LlmProvider {
         failureCode: result.failureCode,
         failureClass: result.failureClass,
         failureMessage: result.failureMessage,
+        statusCode: result.statusCode,
+        attempts: result.attempts,
         usage: result.usage,
         elapsedMs: result.elapsedMs,
-        statusCode: result.statusCode
+        softTimeoutMs: result.softTimeoutMs,
+        hardTimeoutMs: result.hardTimeoutMs,
+        softTimeoutExceeded: result.softTimeoutExceeded
       };
     }
     const parsed = result.parsed!;
@@ -307,8 +351,13 @@ export class CodexLlmProvider implements LlmProvider {
       toolCalls,
       finishReason: toolCalls ? "tool_calls" : "stop",
       providerState: toolCalls ? parsed.providerState : undefined,
+      statusCode: result.statusCode,
+      attempts: result.attempts,
       usage: result.usage,
-      elapsedMs: result.elapsedMs
+      elapsedMs: result.elapsedMs,
+      softTimeoutMs: result.softTimeoutMs,
+      hardTimeoutMs: result.hardTimeoutMs,
+      softTimeoutExceeded: result.softTimeoutExceeded
     };
   }
 }

@@ -92,6 +92,9 @@ export interface CodexTransportRequest {
 export interface CodexTransportSuccess {
   ok: true;
   response: Response;
+  signal: AbortSignal;
+  cleanup: () => void;
+  statusCode: number;
   attempts: number;
   elapsedMs: number;
   softTimeoutMs?: number;

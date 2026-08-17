@@ -33,6 +33,10 @@ export interface AgentEventDispatcherDeps {
   store?: AgentEventStoreLike;
 }
 
+export interface AgentEventSchedulerHook {
+  handleAgentEvent(event: AgentEvent): Promise<void>;
+}
+
 function locationOf(event: AgentEvent): string {
   return `${event.workspaceId}:${event.paneId}`;
 }
@@ -73,7 +77,13 @@ export function formatCompletionNotice(event: AgentEvent): string {
 }
 
 export class AgentEventDispatcher {
+  private schedulerHook?: AgentEventSchedulerHook;
+
   constructor(private readonly deps: AgentEventDispatcherDeps) {}
+
+  setSchedulerHook(hook: AgentEventSchedulerHook): void {
+    this.schedulerHook = hook;
+  }
 
   async dispatch(event: AgentEvent): Promise<AgentEventDispatchResult> {
     try {
@@ -84,27 +94,39 @@ export class AgentEventDispatcher {
 
     const base = { eventType: event.eventType, handled: true };
 
+    let result: AgentEventDispatchResult;
     switch (event.eventType) {
       case "needs_approval": {
         const notification = formatApprovalAlert(event);
         await this.deps.notifier.send(notification);
-        return { ...base, notified: true, notification, reason: "approval_pushed" };
+        result = { ...base, notified: true, notification, reason: "approval_pushed" };
+        break;
       }
       case "failed": {
         const notification = formatFailureAlert(event);
         await this.deps.notifier.send(notification);
-        return { ...base, notified: true, notification, reason: "failure_pushed" };
+        result = { ...base, notified: true, notification, reason: "failure_pushed" };
+        break;
       }
       case "completed": {
         if (event.payload?.ping === true) {
           const notification = formatCompletionNotice(event);
           await this.deps.notifier.send(notification);
-          return { ...base, notified: true, notification, reason: "completion_pushed" };
+          result = { ...base, notified: true, notification, reason: "completion_pushed" };
+          break;
         }
-        return { ...base, notified: false, reason: "completion_not_marked_for_ping" };
+        result = { ...base, notified: false, reason: "completion_not_marked_for_ping" };
+        break;
       }
       case "progress":
-        return { ...base, notified: false, reason: "progress_recorded" };
+        result = { ...base, notified: false, reason: "progress_recorded" };
+        break;
     }
+    try {
+      await this.schedulerHook?.handleAgentEvent(event);
+    } catch {
+      // Event notification remains successful if scheduler nudging fails.
+    }
+    return result;
   }
 }

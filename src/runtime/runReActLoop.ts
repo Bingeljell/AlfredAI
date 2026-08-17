@@ -4,6 +4,10 @@ import type { SearchManager } from "../tools/search/searchManager.js";
 import { evaluateApprovalNeed } from "./approvalPolicy.js";
 import { ALFRED_AGENT } from "./specialists.js";
 import { runAgentLoop } from "./agentLoop.js";
+import type { SchedulerTaskApi } from "../scheduler/api.js";
+import type { SchedulerProvenance } from "../scheduler/notifier.js";
+import type { SchedulerTurnControl } from "../scheduler/api.js";
+import type { TurnExecutionProfile } from "./executionProfile.js";
 
 interface RunReActLoopOptions {
   runStore: RunStore;
@@ -22,6 +26,11 @@ interface RunReActLoopOptions {
   agentMaxParallelTools?: number;
   sessionContext?: SessionPromptContext;
   isCancellationRequested: () => Promise<boolean>;
+  scheduler?: SchedulerTaskApi;
+  provenance?: SchedulerProvenance;
+  executionProfile?: TurnExecutionProfile;
+  schedulerControl?: SchedulerTurnControl;
+  systemPrompt?: string;
 }
 
 function nowIso(): string {
@@ -66,7 +75,9 @@ export async function runReActLoop(
     });
   }
 
-  const approval = evaluateApprovalNeed(message, options.policyMode);
+  const approval = options.executionProfile?.origin === "scheduler"
+    ? { needed: false as const }
+    : evaluateApprovalNeed(message, options.policyMode);
   if (approval.needed) {
     await runStore.appendEvent({
       runId,
@@ -107,10 +118,11 @@ export async function runReActLoop(
     sessionId,
     message,
     model: ALFRED_AGENT.model,
-    systemPrompt: ALFRED_AGENT.systemPrompt,
-    toolAllowlist: ALFRED_AGENT.toolAllowlist,
-    maxIterations: ALFRED_AGENT.maxIterations,
-    maxDurationMs: options.agentMaxDurationMs ?? 240_000,
+    maxIterations: options.executionProfile?.maxIterations ?? ALFRED_AGENT.maxIterations,
+    maxDurationMs: options.executionProfile?.maxDurationMs ?? options.agentMaxDurationMs ?? 240_000,
+    maxToolCalls: options.executionProfile?.maxToolCalls ?? options.agentMaxToolCalls ?? 18,
+    toolAllowlist: options.executionProfile?.toolAllowlist ?? ALFRED_AGENT.toolAllowlist,
+    systemPrompt: options.systemPrompt ?? ALFRED_AGENT.systemPrompt,
     openAiApiKey: options.openAiApiKey,
     runStore,
     searchManager: options.searchManager,
@@ -121,7 +133,11 @@ export async function runReActLoop(
     },
     policyMode: options.policyMode,
     sessionContext: options.sessionContext,
-    isCancellationRequested: options.isCancellationRequested
+    isCancellationRequested: options.isCancellationRequested,
+    scheduler: options.scheduler,
+    provenance: options.provenance,
+    executionProfile: options.executionProfile,
+    schedulerControl: options.schedulerControl
   });
 
   const outcome: RunOutcome = { ...agentOutcome, specialist: ALFRED_AGENT.name };

@@ -18,12 +18,19 @@ import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import type { InMemoryQueue } from "../workers/inMemoryQueue.js";
 import { getPolicyMode } from "../config/env.js";
+import type { SchedulerTaskApi } from "../scheduler/api.js";
+import type { SchedulerProvenance, SchedulerOrigin } from "../scheduler/notifier.js";
+import type { SchedulerTurnControl } from "../scheduler/api.js";
+import { createSchedulerTurnControl, SCHEDULER_SYSTEM_PROMPT } from "../scheduler/execution.js";
+import { SCHEDULER_EXECUTION_PROFILE, type TurnExecutionProfile } from "../runtime/executionProfile.js";
 
 interface ChatTurnInput {
   sessionId: string;
   message: string;
   requestJob?: boolean;
   channelKey?: string;
+  principalId?: string;
+  origin?: SchedulerOrigin;
 }
 
 interface ChatServiceOptions {
@@ -44,6 +51,7 @@ interface ChatServiceOptions {
   agentMaxParallelTools: number;
   runLoopRunner?: typeof runReActLoop;
   groupChatStore?: GroupChatStore;
+  scheduler?: SchedulerTaskApi;
 }
 
 const CONVERSATION_WINDOW_MAX = 20; // 10 turns × 2 entries each
@@ -52,6 +60,7 @@ const CONVERSATION_WINDOW_ENTRY_MAX_CHARS = 1200; // truncate large responses to
 export class ChatService {
   private readonly threadRuntimeManager: ThreadRuntimeManager;
   private readonly subscribedThreadSessions = new Set<string>();
+  private readonly scheduledTurnPromises = new Map<string, Promise<RunOutcome>>();
 
   constructor(private readonly options: ChatServiceOptions) {
     this.threadRuntimeManager = new ThreadRuntimeManager({
@@ -60,7 +69,7 @@ export class ChatService {
         new TurnRuntime({
           runStore: this.options.runStore,
           executeUserInput: async (payload) =>
-            this.executeRunCore(payload.runId, payload.sessionId, payload.message, payload.sessionContext),
+            this.executeRunCore(payload.runId, payload.sessionId, payload.message, payload.sessionContext, payload.provenance, payload.executionProfile, payload.schedulerControl),
           requestCancellation: async (targetRunId) => {
             await this.options.runStore.requestCancellation(targetRunId);
           }
@@ -314,7 +323,10 @@ export class ChatService {
     runId: string,
     sessionId: string,
     message: string,
-    sessionContext?: SessionPromptContext
+    sessionContext?: SessionPromptContext,
+    provenance?: SchedulerProvenance,
+    executionProfile?: TurnExecutionProfile,
+    schedulerControl?: SchedulerTurnControl
   ): Promise<RunOutcome> {
     this.ensureThreadSubscription(sessionId);
     const dispatch = await this.threadRuntimeManager.submit(sessionId, {
@@ -323,7 +335,10 @@ export class ChatService {
         runId,
         sessionId,
         message,
-        sessionContext
+        sessionContext,
+        provenance,
+        executionProfile,
+        schedulerControl
       }
     });
     if (dispatch.outcome) {
@@ -339,7 +354,10 @@ export class ChatService {
     runId: string,
     sessionId: string,
     message: string,
-    sessionContext?: SessionPromptContext
+    sessionContext?: SessionPromptContext,
+    provenance?: SchedulerProvenance,
+    executionProfile?: TurnExecutionProfile,
+    schedulerControl?: SchedulerTurnControl
   ): Promise<RunOutcome> {
     if (await this.options.runStore.isCancellationRequested(runId)) {
       await this.options.runStore.appendEvent({
@@ -395,7 +413,12 @@ export class ChatService {
         agentMaxToolCalls: this.options.agentMaxToolCalls,
         agentMaxParallelTools: this.options.agentMaxParallelTools,
         sessionContext,
-        isCancellationRequested: () => this.options.runStore.isCancellationRequested(runId)
+        isCancellationRequested: () => this.options.runStore.isCancellationRequested(runId),
+        scheduler: this.options.scheduler,
+        provenance,
+        executionProfile,
+        schedulerControl,
+        systemPrompt: executionProfile?.origin === "scheduler" ? SCHEDULER_SYSTEM_PROMPT : undefined
       });
 
       await this.options.runStore.updateRun(runId, {
@@ -449,6 +472,11 @@ export class ChatService {
     }
 
     await this.options.sessionStore.touchSession(input.sessionId);
+    const provenance: SchedulerProvenance = {
+      principalId: input.principalId ?? input.sessionId,
+      channelKey: input.channelKey,
+      origin: input.origin ?? (input.channelKey?.startsWith("telegram:") ? "telegram" : "web")
+    };
     const run = await this.options.runStore.createRun(input.sessionId, input.message, input.requestJob ? "queued" : "running");
 
     await this.options.runStore.appendEvent({
@@ -463,7 +491,7 @@ export class ChatService {
     if (input.requestJob) {
       await this.persistQueuedRunStart(input.sessionId, run.runId, input.message);
       const queuedSessionContext = await this.buildSessionContext((await this.options.sessionStore.getSession(input.sessionId)) ?? session);
-      void this.executeRun(run.runId, input.sessionId, input.message, queuedSessionContext).then(async (outcome) => {
+      void this.executeRun(run.runId, input.sessionId, input.message, queuedSessionContext, provenance).then(async (outcome) => {
         await this.persistRunOutcome(input.sessionId, run.runId, input.message, outcome);
         if (input.channelKey && this.options.groupChatStore) {
           await this.options.groupChatStore.appendTurn(
@@ -492,7 +520,7 @@ export class ChatService {
 
     await this.persistQueuedRunStart(input.sessionId, run.runId, input.message);
     const sessionContext = await this.buildSessionContext((await this.options.sessionStore.getSession(input.sessionId)) ?? session);
-    const outcome = await this.executeRun(run.runId, input.sessionId, input.message, sessionContext);
+    const outcome = await this.executeRun(run.runId, input.sessionId, input.message, sessionContext, provenance);
     await this.persistRunOutcome(input.sessionId, run.runId, input.message, outcome);
     if (input.channelKey && this.options.groupChatStore) {
       await this.options.groupChatStore.appendTurn(
@@ -509,6 +537,73 @@ export class ChatService {
       artifactPaths: outcome.artifactPaths,
       approvalToken: outcome.approvalToken
     };
+  }
+
+  async handleScheduledTurn(input: {
+    taskId: string;
+    cycleId: string;
+    sessionId: string;
+    instruction: string;
+    owner: SchedulerProvenance;
+  }): Promise<RunOutcome> {
+    if (!this.options.scheduler) throw new Error("scheduler_disabled");
+    const key = `${input.taskId}:${input.cycleId}`;
+    const existingPromise = this.scheduledTurnPromises.get(key);
+    if (existingPromise) return existingPromise;
+    const promise = this.executeScheduledTurn(input);
+    this.scheduledTurnPromises.set(key, promise);
+    void promise.finally(() => this.scheduledTurnPromises.delete(key));
+    return promise;
+  }
+
+  private async executeScheduledTurn(input: {
+    taskId: string;
+    cycleId: string;
+    sessionId: string;
+    instruction: string;
+    owner: SchedulerProvenance;
+  }): Promise<RunOutcome> {
+    const scheduler = this.options.scheduler;
+    if (!scheduler) throw new Error("scheduler_disabled");
+    const task = await scheduler.get(input.taskId);
+    if (!task || task.activeCycleId !== input.cycleId || (task.status !== "claimed" && task.status !== "running")) {
+      throw new Error("scheduled_task_cycle_not_active");
+    }
+    const existing = await this.options.runStore.findRunBySchedulerCycle(input.taskId, input.cycleId);
+    if (existing && existing.status !== "queued" && existing.status !== "running") {
+      return { status: existing.status, assistantText: existing.assistantText, artifactPaths: existing.artifactPaths, approvalToken: existing.approvalToken };
+    }
+    const run = existing ?? await this.options.runStore.createRun(input.sessionId, input.instruction, "queued", {
+      taskId: input.taskId,
+      cycleId: input.cycleId,
+      origin: "scheduler"
+    });
+    if (!existing) await scheduler.attachRun(input.taskId, input.cycleId, run.runId);
+    const control = createSchedulerTurnControl(input.taskId, input.cycleId);
+    const profile: TurnExecutionProfile = {
+      ...SCHEDULER_EXECUTION_PROFILE,
+      toolAllowlist: [...SCHEDULER_EXECUTION_PROFILE.toolAllowlist],
+      taskId: input.taskId,
+      cycleId: input.cycleId
+    };
+    const outcome = await this.executeRun(
+      run.runId,
+      input.sessionId,
+      input.instruction,
+      undefined,
+      { ...input.owner, origin: "scheduler" },
+      profile,
+      control
+    );
+    if (control.action?.type === "complete") {
+      await scheduler.complete(input.taskId, input.cycleId, undefined, control.action.summary);
+    } else if (control.action?.type === "reschedule") {
+      await scheduler.complete(input.taskId, input.cycleId, control.action.nextDueAt, control.action.reason);
+    } else {
+      await scheduler.fail(input.taskId, input.cycleId, outcome.status === "failed" ? "scheduler_execution_failed" : "scheduler_no_terminal_action");
+      return outcome.status === "failed" ? outcome : { status: "failed", assistantText: "The scheduled task did not select a terminal action." };
+    }
+    return outcome;
   }
 
   async requestRunCancellation(runId: string): Promise<{

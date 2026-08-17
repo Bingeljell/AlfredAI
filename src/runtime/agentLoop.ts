@@ -6,7 +6,11 @@ import type { ToolDefaults, ToolState, ToolContext } from "../tools/types.js";
 import { discoverTools, applyToolAllowlist, executeToolWithEnvelope } from "../tools/registry.js";
 import { scrubToolOutput } from "../tools/outputScrubber.js";
 import { getActiveLlmProvider } from "../provider/registry.js";
-import type { LlmConversationMessage, LlmToolDef } from "../provider/types.js";
+import type { LlmConversationMessage, LlmToolCallResult, LlmToolDef } from "../provider/types.js";
+import type { SchedulerTaskApi } from "../scheduler/api.js";
+import type { SchedulerProvenance } from "../scheduler/notifier.js";
+import type { SchedulerTurnControl } from "../scheduler/api.js";
+import type { TurnExecutionProfile } from "./executionProfile.js";
 
 export interface AgentLoopOptions {
   runId: string;
@@ -25,6 +29,11 @@ export interface AgentLoopOptions {
   policyMode: PolicyMode;
   sessionContext?: SessionPromptContext;
   isCancellationRequested: () => Promise<boolean>;
+  scheduler?: SchedulerTaskApi;
+  provenance?: SchedulerProvenance;
+  executionProfile?: TurnExecutionProfile;
+  schedulerControl?: SchedulerTurnControl;
+  maxToolCalls?: number;
 }
 
 function nowIso(): string {
@@ -74,7 +83,11 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     defaults,
     policyMode,
     sessionContext,
-    isCancellationRequested
+    isCancellationRequested,
+    scheduler,
+    provenance,
+    schedulerControl,
+    maxToolCalls
   } = options;
 
   const deadlineAtMs = Date.now() + maxDurationMs;
@@ -114,7 +127,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     setResearchSourceCards: (cards) => {
       state.researchSourceCards = cards;
     },
-    getResearchSourceCards: () => state.researchSourceCards ?? []
+    getResearchSourceCards: () => state.researchSourceCards ?? [],
+    scheduler,
+    provenance,
+    schedulerControl
   };
 
   // Discover and filter tools
@@ -160,6 +176,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
   });
 
   let iteration = 0;
+  let toolCallCount = 0;
 
   while (iteration < maxIterations) {
     iteration += 1;
@@ -203,12 +220,75 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     });
 
     const remaining = deadlineAtMs - Date.now();
-    const llmResult = await provider.generateWithTools({
-      model,
-      messages,
-      tools: llmTools,
-      timeoutMs: Math.min(90_000, remaining - 5_000)
-    });
+    const requestController = new AbortController();
+    let callerCancellationDetected = false;
+    let deadlineAbort = false;
+    let cancellationPollInFlight = false;
+    const cancellationPoll = setInterval(() => {
+      if (cancellationPollInFlight || requestController.signal.aborted) return;
+      cancellationPollInFlight = true;
+      void isCancellationRequested()
+        .then((requested) => {
+          if (requested) {
+            callerCancellationDetected = true;
+            requestController.abort("caller_cancellation");
+          }
+        })
+        .finally(() => {
+          cancellationPollInFlight = false;
+        });
+    }, 250);
+    cancellationPoll.unref?.();
+
+    const deadlineTimer = setTimeout(() => {
+      deadlineAbort = true;
+      requestController.abort("deadline");
+    }, Math.max(1, remaining));
+    deadlineTimer.unref?.();
+
+    let llmResult: LlmToolCallResult;
+    try {
+      llmResult = await provider.generateWithTools({
+        model,
+        messages,
+        tools: llmTools,
+        timeoutMs: Math.max(1_000, Math.min(90_000, remaining - 5_000)),
+        sessionId,
+        signal: requestController.signal
+      });
+    } finally {
+      clearInterval(cancellationPoll);
+      clearTimeout(deadlineTimer);
+    }
+
+    if (llmResult.failureCode === "cancelled") {
+      const callerCancelled = callerCancellationDetected || await isCancellationRequested();
+      if (callerCancelled) {
+        await runStore.appendEvent({
+          runId,
+          sessionId,
+          phase: "final",
+          eventType: "agent_loop_cancelled",
+          payload: { iteration, reason: "caller_cancellation" },
+          timestamp: nowIso()
+        });
+        return { status: "cancelled" };
+      }
+      if (deadlineAbort || Date.now() >= deadlineAtMs || llmResult.failureClass === "timeout") {
+        await runStore.appendEvent({
+          runId,
+          sessionId,
+          phase: "final",
+          eventType: "agent_loop_timeout",
+          payload: { iteration, reason: "deadline_abort" },
+          timestamp: nowIso()
+        });
+        return {
+          status: "failed",
+          assistantText: "The task timed out before completing. Please try again with a simpler request."
+        };
+      }
+    }
 
     if (llmResult.failureCode) {
       await runStore.appendEvent({
@@ -237,7 +317,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     const finishReason = llmResult.finishReason;
 
     // Model returned a final text response
-    if (finishReason === "stop" || (!llmResult.toolCalls?.length && llmResult.content)) {
+    if (finishReason === "stop" || (!llmResult.toolCalls?.length && llmResult.content && finishReason !== "length")) {
       const assistantText = llmResult.content ?? "";
 
       await runStore.appendEvent({
@@ -264,16 +344,29 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     // Model wants to call tools
     if (llmResult.toolCalls?.length) {
       // Append the assistant's tool-call message to history (unified format).
-      // _rawGeminiParts preserves thought_signature for thinking models.
+      // Provider state preserves opaque continuation data without exposing it
+      // to tools, prompts, logs, or channel output.
       messages.push({
         role: "assistant",
         content: llmResult.content ?? null,
         toolCalls: llmResult.toolCalls,
-        _rawGeminiParts: llmResult.rawAssistantParts
+        providerState: llmResult.providerState
       });
 
       // Execute each tool call and collect results
       for (const toolCall of llmResult.toolCalls) {
+        if (toolCallCount >= (maxToolCalls ?? Number.MAX_SAFE_INTEGER)) {
+          await runStore.appendEvent({
+            runId,
+            sessionId,
+            phase: "final",
+            eventType: "agent_loop_tool_limit",
+            payload: { iteration, maxToolCalls, toolCallCount },
+            timestamp: nowIso()
+          });
+          return { status: "failed", assistantText: "The scheduled task reached its tool-call limit." };
+        }
+        toolCallCount += 1;
         const toolName = toolCall.name;
         const inputJson = toolCall.arguments;
 
@@ -325,19 +418,23 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
       continue;
     }
 
-    // Unexpected finish reason — treat as done
+    // Incomplete, refused, length-limited, or otherwise unexpected outcomes
+    // are failures. Provider-specific details should already be mapped into
+    // failureCode/failureMessage above.
     await runStore.appendEvent({
       runId,
       sessionId,
       phase: "final",
       eventType: "agent_loop_unexpected_finish",
-      payload: { iteration, finishReason, content: llmResult.content?.slice(0, 200) },
+      payload: { iteration, finishReason },
       timestamp: nowIso()
     });
 
     return {
-      status: "completed",
-      assistantText: llmResult.content ?? "Task completed.",
+      status: "failed",
+      assistantText: finishReason === "length"
+        ? "The model reached its output limit before completing the task."
+        : "The model did not return a complete response.",
       artifactPaths: state.artifacts.length > 0 ? state.artifacts : undefined
     };
   }

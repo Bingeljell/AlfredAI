@@ -1,0 +1,8 @@
+: heartbeat
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"Hello"}
+
+data: {"type":"response.output_text.delta","delta":" from Codex."}
+
+data: {"type":"response.done","response":{"status":"completed","output":[],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7,"input_tokens_details":{"cached_tokens":1}}}}
+

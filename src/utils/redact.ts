@@ -10,13 +10,15 @@
 
 // Match only keys that ARE a secret identifier — not keys that merely contain these words
 // (e.g. promptTokens, completionTokens, totalTokens must not be redacted).
-const SECRET_KEY_REGEX = /^(api[_-]?key|apikey|secret|password|passwd|pw|token|bearer|authorization|auth[_-]?token|access[_-]?key|private[_-]?key|client[_-]?secret|webhook[_-]?secret|signing[_-]?key|encryption[_-]?key)$/i;
+const SECRET_KEY_REGEX = /^(api[_-]?key|apikey|secret|password|passwd|pw|token|bearer|authorization|auth[_-]?token|access[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|private[_-]?key|client[_-]?secret|webhook[_-]?secret|signing[_-]?key|encryption[_-]?key|chatgpt-account-id|accountid)$/i;
 
 // A string that is, in whole, a well-known API key.
-const KNOWN_PREFIX_RE = /^(sk-ant-[A-Za-z0-9\-_]{10,}|sk-[A-Za-z0-9\-_]{10,}|AIza[A-Za-z0-9\-_]{10,}|eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_.]+|ghp_[A-Za-z0-9]{10,}|gho_[A-Za-z0-9]{10,}|ghr_[A-Za-z0-9]{10,}|xoxb-[A-Za-z0-9\-]{10,}|xoxp-[A-Za-z0-9\-]{10,}|AKIA[A-Z0-9]{10,})/;
+const KNOWN_PREFIX_RE = /^(sk-ant-[A-Za-z0-9\-_]{10,}|sk-[A-Za-z0-9\-_]{10,}|AIza[A-Za-z0-9\-_]{10,}|eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_.]+\.[A-Za-z0-9\-_.]+|ghp_[A-Za-z0-9]{10,}|gho_[A-Za-z0-9]{10,}|ghr_[A-Za-z0-9]{10,}|xoxb-[A-Za-z0-9\-]{10,}|xoxp-[A-Za-z0-9\-]{10,}|AKIA[A-Z0-9]{10,})/;
 
 // Known keys embedded inside a larger string (e.g. a log line or prose).
-const INLINE_KEY_RE = /(sk-ant-[A-Za-z0-9\-_]{10,}|sk-[A-Za-z0-9\-_]{10,}|AIza[A-Za-z0-9\-_]{10,}|ghp_[A-Za-z0-9]{10,}|gho_[A-Za-z0-9]{10,}|ghr_[A-Za-z0-9]{10,}|xoxb-[A-Za-z0-9\-]{10,}|xoxp-[A-Za-z0-9\-]{10,}|AKIA[A-Z0-9]{10,})/g;
+const INLINE_KEY_RE = /(sk-ant-[A-Za-z0-9\-_]{10,}|sk-[A-Za-z0-9\-_]{10,}|AIza[A-Za-z0-9\-_]{10,}|eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_.]+\.[A-Za-z0-9\-_.]+|ghp_[A-Za-z0-9]{10,}|gho_[A-Za-z0-9]{10,}|ghr_[A-Za-z0-9]{10,}|xoxb-[A-Za-z0-9\-]{10,}|xoxp-[A-Za-z0-9\-]{10,}|AKIA[A-Z0-9]{10,})/g;
+const INLINE_BEARER_RE = /\b(?:bearer|basic)\s+[A-Za-z0-9._~+\-/=]{8,}/gi;
+const INLINE_AUTH_FIELD_RE = /\b(?:access[_-]?token|refresh[_-]?token|id[_-]?token|authorization|chatgpt-account-id|accountId)\s*[:=]\s*[^\s,;]+/gi;
 
 const ENTROPY_MIN_LEN = 20;
 const ENTROPY_MAX_LEN = 512;
@@ -62,7 +64,10 @@ function redactString(value: string): string {
   ) {
     return "[REDACTED:high-entropy]";
   }
-  return value.replace(INLINE_KEY_RE, "[REDACTED_KEY]");
+  return value
+    .replace(INLINE_KEY_RE, "[REDACTED_KEY]")
+    .replace(INLINE_BEARER_RE, "[REDACTED_AUTH]")
+    .replace(INLINE_AUTH_FIELD_RE, (match) => `${match.slice(0, match.search(/[:=]/) + 1)}[REDACTED]`);
 }
 
 export function redactValue(value: unknown): unknown {

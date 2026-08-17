@@ -176,8 +176,12 @@ ${agentsContent ? `════════════════════�
     "doc_qa",
     "lead_extractor",
     "lead_generation",
-    "herdr_control"
+    "herdr_control",
+    "schedule_reminder",
+    "schedule_wake",
+    "schedule_watch",
+    "cancel_scheduled_task",
+    "list_scheduled_tasks"
   ],
   maxIterations: 35
 };
-

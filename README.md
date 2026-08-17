@@ -9,7 +9,7 @@ Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reas
 ## What Alfred Does Today
 
 - **General-purpose ReAct agent** — research, writing, lead generation, ops, file work, shell commands
-- **Multi-provider LLM** — Gemini, Anthropic, OpenAI, Ollama, LM Studio, **OpenRouter**; configurable per deployment, with fast/smart model tiers
+- **Multi-provider LLM** — Gemini, Anthropic, OpenAI, Ollama, LM Studio, OpenRouter, and Codex subscription auth; configurable per deployment, with fast/smart model tiers
 - **Headless browser control** — Alfred can drive a live browser session: navigate, click, type, fill forms, take screenshots
 - **Remote agent orchestration** — monitors and dispatches tasks to coding agents (Claude, Codex, Pi, …) running in Herdr workspaces
 - **Decoupled agent event webhook** — external agents/terminal wrappers push lifecycle events (`needs_approval`, `completed`, `failed`, `progress`) to Alfred, which routes them to Telegram
@@ -59,6 +59,11 @@ Alfred auto-discovers tools from `src/tools/definitions/` — each `*.tool.ts` f
 | `doc_qa` | Answers questions from local docs/files with citations |
 | `lead_extractor` / `lead_generation` | Lead pipeline (extract, score, persist) |
 | `herdr_control` | Inspect/monitor/dispatch tasks to coding agents in Herdr workspaces (see `docs/features/herdr_control.md`) |
+| **Autonomous scheduling** | |
+| `schedule_reminder` | Deliver a durable reminder to the originating Telegram or web channel |
+| `schedule_wake` | Start a bounded autonomous Alfred turn at a later time |
+| `schedule_watch` | Watch a run, safe relative file path, or Herdr agent for a meaningful transition |
+| `list_scheduled_tasks` / `cancel_scheduled_task` | Inspect or cancel the current user's scheduled tasks |
 
 ## Configuration
 
@@ -72,7 +77,7 @@ cp .env.example .env
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ALFRED_LLM_PROVIDER` | `openai` | `openai` \| `anthropic` \| `gemini` \| `ollama` \| `lmstudio` \| `openrouter` |
+| `ALFRED_LLM_PROVIDER` | `openai` | `openai` \| `anthropic` \| `gemini` \| `ollama` \| `lmstudio` \| `openrouter` \| `codex` |
 | `OPENAI_API_KEY` | — | OpenAI |
 | `ANTHROPIC_API_KEY` | — | Anthropic |
 | `GEMINI_API_KEY` | — | Google Gemini (Google's naming convention) |
@@ -80,10 +85,11 @@ cp .env.example .env
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api` | OpenRouter API root — the code appends `/v1/chat/completions`, so **do not** set the `/api/v1` form |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama (OpenAI-compatible) |
 | `LMSTUDIO_BASE_URL` | `http://localhost:1234` | Local LM Studio (OpenAI-compatible) |
+| `ALFRED_CODEX_AUTH_FILE` | `~/.alfred/codex-auth.json` | Optional Alfred Codex credential path; use `pnpm codex:login`, not `OPENAI_API_KEY` |
 | `ALFRED_MODEL_SMART` | `gpt-4o` | Main agent loop |
 | `ALFRED_MODEL_FAST` | `gpt-4o-mini` | Cheap/fast calls (classification, session extraction) |
 
-For **OpenRouter**, use model slugs exactly as OpenRouter lists them (e.g. `anthropic/claude-sonnet-4-20250514`, `openai/gpt-4o`). With Ollama/LM Studio use the model id the local server reports (e.g. `gemma-4-31b-it-qat`). `pnpm probe:model` helps discover locally served models.
+For **OpenRouter**, use model slugs exactly as OpenRouter lists them (e.g. `anthropic/claude-sonnet-4-20250514`, `openai/gpt-4o`). With Ollama/LM Studio use the model id the local server reports (e.g. `gemma-4-31b-it-qat`). For **Codex**, run `pnpm codex:login` (or `pnpm codex:login -- --device`) and set compatible model IDs in both `ALFRED_MODEL_SMART` and `ALFRED_MODEL_FAST`. `pnpm probe:model` helps discover locally served models.
 
 ### Server, auth & channels
 
@@ -96,6 +102,35 @@ For **OpenRouter**, use model slugs exactly as OpenRouter lists them (e.g. `anth
 | `TELEGRAM_BOT_TOKEN` | — | Enables the Telegram channel |
 | `TELEGRAM_ALLOWED_USER_IDS` | — | Comma-separated numeric user IDs allowed to talk to the bot (fail-closed when empty) |
 | `TELEGRAM_ALERT_CHAT_ID` | — | Chat ID for proactive agent-event pushes (approval gates, failures); leave blank to disable |
+
+### Autonomous wakeups, reminders, and watches
+
+The scheduler is disabled by default. Set `ALFRED_SCHEDULER_ENABLED=true` to run it inside the existing gateway process:
+
+```bash
+ALFRED_SCHEDULER_ENABLED=true pnpm start
+```
+
+Interactive turns can use these tools when the scheduler is enabled:
+
+- `schedule_reminder` sends text to the originating channel once, or at a fixed-delay interval.
+- `schedule_wake` starts a bounded autonomous turn with a short instruction. The turn can inspect the explicitly available read-only probes and must finish with a scheduler completion or reschedule action.
+- `schedule_watch` polls `run_status`, `file_exists`, or `herdr_agent` state and notifies when a meaningful transition occurs. Agent lifecycle webhooks can nudge matching watches immediately.
+- `list_scheduled_tasks` and `cancel_scheduled_task` manage tasks belonging to the current user and session.
+
+Tasks, leases, task-cycle logs, and deterministic delivery ledgers are stored under `workspace/alfred/scheduler/` (or under `ALFRED_WORKSPACE_DIR/scheduler`). The store is recovered on restart; expired work is reclaimed, and recurring tasks use fixed-delay scheduling from cycle completion so an outage does not create a catch-up storm. Notifications are delivered only to the originating `web:<sessionId>` or allowed `telegram:<chatId>` destination.
+
+Scheduler-origin turns are deliberately constrained: they have a separate execution profile, a bounded duration and tool budget, no mutating tools, no direct messaging tools, no nested scheduling, and no interactive conversation-memory writes. The scheduler also enforces per-principal and global active-task quotas, a minimum 60-second interval, and a maximum cycle count.
+
+The gateway exposes read/control endpoints for web integrations:
+
+```bash
+curl http://localhost:9001/v1/scheduler/status
+curl 'http://localhost:9001/v1/scheduled-tasks?sessionId=<session-id>'
+curl -X POST 'http://localhost:9001/v1/scheduled-tasks/<task-id>/cancel?sessionId=<session-id>'
+```
+
+`GET /v1/scheduler/status` reports whether the engine is running, its concurrency, tick timing, and task counts. The scheduler remains opt-in so existing Alfred deployments continue to behave as interactive-only agents.
 
 ### Search
 
@@ -127,6 +162,10 @@ For **OpenRouter**, use model slugs exactly as OpenRouter lists them (e.g. `anth
 | `ALFRED_AGENT_MAX_DURATION_MS` | `600000` | Hard deadline per run |
 | `ALFRED_AGENT_MAX_TOOL_CALLS` | `18` | Tool-call budget per run |
 | `ALFRED_AGENT_MAX_PARALLEL_TOOLS` | `3` | Parallel tool calls |
+| `ALFRED_SCHEDULER_ENABLED` | `false` | Enable autonomous reminders, wake turns, and watches |
+| `ALFRED_SCHEDULER_TICK_MAX_MS` | `15000` | Maximum scheduler recovery/tick interval |
+| `ALFRED_SCHEDULER_MAX_CONCURRENCY` | `1` | Concurrent scheduler cycles (hard capped at 2) |
+| `ALFRED_SCHEDULER_GLOBAL_WAKE_INTERVAL_MS` | `30000` | Minimum interval between autonomous LLM wake starts |
 | `ALFRED_FAST_SCRAPE_COUNT` | `10` | Fast-scrape page budget |
 | `TWITTER_BEARER_TOKEN` | — | Twitter API (for `fetch_tweet`) |
 
@@ -137,7 +176,7 @@ For **OpenRouter**, use model slugs exactly as OpenRouter lists them (e.g. `anth
 - Node.js 22+
 - `pnpm`
 - SearXNG instance (for search — self-host or use a public instance), or Bright Data / Brave keys as fallback
-- At least one LLM API key (Anthropic, Google Gemini, OpenAI, or OpenRouter)
+- At least one LLM API key (Anthropic, Google Gemini, OpenAI, or OpenRouter), or a Codex subscription login
 
 ### 2. Install
 
@@ -389,13 +428,15 @@ src/agentEvents/    — agent event webhook (schema, auth, dispatcher, Telegram 
 src/tools/          — all tool definitions (drop a *.tool.ts here to add a tool)
 src/tools/browser/  — persistent browser control engine (session registry, DOM helpers)
 src/tools/search/   — search providers (SearXNG, Bright Data, Brave)
-src/provider/       — LLM adapters (Anthropic, Gemini, OpenAI, Ollama, LM Studio, OpenRouter)
+src/provider/       — LLM adapters (Anthropic, Gemini, OpenAI, Ollama, LM Studio, OpenRouter, Codex)
 src/channels/       — Telegram + channel adapter interface
 src/runner/         — ChatService, conversation window management
 src/gateway/        — HTTP server, Web UI API, agent event endpoint
+src/scheduler/      — durable task store, leases, delivery ledger, probes, and autonomous execution
 src/memory/         — session memory, group chat store, RAG
 src/utils/          — redaction (credential scrubbing), path safety
 webui/              — Web UI
+workspace/alfred/scheduler/ — persisted scheduler tasks, deliveries, and cycle logs
 SOUL.md             — Alfred's identity and values
 AGENTS.md           — codebase conventions (also injected into Alfred's system prompt)
 docs/               — architecture docs, spec, changelog, feature specs

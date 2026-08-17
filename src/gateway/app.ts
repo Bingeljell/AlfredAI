@@ -22,6 +22,23 @@ import {
 } from "../agentEvents/notifier.js";
 import type { AgentEventNotifier } from "../agentEvents/notifier.js";
 import { AgentEventStore } from "../agentEvents/eventStore.js";
+import type { ScheduledTaskV1 } from "../scheduler/types.js";
+import { SchedulerTaskStore } from "../scheduler/taskStore.js";
+import { SchedulerDeliveryStore } from "../scheduler/deliveryStore.js";
+import { SchedulerTaskRunLog } from "../scheduler/taskRunLog.js";
+import { SchedulerEngine } from "../scheduler/engine.js";
+import { ReminderExecutor } from "../scheduler/reminder.js";
+import { WatchExecutor } from "../scheduler/watch.js";
+import { RunStatusProbe } from "../scheduler/probes/runStatusProbe.js";
+import { FileExistsProbe } from "../scheduler/probes/fileExistsProbe.js";
+import { HerdrAgentProbe } from "../scheduler/probes/herdrAgentProbe.js";
+import { DefaultHerdrReadOnlyClient } from "../scheduler/probes/defaultHerdrClient.js";
+import {
+  FileWebActivitySink,
+  RoutingOutboundNotifier,
+  TelegramOutboundNotifier,
+  WebOutboundNotifier
+} from "../scheduler/notifier.js";
 
 const SessionPostSchema = z.object({
   action: z.enum(["create", "list"]).default("list"),
@@ -148,6 +165,70 @@ const agentEventDispatcher = new AgentEventDispatcher({
   store: agentEventStore
 });
 
+const schedulerTaskStore = new SchedulerTaskStore({ workspaceDir: appConfig.workspaceDir });
+const schedulerDeliveryStore = new SchedulerDeliveryStore({ workspaceDir: appConfig.workspaceDir });
+const schedulerNotifier = new RoutingOutboundNotifier(
+  new WebOutboundNotifier(new FileWebActivitySink(appConfig.workspaceDir)),
+  appConfig.telegramBotToken
+    ? new TelegramOutboundNotifier(appConfig.telegramBotToken, {
+        async isAllowed(destination) {
+          const principalId = Number(destination.principalId);
+          if (!Number.isSafeInteger(principalId) || !appConfig.telegramAllowedUserIds.includes(principalId)) return false;
+          const channel = await new ChannelSessionStore(appConfig.workspaceDir).get(destination.channelKey);
+          return Boolean(channel);
+        }
+      })
+    : undefined
+);
+const schedulerTaskRunLog = new SchedulerTaskRunLog(appConfig.workspaceDir);
+let scheduledWakeExecutor: ((task: ScheduledTaskV1, cycleId: string) => Promise<ScheduledTaskV1>) | undefined;
+const schedulerHerdrProbe = new HerdrAgentProbe(new DefaultHerdrReadOnlyClient());
+const schedulerWatchExecutor = new WatchExecutor({
+  taskStore: schedulerTaskStore,
+  deliveryStore: schedulerDeliveryStore,
+  notifier: schedulerNotifier,
+  probe: async (task, previousDigest) => {
+    if (task.kind !== "watch" || !task.watch) throw new Error("invalid_watch_definition");
+    switch (task.watch.type) {
+      case "run_status": return new RunStatusProbe(runStore).probe(task.watch, previousDigest);
+      case "file_exists": return new FileExistsProbe(appConfig.workspaceDir).probe(task.watch, previousDigest);
+      case "herdr_agent": return schedulerHerdrProbe.probe(task.watch, previousDigest);
+    }
+  },
+  executeWake: async (task, cycleId) => {
+    if (!scheduledWakeExecutor) throw new Error("scheduler_wake_executor_unavailable");
+    return scheduledWakeExecutor(task, cycleId);
+  }
+});
+const schedulerEngine = new SchedulerEngine({
+  taskStore: schedulerTaskStore,
+  deliveryStore: schedulerDeliveryStore,
+  taskRunLog: schedulerTaskRunLog,
+  reminderExecutor: new ReminderExecutor({
+    taskStore: schedulerTaskStore,
+    deliveryStore: schedulerDeliveryStore,
+    notifier: schedulerNotifier
+  }),
+  watchExecutor: schedulerWatchExecutor,
+  executeWake: async (task, cycleId) => {
+    if (!scheduledWakeExecutor) throw new Error("scheduler_wake_executor_unavailable");
+    return scheduledWakeExecutor(task, cycleId);
+  },
+  maxConcurrency: appConfig.schedulerMaxConcurrency,
+  tickMaxMs: appConfig.schedulerTickMaxMs,
+  globalWakeIntervalMs: appConfig.schedulerGlobalWakeIntervalMs,
+  lookupRun: async (runId) => {
+    const run = await runStore.getRun(runId);
+    if (!run) return undefined;
+    if (run.status === "needs_approval") return { status: "failed" };
+    return { status: run.status === "queued" || run.status === "running" ? run.status : run.status };
+  },
+  requestRunCancellation: async (runId) => {
+    await runStore.requestCancellation(runId);
+  }
+});
+agentEventDispatcher.setSchedulerHook(schedulerEngine);
+
 const chatService = new ChatService({
   sessionStore,
   runStore,
@@ -164,8 +245,24 @@ const chatService = new ChatService({
   agentMaxDurationMs: appConfig.agentMaxDurationMs,
   agentMaxToolCalls: appConfig.agentMaxToolCalls,
   agentMaxParallelTools: appConfig.agentMaxParallelTools,
-  groupChatStore
+  groupChatStore,
+  scheduler: appConfig.schedulerEnabled ? schedulerEngine : undefined
 });
+
+scheduledWakeExecutor = async (task, cycleId) => {
+  await chatService.handleScheduledTurn({
+    taskId: task.id,
+    cycleId,
+    sessionId: task.owner.sessionId,
+    instruction: task.instruction ?? "Inspect the scheduled task and decide whether it is complete.",
+    owner: {
+      principalId: task.owner.principalId,
+      channelKey: task.owner.channelKey,
+      origin: "scheduler"
+    }
+  });
+  return await schedulerTaskStore.get(task.id) ?? task;
+};
 
 app.get("/health", (c) => {
   return c.json({
@@ -211,8 +308,40 @@ app.post("/v1/chat/turn", async (c) => {
   const json = await c.req.json();
   const payload = ChatTurnSchema.parse(json);
 
-  const response = await chatService.handleTurn(payload);
+  const response = await chatService.handleTurn({
+    ...payload,
+    principalId: "api",
+    origin: "web",
+    channelKey: `web:${payload.sessionId}`
+  });
   return c.json(response);
+});
+
+app.get("/v1/scheduled-tasks", async (c) => {
+  if (!appConfig.schedulerEnabled) return c.json({ error: "scheduler_disabled" }, 503);
+  const sessionId = c.req.query("sessionId");
+  if (!sessionId) return c.json({ error: "sessionId is required" }, 400);
+  const tasks = await schedulerEngine.list({ sessionId, principalId: "api", channelKey: `web:${sessionId}` }, c.req.query("includeTerminal") === "true");
+  return c.json({ tasks });
+});
+
+app.post("/v1/scheduled-tasks/:taskId/cancel", async (c) => {
+  if (!appConfig.schedulerEnabled) return c.json({ error: "scheduler_disabled" }, 503);
+  try {
+    const task = await schedulerEngine.cancel(c.req.param("taskId"), {
+      sessionId: c.req.query("sessionId") ?? "",
+      principalId: "api",
+      channelKey: c.req.query("channelKey")
+    });
+    return c.json({ task });
+  } catch {
+    return c.json({ error: "scheduled_task_not_found" }, 404);
+  }
+});
+
+app.get("/v1/scheduler/status", async (c) => {
+  if (!appConfig.schedulerEnabled) return c.json({ enabled: false, running: false });
+  return c.json(await schedulerEngine.statusWithTasks());
 });
 
 app.get("/v1/runs", async (c) => {
@@ -312,4 +441,4 @@ app.onError((error, c) => {
   return c.json({ error: "Internal server error" }, 500);
 });
 
-export { app, sessionStore, runStore, chatService, searchManager, agentEventDispatcher, agentEventStore };
+export { app, sessionStore, runStore, chatService, searchManager, agentEventDispatcher, agentEventStore, schedulerEngine };

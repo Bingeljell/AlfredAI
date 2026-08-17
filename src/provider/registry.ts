@@ -1,5 +1,6 @@
 import { appConfig } from "../config/env.js";
 import { AnthropicLlmProvider } from "./anthropic.js";
+import { CodexLlmProvider } from "./codex/provider.js";
 import { GeminiLlmProvider } from "./gemini.js";
 import { LmStudioLlmProvider } from "./lmstudio.js";
 import { OllamaLlmProvider } from "./ollama.js";
@@ -17,6 +18,7 @@ let _provider: LlmProvider | null = null;
  * ALFRED_MODEL_FAST is the default model for cheap/fast calls (classification, extraction).
  *
  * API keys: OPENAI_API_KEY | ANTHROPIC_API_KEY | GEMINI_API_KEY | OLLAMA_BASE_URL | OPENROUTER_API_KEY
+ * Codex uses the local credential created by `pnpm codex:login`.
  */
 export function getActiveLlmProvider(): LlmProvider {
   if (_provider) return _provider;
@@ -67,6 +69,14 @@ export function getActiveLlmProvider(): LlmProvider {
       _provider = new OpenRouterLlmProvider({
         apiKey: appConfig.openRouterApiKey,
         baseUrl: appConfig.openRouterBaseUrl,
+        defaultModel: appConfig.modelSmart
+      });
+      break;
+    }
+
+    case "codex": {
+      _provider = new CodexLlmProvider({
+        authFilePath: appConfig.codexAuthFile,
         defaultModel: appConfig.modelSmart
       });
       break;

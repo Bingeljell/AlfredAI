@@ -9,7 +9,7 @@ const EnvSchema = z.object({
   ALFRED_ENV: z.enum(["dev", "prod"]).default("dev"),
   PORT: z.coerce.number().default(3000),
   // ─── LLM provider ─────────────────────────────────────────────────────────
-  ALFRED_LLM_PROVIDER: z.enum(["openai", "anthropic", "gemini", "ollama", "lmstudio", "openrouter"]).default("openai"),
+  ALFRED_LLM_PROVIDER: z.enum(["openai", "anthropic", "gemini", "ollama", "lmstudio", "openrouter", "codex"]).default("openai"),
   ALFRED_MODEL_FAST: z.string().default("gpt-4o-mini"),   // cheap/fast: classification, session extractor
   ALFRED_MODEL_SMART: z.string().default("gpt-4o"),       // specialist agent loops
   OPENAI_API_KEY: z.string().optional(),
@@ -19,6 +19,7 @@ const EnvSchema = z.object({
   LMSTUDIO_BASE_URL: z.string().default("http://localhost:1234"),
   OPENROUTER_API_KEY: z.string().optional(),
   OPENROUTER_BASE_URL: z.string().url().default("https://openrouter.ai/api"),
+  ALFRED_CODEX_AUTH_FILE: z.string().optional(),
   SEARXNG_BASE_URL: z.string().url().default("http://127.0.0.1:8888"),
   SEARXNG_SEARCH_PATH: z.string().default("/search"),
   SEARXNG_HEALTH_PATH: z.string().default("/search?q=ping&format=json"),
@@ -49,6 +50,11 @@ const EnvSchema = z.object({
   ALFRED_AGENT_MAX_DURATION_MS: z.coerce.number().int().min(60000).max(900000).default(600000),
   ALFRED_AGENT_MAX_TOOL_CALLS: z.coerce.number().int().min(3).max(60).default(18),
   ALFRED_AGENT_MAX_PARALLEL_TOOLS: z.coerce.number().int().min(1).max(5).default(3),
+  // ─── Autonomous scheduler ────────────────────────────────────────────────
+  ALFRED_SCHEDULER_ENABLED: z.string().default("false"),
+  ALFRED_SCHEDULER_TICK_MAX_MS: z.coerce.number().int().min(1000).max(60000).default(15000),
+  ALFRED_SCHEDULER_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(2).default(1),
+  ALFRED_SCHEDULER_GLOBAL_WAKE_INTERVAL_MS: z.coerce.number().int().min(1000).max(3600000).default(30000),
   // ─── Auth ──────────────────────────────────────────────────────────────────
   ALFRED_API_KEY: z.string().optional(),
   // Shared secret for POST /api/events/agent (agent event webhook). When unset,
@@ -79,6 +85,7 @@ export const appConfig = {
   lmStudioBaseUrl: parsed.LMSTUDIO_BASE_URL,
   openRouterApiKey: parsed.OPENROUTER_API_KEY,
   openRouterBaseUrl: parsed.OPENROUTER_BASE_URL,
+  codexAuthFile: parsed.ALFRED_CODEX_AUTH_FILE,
   searxngBaseUrl: parsed.SEARXNG_BASE_URL,
   searxngSearchPath: parsed.SEARXNG_SEARCH_PATH,
   searxngHealthPath: parsed.SEARXNG_HEALTH_PATH,
@@ -109,6 +116,10 @@ export const appConfig = {
   agentMaxDurationMs: parsed.ALFRED_AGENT_MAX_DURATION_MS,
   agentMaxToolCalls: parsed.ALFRED_AGENT_MAX_TOOL_CALLS,
   agentMaxParallelTools: parsed.ALFRED_AGENT_MAX_PARALLEL_TOOLS,
+  schedulerEnabled: parsed.ALFRED_SCHEDULER_ENABLED.toLowerCase() === "true",
+  schedulerTickMaxMs: parsed.ALFRED_SCHEDULER_TICK_MAX_MS,
+  schedulerMaxConcurrency: parsed.ALFRED_SCHEDULER_MAX_CONCURRENCY,
+  schedulerGlobalWakeIntervalMs: parsed.ALFRED_SCHEDULER_GLOBAL_WAKE_INTERVAL_MS,
   apiKey: parsed.ALFRED_API_KEY ?? null,
   agentEventToken: parsed.ALFRED_AGENT_EVENT_TOKEN ?? null,
   twitterBearerToken: parsed.TWITTER_BEARER_TOKEN ?? null,

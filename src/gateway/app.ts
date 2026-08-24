@@ -249,6 +249,7 @@ const chatService = new ChatService({
   agentMaxToolCalls: appConfig.agentMaxToolCalls,
   agentMaxParallelTools: appConfig.agentMaxParallelTools,
   groupChatStore,
+  taskTranscriptStore: schedulerTaskStore.transcriptStore,
   scheduler: appConfig.schedulerEnabled ? schedulerEngine : undefined
 });
 

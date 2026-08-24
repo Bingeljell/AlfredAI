@@ -26,6 +26,7 @@ import type {
   TaskOwner,
 } from "./types.js";
 import { redactValue } from "../utils/redact.js";
+import { TaskTranscriptStore } from "./taskTranscript.js";
 
 interface LockRecord {
   ownerId: string;
@@ -45,6 +46,7 @@ export interface SchedulerTaskStoreOptions {
   workspaceDir: string;
   nowMs?: () => number;
   instanceId?: string;
+  transcriptStore?: TaskTranscriptStore;
 }
 
 export class SchedulerTaskStore {
@@ -52,6 +54,7 @@ export class SchedulerTaskStore {
   readonly tasksPath: string;
   readonly lockPath: string;
   readonly taskRunsDir: string;
+  readonly transcriptStore: TaskTranscriptStore;
   private readonly nowMs: () => number;
   private readonly instanceId: string;
   private mutationTail: Promise<void> = Promise.resolve();
@@ -61,6 +64,7 @@ export class SchedulerTaskStore {
     this.tasksPath = path.join(this.schedulerDir, SCHEDULER_TASKS_FILE);
     this.lockPath = path.join(this.schedulerDir, SCHEDULER_LOCK_FILE);
     this.taskRunsDir = path.join(this.schedulerDir, SCHEDULER_TASK_RUNS_DIRECTORY);
+    this.transcriptStore = options.transcriptStore ?? new TaskTranscriptStore(options.workspaceDir);
     this.nowMs = options.nowMs ?? (() => Date.now());
     this.instanceId = options.instanceId ?? randomUUID();
   }
@@ -154,7 +158,7 @@ export class SchedulerTaskStore {
   }
 
   async claim(id: string, expectedUpdatedAt?: string): Promise<ClaimResult> {
-    return this.mutate((snapshot) => {
+    const result = await this.mutate((snapshot) => {
       const task = snapshot.tasks.find((candidate) => candidate.id === id);
       if (!task) return { claimed: false, reason: "not_found" } as const;
       if (expectedUpdatedAt !== undefined && task.updatedAt !== expectedUpdatedAt) {
@@ -182,6 +186,11 @@ export class SchedulerTaskStore {
       task.updatedAt = canonicalUtc(now);
       return { claimed: true, task: clone(task), cycleId } as const;
     });
+    if (!result.claimed && (result.reason === "expired" || result.reason === "cycle_limit")) {
+      const task = await this.get(id);
+      if (task) await this.writeTerminalSummary(task);
+    }
+    return result;
   }
 
   async markRunning(id: string, cycleId: string, runId?: string): Promise<ScheduledTaskV1> {
@@ -210,7 +219,7 @@ export class SchedulerTaskStore {
   }
 
   async completeCycle(input: CompleteCycleInput): Promise<ScheduledTaskV1> {
-    return this.mutate((snapshot) => {
+    const result = await this.mutate((snapshot) => {
       const task = requireTask(snapshot, input.taskId);
       requireActiveCycle(task, input.cycleId);
       const now = input.completedAt ? Date.parse(input.completedAt) : this.nowMs();
@@ -229,10 +238,12 @@ export class SchedulerTaskStore {
       }
       return clone(task);
     });
+    await this.writeTerminalSummary(result, input.completionSummary);
+    return result;
   }
 
   async failCycle(input: FailCycleInput): Promise<ScheduledTaskV1> {
-    return this.mutate((snapshot) => {
+    const result = await this.mutate((snapshot) => {
       const task = requireTask(snapshot, input.taskId);
       requireActiveCycle(task, input.cycleId);
       const now = this.nowMs();
@@ -248,10 +259,12 @@ export class SchedulerTaskStore {
       }
       return clone(task);
     });
+    await this.writeTerminalSummary(result);
+    return result;
   }
 
   async cancel(id: string, owner: TaskOwner): Promise<ScheduledTaskV1> {
-    return this.mutate((snapshot) => {
+    const result = await this.mutate((snapshot) => {
       const task = requireTask(snapshot, id);
       if (task.owner.principalId !== owner.principalId || task.owner.sessionId !== owner.sessionId) {
         throw new SchedulerStoreError("task does not belong to the caller");
@@ -261,10 +274,12 @@ export class SchedulerTaskStore {
       }
       return clone(task);
     });
+    await this.writeTerminalSummary(result);
+    return result;
   }
 
   async reconcile(input: ReconcileInput): Promise<ScheduledTaskV1 | undefined> {
-    return this.mutate((snapshot) => {
+    const result = await this.mutate((snapshot) => {
       const task = snapshot.tasks.find((candidate) => candidate.id === input.taskId);
       if (!task) return undefined;
       if (input.action === "expire") {
@@ -294,6 +309,25 @@ export class SchedulerTaskStore {
       }
       return clone(task);
     });
+    if (result) await this.writeTerminalSummary(result);
+    return result;
+  }
+
+  private async writeTerminalSummary(task: ScheduledTaskV1, summary?: string): Promise<void> {
+    if (!isTerminal(task.status)) return;
+    try {
+      await this.transcriptStore.writeSummary({
+        taskId: task.id,
+        label: task.label,
+        status: task.status,
+        cycleCount: task.cycleCount,
+        completedAt: task.lastCompletedAt ?? task.updatedAt,
+        errorCode: task.lastErrorCode,
+        summary,
+      });
+    } catch (error) {
+      console.error(`[scheduler] failed to persist task summary for ${task.id}:`, error);
+    }
   }
 
   private async readSnapshot(): Promise<SchedulerSnapshot> {

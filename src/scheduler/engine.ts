@@ -189,8 +189,8 @@ export class SchedulerEngine implements SchedulerTaskApi {
     return this.deps.taskStore.markRunning(taskId, cycleId, runId);
   }
 
-  async complete(taskId: string, cycleId: string, nextDueAt?: string, observationDigest?: string): Promise<ScheduledTaskV1> {
-    return this.deps.taskStore.completeCycle({ taskId, cycleId, nextDueAt, observationDigest });
+  async complete(taskId: string, cycleId: string, nextDueAt?: string, observationDigest?: string, completionSummary?: string): Promise<ScheduledTaskV1> {
+    return this.deps.taskStore.completeCycle({ taskId, cycleId, nextDueAt, observationDigest, completionSummary });
   }
 
   async fail(taskId: string, cycleId: string, errorCode: string): Promise<ScheduledTaskV1> {

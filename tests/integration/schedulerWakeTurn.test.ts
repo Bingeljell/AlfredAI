@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { SessionStore } from "../../src/memory/sessionStore.js";
 import { RunStore } from "../../src/runs/runStore.js";
 import { ChatService } from "../../src/runner/chatService.js";
@@ -33,6 +34,7 @@ test("scheduled wake reuses task/cycle identity and avoids interactive memory pe
 
   let capturedProfile: { origin?: string; maxIterations?: number; maxToolCalls?: number; persistConversation?: boolean } | undefined;
   let capturedMessage = "";
+  let capturedSessionContext: unknown = "not-captured";
   let service!: ChatService;
   const engine = new SchedulerEngine({
     taskStore,
@@ -70,9 +72,11 @@ test("scheduled wake reuses task/cycle identity and avoids interactive memory pe
     agentMaxDurationMs: 600_000,
     agentMaxToolCalls: 18,
     agentMaxParallelTools: 3,
+    taskTranscriptStore: taskStore.transcriptStore,
     scheduler: engine,
     runLoopRunner: async (_sessionId, message, _runId, options) => {
       capturedMessage = message;
+      capturedSessionContext = options.sessionContext;
       capturedProfile = options.executionProfile;
       options.schedulerControl?.complete("Condition satisfied");
       return { status: "completed", assistantText: "completed" };
@@ -98,6 +102,7 @@ test("scheduled wake reuses task/cycle identity and avoids interactive memory pe
   assert.equal(capturedProfile?.maxIterations, 5);
   assert.equal(capturedProfile?.maxToolCalls, 5);
   assert.equal(capturedProfile?.persistConversation, false);
+  assert.equal(capturedSessionContext, undefined);
   assert.match(capturedMessage, /Deterministic Herdr terminal snapshot/);
   assert.match(capturedMessage, /TASK_COMPLETE/);
   assert.match(capturedMessage, /all checks passed/);
@@ -105,4 +110,18 @@ test("scheduled wake reuses task/cycle identity and avoids interactive memory pe
   assert.equal(runs.length, 1);
   assert.equal(runs[0]?.scheduler?.taskId, task.id);
   assert.equal((await sessionStore.getSession(session.id))?.workingMemory, undefined);
+
+  const transcript = (await readFile(taskStore.transcriptStore.transcriptPath(task.id), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as { event: string; taskId: string; instruction?: string; assistantText?: string });
+  assert.deepEqual(transcript.map((entry) => entry.event), ["turn_started", "turn_completed"]);
+  assert.equal(transcript.every((entry) => entry.taskId === task.id), true);
+  assert.match(transcript[0]?.instruction ?? "", /TASK_COMPLETE/);
+  assert.equal(transcript[1]?.assistantText, "completed");
+
+  const summary = await readFile(taskStore.transcriptStore.summaryPath(task.id), "utf8");
+  assert.match(summary, /# Task summary/);
+  assert.match(summary, /Status: completed/);
+  assert.match(summary, /completed/);
 });

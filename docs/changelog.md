@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-08-24** > `src/scheduler/taskTranscript.ts`, `src/scheduler/{taskStore,types,api,engine,watch}.ts`, `src/runner/chatService.ts`, `src/gateway/app.ts`, tests > task transcript persistence > Persist bounded scheduler coordination turns under `tasks/<taskId>/transcript.jsonl`, write terminal `task_summary.md` files, and keep scheduled observations out of interactive session memory.
+
 - **2026-08-24** > `src/scheduler/probes/{herdrAgentProbe,herdrTerminalWatcher,defaultHerdrClient}.ts`, `src/scheduler/{watch,engine,execution}.ts`, `src/gateway/app.ts`, `src/runner/chatService.ts`, tests > deterministic Herdr terminal babysitter > Normalize pane lifecycle/output into bounded `TASK_COMPLETE`, `IDLE_WAITING_INPUT`, `ERROR`, or `RUNNING` snapshots and feed state transitions directly into bounded scheduler wake turns.
 
 - **2026-08-24** > `src/gateway/{server,pidLock,processIdentity}.ts`, `tests/unit/pidLock.test.ts` > single-instance Alfred server lock > Added an atomic workspace PID lock with stale-owner recovery and ownership-safe release, set the server process title, and tagged managed descendants for clear process inspection.

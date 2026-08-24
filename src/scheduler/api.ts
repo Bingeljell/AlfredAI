@@ -29,7 +29,7 @@ export interface ScheduleTaskRequest {
 export interface SchedulerTaskApi {
   get(taskId: string): Promise<ScheduledTaskV1 | undefined>;
   attachRun(taskId: string, cycleId: string, runId: string): Promise<ScheduledTaskV1>;
-  complete(taskId: string, cycleId: string, nextDueAt?: string, observationDigest?: string): Promise<ScheduledTaskV1>;
+  complete(taskId: string, cycleId: string, nextDueAt?: string, observationDigest?: string, completionSummary?: string): Promise<ScheduledTaskV1>;
   fail(taskId: string, cycleId: string, errorCode: string): Promise<ScheduledTaskV1>;
   schedule(request: ScheduleTaskRequest, provenance: SchedulerProvenance, sessionId: string, createdByRunId: string): Promise<ScheduledTaskV1>;
   list(owner: TaskOwner, includeTerminal?: boolean): Promise<ScheduledTaskV1[]>;

@@ -42,7 +42,12 @@ export class WatchExecutor {
     if (observation.terminal) {
       await this.notify(task, cycleId, observation);
       if (observation.status === "completed") {
-        return this.options.taskStore.completeCycle({ taskId: task.id, cycleId, observationDigest: observation.digest });
+        return this.options.taskStore.completeCycle({
+          taskId: task.id,
+          cycleId,
+          observationDigest: observation.digest,
+          completionSummary: observation.summary,
+        });
       }
       return this.options.taskStore.failCycle({ taskId: task.id, cycleId, errorCode: observation.status === "missing" ? "watch_target_missing" : "watch_target_failed", terminal: true });
     }

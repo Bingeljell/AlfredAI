@@ -36,6 +36,7 @@ export interface CompleteCycleInput {
   nextDueAt?: string;
   observationDigest?: string;
   errorCode?: string;
+  completionSummary?: string;
 }
 
 export interface FailCycleInput {

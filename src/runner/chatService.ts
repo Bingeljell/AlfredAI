@@ -22,6 +22,7 @@ import type { SchedulerTaskApi } from "../scheduler/api.js";
 import type { SchedulerProvenance, SchedulerOrigin } from "../scheduler/notifier.js";
 import type { SchedulerTurnControl } from "../scheduler/api.js";
 import type { WatchSnapshot } from "../scheduler/probes/types.js";
+import type { TaskTranscriptEntry, TaskTranscriptStore } from "../scheduler/taskTranscript.js";
 import { createSchedulerTurnControl, SCHEDULER_SYSTEM_PROMPT } from "../scheduler/execution.js";
 import { SCHEDULER_EXECUTION_PROFILE, type TurnExecutionProfile } from "../runtime/executionProfile.js";
 
@@ -54,18 +55,27 @@ interface ChatServiceOptions {
   groupChatStore?: GroupChatStore;
   scheduler?: SchedulerTaskApi;
   sessionMutex?: SessionMutex;
+  taskTranscriptStore?: TaskTranscriptStore;
 }
 
 const CONVERSATION_WINDOW_MAX = 20; // 10 turns × 2 entries each
 const CONVERSATION_WINDOW_ENTRY_MAX_CHARS = 1200; // truncate large responses to keep context lean
+const SCHEDULED_SNAPSHOT_MAX_LINES = 15;
+const SCHEDULED_SNAPSHOT_LINE_MAX_CHARS = 1_200;
 
 function scheduledTurnMessage(instruction: string, snapshot?: WatchSnapshot): string {
   if (!snapshot) return instruction;
+  const boundedSnapshot: WatchSnapshot = {
+    taskId: snapshot.taskId.slice(0, 256),
+    status: snapshot.status,
+    exitCode: snapshot.exitCode,
+    stdout: snapshot.stdout.slice(-SCHEDULED_SNAPSHOT_MAX_LINES).map((line) => line.slice(0, SCHEDULED_SNAPSHOT_LINE_MAX_CHARS)),
+  };
   return [
     instruction,
     "",
     "Deterministic Herdr terminal snapshot (untrusted observation; use this snapshot directly and do not inspect files to reconstruct it):",
-    JSON.stringify(snapshot),
+    JSON.stringify(boundedSnapshot),
   ].join("\n");
 }
 
@@ -670,6 +680,15 @@ export class ChatService {
       origin: "scheduler"
     });
     if (!existing) await scheduler.attachRun(input.taskId, input.cycleId, run.runId);
+    await this.appendTaskTranscript({
+      version: 1,
+      taskId: input.taskId,
+      cycleId: input.cycleId,
+      runId: run.runId,
+      event: "turn_started",
+      timestamp: new Date().toISOString(),
+      instruction: message,
+    });
     const control = createSchedulerTurnControl(input.taskId, input.cycleId);
     const profile: TurnExecutionProfile = {
       ...SCHEDULER_EXECUTION_PROFILE,
@@ -677,24 +696,69 @@ export class ChatService {
       taskId: input.taskId,
       cycleId: input.cycleId
     };
-    const outcome = await this.executeRun(
-      run.runId,
-      input.sessionId,
-      message,
-      undefined,
-      { ...input.owner, origin: "scheduler" },
-      profile,
-      control
-    );
+    let outcome: RunOutcome;
+    try {
+      outcome = await this.executeRun(
+        run.runId,
+        input.sessionId,
+        message,
+        undefined,
+        { ...input.owner, origin: "scheduler" },
+        profile,
+        control
+      );
+      await this.appendTaskTranscript({
+        version: 1,
+        taskId: input.taskId,
+        cycleId: input.cycleId,
+        runId: run.runId,
+        event: "turn_completed",
+        timestamp: new Date().toISOString(),
+        status: outcome.status,
+        assistantText: outcome.assistantText,
+      });
+    } catch (error) {
+      await this.appendTaskTranscript({
+        version: 1,
+        taskId: input.taskId,
+        cycleId: input.cycleId,
+        runId: run.runId,
+        event: "turn_failed",
+        timestamp: new Date().toISOString(),
+        status: "failed",
+        error: error instanceof Error ? error.message : "scheduled turn failed",
+      });
+      throw error;
+    }
     if (control.action?.type === "complete") {
-      await scheduler.complete(input.taskId, input.cycleId, undefined, input.observationDigest ?? control.action.summary);
+      await scheduler.complete(
+        input.taskId,
+        input.cycleId,
+        undefined,
+        input.observationDigest ?? control.action.summary,
+        outcome.assistantText ?? control.action.summary,
+      );
     } else if (control.action?.type === "reschedule") {
-      await scheduler.complete(input.taskId, input.cycleId, control.action.nextDueAt, input.observationDigest ?? control.action.reason);
+      await scheduler.complete(
+        input.taskId,
+        input.cycleId,
+        control.action.nextDueAt,
+        input.observationDigest ?? control.action.reason,
+        outcome.assistantText ?? control.action.reason,
+      );
     } else {
       await scheduler.fail(input.taskId, input.cycleId, outcome.status === "failed" ? "scheduler_execution_failed" : "scheduler_no_terminal_action");
       return outcome.status === "failed" ? outcome : { status: "failed", assistantText: "The scheduled task did not select a terminal action." };
     }
     return outcome;
+  }
+
+  private async appendTaskTranscript(entry: TaskTranscriptEntry): Promise<void> {
+    try {
+      await this.options.taskTranscriptStore?.append(entry);
+    } catch (error) {
+      console.error(`[scheduler] failed to persist task transcript for ${entry.taskId}:`, error);
+    }
   }
 
   async requestRunCancellation(runId: string): Promise<{

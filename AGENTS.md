@@ -1,5 +1,5 @@
 # Repo Guidelines
-
+1. Commits and PRs should not include any co-authorshitp - claude, codex, whatever...
 ---
 
 ## For Alfred — Codebase Map

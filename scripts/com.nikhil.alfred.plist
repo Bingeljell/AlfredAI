@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.nikhil.alfred</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/nikhilshahane/projects/AlfredAI/node_modules/tsx/dist/cli.mjs</string>
+    <string>/Users/nikhilshahane/projects/AlfredAI/src/gateway/server.ts</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/nikhilshahane</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/nikhilshahane/.local/bin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/nikhilshahane/projects/AlfredAI/logs/alfred.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/nikhilshahane/projects/AlfredAI/logs/alfred-error.log</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/nikhilshahane/projects/AlfredAI</string>
+</dict>
+</plist>

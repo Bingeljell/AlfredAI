@@ -12,6 +12,8 @@ const POLL_TIMEOUT_MS = 600_000; // 10 min max
 const WORKING_ON_IT_DELAY_MS = 8_000;
 const HEARTBEAT_INTERVAL_MS = 15 * 60 * 1_000; // 15 min
 const INLINE_TEXT_MAX_CHARS = 3_800; // Telegram message limit is 4096
+const TELEGRAM_INGRESS_DEDUPE_TTL_MS = 10 * 60 * 1_000;
+const TELEGRAM_INGRESS_DEDUPE_MAX_ENTRIES = 1_000;
 
 const HELP_TEXT = `
 Alfred commands:
@@ -25,11 +27,76 @@ Alfred commands:
 Any other message is sent to Alfred as a task.
 `.trim();
 
+interface TelegramIngressDeduperOptions {
+  maxEntries?: number;
+  ttlMs?: number;
+  now?: () => number;
+}
+
+/** Bounded in-memory sliding-window dedupe for Telegram polling redeliveries. */
+export class TelegramIngressDeduper {
+  private readonly entries = new Map<string, number>();
+  private readonly maxEntries: number;
+  private readonly ttlMs: number;
+  private readonly now: () => number;
+
+  constructor(options: TelegramIngressDeduperOptions = {}) {
+    this.maxEntries = Math.max(1, options.maxEntries ?? TELEGRAM_INGRESS_DEDUPE_MAX_ENTRIES);
+    this.ttlMs = Math.max(1, options.ttlMs ?? TELEGRAM_INGRESS_DEDUPE_TTL_MS);
+    this.now = options.now ?? Date.now;
+  }
+
+  hasSeen(key: string): boolean {
+    const now = this.now();
+    this.prune(now);
+
+    const seenAt = this.entries.get(key);
+    if (seenAt !== undefined) {
+      // Refresh the insertion order and TTL so repeated polling retries stay
+      // suppressed without allowing the cache to grow beyond its bound.
+      this.entries.delete(key);
+      this.entries.set(key, now);
+      return true;
+    }
+
+    this.entries.set(key, now);
+    while (this.entries.size > this.maxEntries) {
+      const oldest = this.entries.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.entries.delete(oldest);
+    }
+    return false;
+  }
+
+  private prune(now: number): void {
+    for (const [key, seenAt] of this.entries) {
+      if (now - seenAt >= this.ttlMs) {
+        this.entries.delete(key);
+      }
+    }
+  }
+}
+
+type TelegramMessageWithOptionalUpdateId = TelegramBot.Message & { update_id?: number };
+
+export function telegramIngressKey(message: TelegramMessageWithOptionalUpdateId): string | undefined {
+  if (typeof message.update_id === "number") {
+    return `update:${message.update_id}`;
+  }
+  if (typeof message.chat?.id !== "number" || typeof message.message_id !== "number") {
+    return undefined;
+  }
+  return `message:${message.chat.id}:${message.message_id}`;
+}
+
 export class TelegramAdapter implements ChannelAdapter {
   readonly platform = "telegram";
 
   private readonly bot: TelegramBot;
   private readonly channelStore: ChannelSessionStore;
+  private readonly ingressDeduper = new TelegramIngressDeduper();
+  private readonly activeChatTurns = new Map<number, number>();
+  private readonly outboundTails = new Map<number, Promise<void>>();
   // chatId → "awaiting_confirm" when /newsession was issued
   private readonly pendingConfirm = new Map<number, true>();
 
@@ -39,14 +106,20 @@ export class TelegramAdapter implements ChannelAdapter {
     private readonly sessionStore: SessionStore,
     private readonly runStore: RunStore,
     private readonly workspaceDir: string,
-    private readonly allowedUserIds: number[] = []
+    private readonly allowedUserIds: number[] = [],
+    bot?: TelegramBot
   ) {
-    this.bot = new TelegramBot(token, { polling: true });
+    this.bot = bot ?? new TelegramBot(token, { polling: true });
     this.channelStore = new ChannelSessionStore(workspaceDir);
   }
 
   async start(): Promise<void> {
     this.bot.on("message", (msg) => {
+      const key = telegramIngressKey(msg as TelegramMessageWithOptionalUpdateId);
+      if (key && this.ingressDeduper.hasSeen(key)) {
+        console.debug(`[telegram] ignored duplicate ingress update (${key})`);
+        return;
+      }
       void this.handleMessage(msg).catch((error) => {
         console.error("[telegram] unhandled error:", error);
       });
@@ -180,80 +253,150 @@ export class TelegramAdapter implements ChannelAdapter {
   // ─── run execution ─────────────────────────────────────────────────────────
 
   private async handleRun(chatId: number, text: string, principalId: string): Promise<void> {
-    const sessionId = await this.getOrCreateSessionId(chatId);
-    const record = await this.channelStore.get(this.channelKey(chatId));
+    // Reserve the final-response slot before any await. This preserves ingress
+    // order even when a later run completes/polls before an earlier one has
+    // finished its Telegram API calls.
+    const deliverOutbound = this.reserveOutboundDelivery(chatId);
+    const activeTurnCount = this.activeChatTurns.get(chatId) ?? 0;
+    const wasBusy = activeTurnCount > 0;
+    this.activeChatTurns.set(chatId, activeTurnCount + 1);
+    if (wasBusy) {
+      void this.sendTypingAction(chatId);
+    }
 
-    // Prepend channel label context so Alfred knows which mode it's in
-    const message = record?.label
-      ? `[Channel context: ${record.label}]\n\n${text}`
-      : text;
-
-    // Submit as async job — returns runId immediately
-    const result = await this.chatService.handleTurn({
-      sessionId,
-      message,
-      requestJob: true,
-      channelKey: this.channelKey(chatId),
-      principalId,
-      origin: "telegram"
-    });
-
-    const runId = result.runId;
-
-    // Edit-in-place progress tracking
+    let deliveryStarted = false;
+    let workingTimer: ReturnType<typeof setTimeout> | undefined;
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+    let unsubscribe: (() => void) | undefined;
     let progressMsgId: number | null = null;
     let lastStatus = "Working on it...";
 
-    const editProgress = async (text: string) => {
-      lastStatus = text;
-      if (progressMsgId !== null) {
-        await this.bot.editMessageText(text, { chat_id: chatId, message_id: progressMsgId }).catch(() => {});
-      }
+    const cleanupProgress = (): void => {
+      if (workingTimer) clearTimeout(workingTimer);
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      unsubscribe?.();
     };
 
-    // Send initial "Working on it..." after delay, then subscribe to events for live updates
-    const startedAt = Date.now();
-    const workingTimer = setTimeout(async () => {
-      try {
-        const msg = await this.bot.sendMessage(chatId, lastStatus);
-        progressMsgId = msg.message_id;
-      } catch { /* non-fatal */ }
-    }, WORKING_ON_IT_DELAY_MS);
-
-    const unsubscribe = this.runStore.subscribeToRun(runId, (event) => {
-      const line = distillProgressLine(event);
-      if (line) void editProgress(line);
-    });
-
-    // Heartbeat — edit the progress message rather than sending a new one
-    const heartbeatTimer = setInterval(() => {
-      const elapsedMin = Math.round((Date.now() - startedAt) / 60_000);
-      void editProgress(`${lastStatus} _(${elapsedMin}m)_`);
-    }, HEARTBEAT_INTERVAL_MS);
-    heartbeatTimer.unref?.();
-
     try {
+      const sessionId = await this.getOrCreateSessionId(chatId);
+      const record = await this.channelStore.get(this.channelKey(chatId));
+
+      // Prepend channel label context so Alfred knows which mode it's in
+      const message = record?.label
+        ? `[Channel context: ${record.label}]\n\n${text}`
+        : text;
+
+      // Submit as async job — returns runId immediately. Any queued feedback
+      // above is transport-only and never enters ChatService/session memory.
+      const result = await this.chatService.handleTurn({
+        sessionId,
+        message,
+        requestJob: true,
+        channelKey: this.channelKey(chatId),
+        principalId,
+        origin: "telegram"
+      });
+
+      const runId = result.runId;
+      const editProgress = async (statusText: string) => {
+        lastStatus = statusText;
+        if (progressMsgId !== null) {
+          await this.bot.editMessageText(statusText, { chat_id: chatId, message_id: progressMsgId }).catch(() => {});
+        }
+      };
+
+      // Send initial "Working on it..." after delay, then subscribe to events for live updates
+      const startedAt = Date.now();
+      workingTimer = setTimeout(async () => {
+        try {
+          const msg = await this.bot.sendMessage(chatId, lastStatus);
+          progressMsgId = msg.message_id;
+        } catch { /* non-fatal */ }
+      }, WORKING_ON_IT_DELAY_MS);
+
+      unsubscribe = this.runStore.subscribeToRun(runId, (event) => {
+        const line = distillProgressLine(event);
+        if (line) void editProgress(line);
+      });
+
+      // Heartbeat — edit the progress message rather than sending a new one
+      heartbeatTimer = setInterval(() => {
+        const elapsedMin = Math.round((Date.now() - startedAt) / 60_000);
+        void editProgress(`${lastStatus} _(${elapsedMin}m)_`);
+      }, HEARTBEAT_INTERVAL_MS);
+      heartbeatTimer.unref?.();
+
       const run = await this.pollUntilDone(runId);
-      clearTimeout(workingTimer);
-      clearInterval(heartbeatTimer);
-      unsubscribe();
+      deliveryStarted = true;
+      await deliverOutbound(async () => {
+        cleanupProgress();
+        try {
+          const responseText = run?.assistantText ?? "Done — no response text.";
+          await this.sendResponse(chatId, responseText);
 
-      const responseText = run?.assistantText ?? "Done — no response text.";
-      await this.sendResponse(chatId, responseText);
+          // Deliver artifacts after the answer and before the next queued
+          // turn's final response is released.
+          if (run?.artifactPaths?.length) {
+            for (const artifactPath of run.artifactPaths) {
+              await this.deliverArtifact(chatId, artifactPath);
+            }
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown delivery error";
+          await this.send(chatId, `Something went wrong delivering the result: ${message}`).catch(() => {});
+        }
+      });
+    } catch (error) {
+      cleanupProgress();
+      if (!deliveryStarted) {
+        deliveryStarted = true;
+        const message = error instanceof Error ? error.message : "Unknown error";
+        await deliverOutbound(async () => {
+          await this.send(chatId, `Something went wrong: ${message}`).catch(() => {});
+        });
+      } else {
+        console.error("[telegram] outbound delivery failed:", error);
+      }
+    } finally {
+      cleanupProgress();
+      const remainingTurns = (this.activeChatTurns.get(chatId) ?? 1) - 1;
+      if (remainingTurns > 0) {
+        this.activeChatTurns.set(chatId, remainingTurns);
+      } else {
+        this.activeChatTurns.delete(chatId);
+      }
+    }
+  }
 
-      // Deliver artifacts
-      if (run?.artifactPaths?.length) {
-        for (const artifactPath of run.artifactPaths) {
-          await this.deliverArtifact(chatId, artifactPath);
+  private reserveOutboundDelivery(chatId: number): (task: () => Promise<void>) => Promise<void> {
+    const previous = this.outboundTails.get(chatId) ?? Promise.resolve();
+    let releaseNext!: () => void;
+    const current = new Promise<void>((resolve) => {
+      releaseNext = resolve;
+    });
+    this.outboundTails.set(chatId, current);
+
+    let used = false;
+    return async (task: () => Promise<void>): Promise<void> => {
+      if (used) {
+        throw new Error("Telegram outbound reservation already used");
+      }
+      used = true;
+      // A failed earlier delivery must not strand every later reservation.
+      await previous.catch(() => undefined);
+      try {
+        await task();
+      } finally {
+        releaseNext();
+        if (this.outboundTails.get(chatId) === current) {
+          this.outboundTails.delete(chatId);
         }
       }
-    } catch (error) {
-      clearTimeout(workingTimer);
-      clearInterval(heartbeatTimer);
-      unsubscribe();
-      const msg = error instanceof Error ? error.message : "Unknown error";
-      await this.send(chatId, `Something went wrong: ${msg}`);
-    }
+    };
+  }
+
+  private async sendTypingAction(chatId: number): Promise<void> {
+    await this.bot.sendChatAction(chatId, "typing").catch(() => {});
   }
 
   private async pollUntilDone(runId: string): Promise<Awaited<ReturnType<RunStore["getRun"]>>> {

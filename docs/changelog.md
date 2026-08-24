@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-08-24** > `src/channels/telegram/adapter.ts`, `tests/unit/telegramAdapter.test.ts` > Telegram ingress deduplication and ordered queue feedback > Added bounded message/update-ID deduplication, ingress-ordered outbound reservations, busy-chat typing feedback, and transport-only progress handling so Telegram retries cannot create duplicate turns or invert final replies.
+
 - **2026-08-24** > `src/runner/chatService.ts`, `src/gateway/app.ts` > per-session turn mutex > Serialize interactive, queued, and scheduler turns for the same session through completion so concurrent ingress cannot race session context or persistence.
 
 - **2026-08-17** > `README.md` > Document autonomous scheduling setup, task behavior, safety boundaries, persistence, and HTTP controls

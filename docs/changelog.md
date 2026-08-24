@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-08-24** > `src/runner/chatService.ts`, `src/gateway/app.ts` > per-session turn mutex > Serialize interactive, queued, and scheduler turns for the same session through completion so concurrent ingress cannot race session context or persistence.
+
 - **2026-08-17** > `README.md` > Document autonomous scheduling setup, task behavior, safety boundaries, persistence, and HTTP controls
 
 - **2026-08-17** > `src/scheduler/`, `src/tools/definitions/{scheduleReminder,scheduleWake,scheduleWatch,cancelScheduledTask,listScheduledTasks,schedulerTaskComplete,schedulerTaskReschedule,runStatus,fileExists,herdrStatus}.tool.ts`, `src/{runner/chatService,runtime, gateway,agentEvents,config,channels,types}.ts`, `tests/{unit,integration}/scheduler*.test.ts`, `README.md`, `.env.example` > autonomous wake, reminder, watch, and supervision system > Added an opt-in durable scheduler with atomic JSON snapshots and leases, deterministic delivery idempotency, provenance-aware notifications, bounded scheduler-origin turns, read-only run/file/Herdr probes, event-driven nudging, restart recovery, public scheduling tools, HTTP controls, and lifecycle integration inside the existing gateway.

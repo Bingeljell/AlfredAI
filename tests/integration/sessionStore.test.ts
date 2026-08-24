@@ -4,6 +4,7 @@ import { SessionStore } from "../../src/memory/sessionStore.js";
 import { deriveSessionOutputRecordFromRun } from "../../src/memory/sessionOutputs.js";
 import { RunStore } from "../../src/runs/runStore.js";
 import { ChatService } from "../../src/runner/chatService.js";
+import { InMemoryQueue } from "../../src/workers/inMemoryQueue.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
 
 test("session store creates and lists sessions", async () => {
@@ -122,6 +123,48 @@ test("chat service injects session context on follow-up turns and supports /news
 
   const afterReset = await sessionStore.getSession(session.id);
   assert.equal(afterReset?.workingMemory, undefined);
+});
+
+test("chat service serializes concurrent turns for the same session", async () => {
+  const workspace = await createTempWorkspace("alfred-chat-mutex");
+  const sessionStore = new SessionStore(workspace);
+  const runStore = new RunStore(workspace);
+  const session = await sessionStore.createSession("Mutex");
+  const started: string[] = [];
+  let active = 0;
+  let maxActive = 0;
+
+  const chatService = new ChatService({
+    sessionStore,
+    runStore,
+    searchManager: {} as never,
+    queue: new InMemoryQueue(2),
+    workspaceDir: workspace,
+    searchMaxResults: 15,
+    fastScrapeCount: 5,
+    enablePlaywright: false,
+    maxSteps: 4,
+    browseConcurrency: 3,
+    agentMaxDurationMs: 60_000,
+    agentMaxToolCalls: 8,
+    agentMaxParallelTools: 2,
+    runLoopRunner: async (_sessionId, message) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      started.push(message);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      active -= 1;
+      return { status: "completed", assistantText: `Handled: ${message}` };
+    }
+  });
+
+  const first = chatService.handleTurn({ sessionId: session.id, message: "first" });
+  const second = chatService.handleTurn({ sessionId: session.id, message: "second" });
+  const results = await Promise.all([first, second]);
+
+  assert.equal(maxActive, 1);
+  assert.deepEqual(started, ["first", "second"]);
+  assert.deepEqual(results.map((result) => result.status), ["completed", "completed"]);
 });
 
 test("session output recovery keeps placeholder writer artifacts at metadata-only availability", () => {

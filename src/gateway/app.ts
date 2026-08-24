@@ -10,7 +10,7 @@ import { BraveProvider } from "../tools/search/providers/braveProvider.js";
 import { BrightDataProvider } from "../tools/search/providers/brightDataProvider.js";
 import { SearchManager } from "../tools/search/searchManager.js";
 import { InMemoryQueue } from "../workers/inMemoryQueue.js";
-import { ChatService } from "../runner/chatService.js";
+import { ChatService, SessionMutex } from "../runner/chatService.js";
 import { ChannelSessionStore } from "../channels/telegram/channelSessionStore.js";
 import { GroupChatStore } from "../memory/groupChatStore.js";
 import { AgentEventSchema } from "../agentEvents/schema.js";
@@ -150,6 +150,7 @@ const searchManager = new SearchManager({
 });
 
 const groupChatStore = new GroupChatStore(appConfig.workspaceDir);
+const sessionMutex = new SessionMutex();
 
 // ── Agent event webhook (docs/architecture/agent_event_webhook_spec.md) ──────
 // Push notifications go to Telegram when both a bot token and an alert chat id
@@ -230,6 +231,7 @@ const schedulerEngine = new SchedulerEngine({
 agentEventDispatcher.setSchedulerHook(schedulerEngine);
 
 const chatService = new ChatService({
+  sessionMutex,
   sessionStore,
   runStore,
   searchManager,

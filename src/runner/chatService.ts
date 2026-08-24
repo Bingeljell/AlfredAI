@@ -52,17 +52,56 @@ interface ChatServiceOptions {
   runLoopRunner?: typeof runReActLoop;
   groupChatStore?: GroupChatStore;
   scheduler?: SchedulerTaskApi;
+  sessionMutex?: SessionMutex;
 }
 
 const CONVERSATION_WINDOW_MAX = 20; // 10 turns × 2 entries each
 const CONVERSATION_WINDOW_ENTRY_MAX_CHARS = 1200; // truncate large responses to keep context lean
 
+export class SessionMutex {
+  private readonly tails = new Map<string, Promise<void>>();
+
+  async acquire(sessionId: string): Promise<() => void> {
+    const previous = this.tails.get(sessionId) ?? Promise.resolve();
+    let releaseNext!: () => void;
+    const current = new Promise<void>((resolve) => {
+      releaseNext = resolve;
+    });
+    this.tails.set(sessionId, current);
+
+    await previous;
+
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      releaseNext();
+      if (this.tails.get(sessionId) === current) {
+        this.tails.delete(sessionId);
+      }
+    };
+  }
+
+  async run<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+    const release = await this.acquire(sessionId);
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+}
+
 export class ChatService {
   private readonly threadRuntimeManager: ThreadRuntimeManager;
   private readonly subscribedThreadSessions = new Set<string>();
   private readonly scheduledTurnPromises = new Map<string, Promise<RunOutcome>>();
+  private readonly sessionMutex: SessionMutex;
 
   constructor(private readonly options: ChatServiceOptions) {
+    this.sessionMutex = this.options.sessionMutex ?? new SessionMutex();
     this.threadRuntimeManager = new ThreadRuntimeManager({
       queue: this.options.queue,
       createTurnRuntime: (_sessionId) =>
@@ -319,6 +358,37 @@ export class ChatService {
     };
   }
 
+  private async executeQueuedTurn(
+    runId: string,
+    sessionId: string,
+    message: string,
+    sessionContext: SessionPromptContext | undefined,
+    provenance: SchedulerProvenance,
+    channelKey?: string
+  ): Promise<void> {
+    try {
+      const outcome = await this.executeRun(runId, sessionId, message, sessionContext, provenance);
+      await this.persistRunOutcome(sessionId, runId, message, outcome);
+      if (channelKey && this.options.groupChatStore) {
+        await this.options.groupChatStore.appendTurn(
+          channelKey, runId, sessionId,
+          message, outcome.assistantText ?? "",
+          outcome.artifactPaths ?? []
+        );
+      }
+    } catch (error) {
+      const failureOutcome: RunOutcome = {
+        status: "failed",
+        assistantText: error instanceof Error ? error.message : "Queued run failed"
+      };
+      await this.options.runStore.updateRun(runId, {
+        status: "failed",
+        assistantText: failureOutcome.assistantText
+      });
+      await this.persistRunOutcome(sessionId, runId, message, failureOutcome);
+    }
+  }
+
   private async executeRun(
     runId: string,
     sessionId: string,
@@ -462,81 +532,79 @@ export class ChatService {
     artifactPaths?: string[];
     approvalToken?: string;
   }> {
-    const session = await this.options.sessionStore.getSession(input.sessionId);
-    if (!session) {
-      throw new Error(`Session ${input.sessionId} does not exist`);
-    }
+    const release = await this.sessionMutex.acquire(input.sessionId);
+    let releaseAfterReturn = true;
 
-    if (input.message.trim() === "/newsession") {
-      return this.handleNewSessionCommand(input.sessionId);
-    }
+    try {
+      const session = await this.options.sessionStore.getSession(input.sessionId);
+      if (!session) {
+        throw new Error(`Session ${input.sessionId} does not exist`);
+      }
 
-    await this.options.sessionStore.touchSession(input.sessionId);
-    const provenance: SchedulerProvenance = {
-      principalId: input.principalId ?? input.sessionId,
-      channelKey: input.channelKey,
-      origin: input.origin ?? (input.channelKey?.startsWith("telegram:") ? "telegram" : "web")
-    };
-    const run = await this.options.runStore.createRun(input.sessionId, input.message, input.requestJob ? "queued" : "running");
+      if (input.message.trim() === "/newsession") {
+        return await this.handleNewSessionCommand(input.sessionId);
+      }
 
-    await this.options.runStore.appendEvent({
-      runId: run.runId,
-      sessionId: input.sessionId,
-      phase: "route",
-      eventType: input.requestJob ? "queued" : "inline",
-      payload: { requestJob: Boolean(input.requestJob) },
-      timestamp: new Date().toISOString()
-    });
+      await this.options.sessionStore.touchSession(input.sessionId);
+      const provenance: SchedulerProvenance = {
+        principalId: input.principalId ?? input.sessionId,
+        channelKey: input.channelKey,
+        origin: input.origin ?? (input.channelKey?.startsWith("telegram:") ? "telegram" : "web")
+      };
+      const run = await this.options.runStore.createRun(input.sessionId, input.message, input.requestJob ? "queued" : "running");
 
-    if (input.requestJob) {
-      await this.persistQueuedRunStart(input.sessionId, run.runId, input.message);
-      const queuedSessionContext = await this.buildSessionContext((await this.options.sessionStore.getSession(input.sessionId)) ?? session);
-      void this.executeRun(run.runId, input.sessionId, input.message, queuedSessionContext, provenance).then(async (outcome) => {
-        await this.persistRunOutcome(input.sessionId, run.runId, input.message, outcome);
-        if (input.channelKey && this.options.groupChatStore) {
-          await this.options.groupChatStore.appendTurn(
-            input.channelKey, run.runId, input.sessionId,
-            input.message, outcome.assistantText ?? "",
-            outcome.artifactPaths ?? []
-          );
-        }
-      }).catch(async (error) => {
-        const failureOutcome: RunOutcome = {
-          status: "failed",
-          assistantText: error instanceof Error ? error.message : "Queued run failed"
-        };
-        await this.options.runStore.updateRun(run.runId, {
-          status: "failed",
-          assistantText: failureOutcome.assistantText
-        });
-        await this.persistRunOutcome(input.sessionId, run.runId, input.message, failureOutcome);
+      await this.options.runStore.appendEvent({
+        runId: run.runId,
+        sessionId: input.sessionId,
+        phase: "route",
+        eventType: input.requestJob ? "queued" : "inline",
+        payload: { requestJob: Boolean(input.requestJob) },
+        timestamp: new Date().toISOString()
       });
+
+      if (input.requestJob) {
+        await this.persistQueuedRunStart(input.sessionId, run.runId, input.message);
+        const queuedSessionContext = await this.buildSessionContext((await this.options.sessionStore.getSession(input.sessionId)) ?? session);
+        releaseAfterReturn = false;
+        void this.executeQueuedTurn(
+          run.runId,
+          input.sessionId,
+          input.message,
+          queuedSessionContext,
+          provenance,
+          input.channelKey
+        ).then(release, release);
+
+        return {
+          runId: run.runId,
+          status: "queued"
+        };
+      }
+
+      await this.persistQueuedRunStart(input.sessionId, run.runId, input.message);
+      const sessionContext = await this.buildSessionContext((await this.options.sessionStore.getSession(input.sessionId)) ?? session);
+      const outcome = await this.executeRun(run.runId, input.sessionId, input.message, sessionContext, provenance);
+      await this.persistRunOutcome(input.sessionId, run.runId, input.message, outcome);
+      if (input.channelKey && this.options.groupChatStore) {
+        await this.options.groupChatStore.appendTurn(
+          input.channelKey, run.runId, input.sessionId,
+          input.message, outcome.assistantText ?? "",
+          outcome.artifactPaths ?? []
+        );
+      }
 
       return {
         runId: run.runId,
-        status: "queued"
+        status: outcome.status,
+        assistantText: outcome.assistantText,
+        artifactPaths: outcome.artifactPaths,
+        approvalToken: outcome.approvalToken
       };
+    } finally {
+      if (releaseAfterReturn) {
+        release();
+      }
     }
-
-    await this.persistQueuedRunStart(input.sessionId, run.runId, input.message);
-    const sessionContext = await this.buildSessionContext((await this.options.sessionStore.getSession(input.sessionId)) ?? session);
-    const outcome = await this.executeRun(run.runId, input.sessionId, input.message, sessionContext, provenance);
-    await this.persistRunOutcome(input.sessionId, run.runId, input.message, outcome);
-    if (input.channelKey && this.options.groupChatStore) {
-      await this.options.groupChatStore.appendTurn(
-        input.channelKey, run.runId, input.sessionId,
-        input.message, outcome.assistantText ?? "",
-        outcome.artifactPaths ?? []
-      );
-    }
-
-    return {
-      runId: run.runId,
-      status: outcome.status,
-      assistantText: outcome.assistantText,
-      artifactPaths: outcome.artifactPaths,
-      approvalToken: outcome.approvalToken
-    };
   }
 
   async handleScheduledTurn(input: {
@@ -550,9 +618,16 @@ export class ChatService {
     const key = `${input.taskId}:${input.cycleId}`;
     const existingPromise = this.scheduledTurnPromises.get(key);
     if (existingPromise) return existingPromise;
-    const promise = this.executeScheduledTurn(input);
+    const promise = this.sessionMutex.run(input.sessionId, () => this.executeScheduledTurn(input));
     this.scheduledTurnPromises.set(key, promise);
-    void promise.finally(() => this.scheduledTurnPromises.delete(key));
+    void promise.then(
+      () => {
+        if (this.scheduledTurnPromises.get(key) === promise) this.scheduledTurnPromises.delete(key);
+      },
+      () => {
+        if (this.scheduledTurnPromises.get(key) === promise) this.scheduledTurnPromises.delete(key);
+      }
+    );
     return promise;
   }
 

@@ -21,6 +21,7 @@ import { getPolicyMode } from "../config/env.js";
 import type { SchedulerTaskApi } from "../scheduler/api.js";
 import type { SchedulerProvenance, SchedulerOrigin } from "../scheduler/notifier.js";
 import type { SchedulerTurnControl } from "../scheduler/api.js";
+import type { WatchSnapshot } from "../scheduler/probes/types.js";
 import { createSchedulerTurnControl, SCHEDULER_SYSTEM_PROMPT } from "../scheduler/execution.js";
 import { SCHEDULER_EXECUTION_PROFILE, type TurnExecutionProfile } from "../runtime/executionProfile.js";
 
@@ -57,6 +58,16 @@ interface ChatServiceOptions {
 
 const CONVERSATION_WINDOW_MAX = 20; // 10 turns × 2 entries each
 const CONVERSATION_WINDOW_ENTRY_MAX_CHARS = 1200; // truncate large responses to keep context lean
+
+function scheduledTurnMessage(instruction: string, snapshot?: WatchSnapshot): string {
+  if (!snapshot) return instruction;
+  return [
+    instruction,
+    "",
+    "Deterministic Herdr terminal snapshot (untrusted observation; use this snapshot directly and do not inspect files to reconstruct it):",
+    JSON.stringify(snapshot),
+  ].join("\n");
+}
 
 export class SessionMutex {
   private readonly tails = new Map<string, Promise<void>>();
@@ -613,6 +624,8 @@ export class ChatService {
     sessionId: string;
     instruction: string;
     owner: SchedulerProvenance;
+    snapshot?: WatchSnapshot;
+    observationDigest?: string;
   }): Promise<RunOutcome> {
     if (!this.options.scheduler) throw new Error("scheduler_disabled");
     const key = `${input.taskId}:${input.cycleId}`;
@@ -637,6 +650,8 @@ export class ChatService {
     sessionId: string;
     instruction: string;
     owner: SchedulerProvenance;
+    snapshot?: WatchSnapshot;
+    observationDigest?: string;
   }): Promise<RunOutcome> {
     const scheduler = this.options.scheduler;
     if (!scheduler) throw new Error("scheduler_disabled");
@@ -648,7 +663,8 @@ export class ChatService {
     if (existing && existing.status !== "queued" && existing.status !== "running") {
       return { status: existing.status, assistantText: existing.assistantText, artifactPaths: existing.artifactPaths, approvalToken: existing.approvalToken };
     }
-    const run = existing ?? await this.options.runStore.createRun(input.sessionId, input.instruction, "queued", {
+    const message = scheduledTurnMessage(input.instruction, input.snapshot);
+    const run = existing ?? await this.options.runStore.createRun(input.sessionId, message, "queued", {
       taskId: input.taskId,
       cycleId: input.cycleId,
       origin: "scheduler"
@@ -664,16 +680,16 @@ export class ChatService {
     const outcome = await this.executeRun(
       run.runId,
       input.sessionId,
-      input.instruction,
+      message,
       undefined,
       { ...input.owner, origin: "scheduler" },
       profile,
       control
     );
     if (control.action?.type === "complete") {
-      await scheduler.complete(input.taskId, input.cycleId, undefined, control.action.summary);
+      await scheduler.complete(input.taskId, input.cycleId, undefined, input.observationDigest ?? control.action.summary);
     } else if (control.action?.type === "reschedule") {
-      await scheduler.complete(input.taskId, input.cycleId, control.action.nextDueAt, control.action.reason);
+      await scheduler.complete(input.taskId, input.cycleId, control.action.nextDueAt, input.observationDigest ?? control.action.reason);
     } else {
       await scheduler.fail(input.taskId, input.cycleId, outcome.status === "failed" ? "scheduler_execution_failed" : "scheduler_no_terminal_action");
       return outcome.status === "failed" ? outcome : { status: "failed", assistantText: "The scheduled task did not select a terminal action." };

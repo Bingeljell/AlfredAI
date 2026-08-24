@@ -1,7 +1,7 @@
 import { SCHEDULER_MIN_INTERVAL_MS } from "./constants.js";
 import { SchedulerDeliveryStore } from "./deliveryStore.js";
 import type { OutboundNotifier } from "./notifier.js";
-import type { ProbeResult } from "./probes/types.js";
+import type { ProbeResult, WatchSnapshot } from "./probes/types.js";
 import type { ScheduledTaskV1 } from "./types.js";
 import { SchedulerTaskStore } from "./taskStore.js";
 
@@ -10,7 +10,7 @@ export interface WatchExecutorOptions {
   deliveryStore: SchedulerDeliveryStore;
   notifier: OutboundNotifier;
   probe: (task: ScheduledTaskV1, previousDigest?: string) => Promise<ProbeResult>;
-  executeWake?: (task: ScheduledTaskV1, cycleId: string) => Promise<ScheduledTaskV1>;
+  executeWake?: (task: ScheduledTaskV1, cycleId: string, snapshot?: WatchSnapshot, observationDigest?: string) => Promise<ScheduledTaskV1>;
   nowMs?: () => number;
 }
 
@@ -35,6 +35,10 @@ export class WatchExecutor {
       });
     }
 
+    if (observation.terminal && observation.changed && observation.snapshot && task.instruction && this.options.executeWake) {
+      return this.options.executeWake(task, cycleId, observation.snapshot, observation.digest);
+    }
+
     if (observation.terminal) {
       await this.notify(task, cycleId, observation);
       if (observation.status === "completed") {
@@ -44,7 +48,7 @@ export class WatchExecutor {
     }
 
     if (observation.changed && task.instruction && this.options.executeWake) {
-      return this.options.executeWake(task, cycleId);
+      return this.options.executeWake(task, cycleId, observation.snapshot, observation.digest);
     }
 
     return this.options.taskStore.completeCycle({
@@ -83,4 +87,3 @@ export class WatchExecutor {
     return Math.max(SCHEDULER_MIN_INTERVAL_MS, (task.intervalSeconds ?? 60) * 1_000);
   }
 }
-

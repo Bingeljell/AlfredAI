@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-08-24** > `src/scheduler/probes/{herdrAgentProbe,herdrTerminalWatcher,defaultHerdrClient}.ts`, `src/scheduler/{watch,engine,execution}.ts`, `src/gateway/app.ts`, `src/runner/chatService.ts`, tests > deterministic Herdr terminal babysitter > Normalize pane lifecycle/output into bounded `TASK_COMPLETE`, `IDLE_WAITING_INPUT`, `ERROR`, or `RUNNING` snapshots and feed state transitions directly into bounded scheduler wake turns.
+
 - **2026-08-24** > `src/gateway/{server,pidLock,processIdentity}.ts`, `tests/unit/pidLock.test.ts` > single-instance Alfred server lock > Added an atomic workspace PID lock with stale-owner recovery and ownership-safe release, set the server process title, and tagged managed descendants for clear process inspection.
 
 - **2026-08-24** > `src/channels/telegram/adapter.ts`, `tests/unit/telegramAdapter.test.ts` > Telegram ingress deduplication and ordered queue feedback > Added bounded message/update-ID deduplication, ingress-ordered outbound reservations, busy-chat typing feedback, and transport-only progress handling so Telegram retries cannot create duplicate turns or invert final replies.

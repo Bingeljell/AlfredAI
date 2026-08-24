@@ -15,6 +15,7 @@ import type { ScheduleTaskRequest, SchedulerTaskApi } from "./api.js";
 import type { SchedulerProvenance } from "./notifier.js";
 import type { TaskOwner } from "./types.js";
 import type { WatchExecutor } from "./watch.js";
+import type { WatchSnapshot } from "./probes/types.js";
 
 export interface SchedulerRunStatus {
   status: "queued" | "running" | "completed" | "failed" | "cancelled" | "unknown";
@@ -26,7 +27,7 @@ export interface SchedulerEngineDeps {
   taskRunLog: SchedulerTaskRunLog;
   reminderExecutor?: ReminderExecutor;
   watchExecutor?: WatchExecutor;
-  executeWake?: (task: ScheduledTaskV1, cycleId: string) => Promise<ScheduledTaskV1>;
+  executeWake?: (task: ScheduledTaskV1, cycleId: string, snapshot?: WatchSnapshot, observationDigest?: string) => Promise<ScheduledTaskV1>;
   lookupRun?: (runId: string) => Promise<SchedulerRunStatus | undefined>;
   requestRunCancellation?: (runId: string) => Promise<void>;
   clock?: SchedulerClock;

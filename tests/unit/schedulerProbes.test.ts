@@ -34,12 +34,24 @@ test("file probe is workspace-scoped and reports meaningful changes", async () =
 });
 
 test("Herdr probe is read-only, typed, and detects terminal states", async () => {
+  let output = "still working";
   const probe = new HerdrAgentProbe({
-    async getAgentStatus() { return { status: "completed", output: "finished" }; }
+    async getAgentStatus() { return { status: "working" }; },
+    async readPane() { return output; }
   });
-  const result = await probe.probe({ type: "herdr_agent", workspaceId: "w1", paneId: "p1" });
+  const running = await probe.probe({ type: "herdr_agent", workspaceId: "w1", paneId: "p1" }, undefined, "task-1");
+  assert.equal(running.status, "pending");
+  assert.equal(running.terminal, false);
+  assert.equal(running.snapshot?.taskId, "task-1");
+
+  output = "still working with more output";
+  const stillRunning = await probe.probe({ type: "herdr_agent", workspaceId: "w1", paneId: "p1" }, running.digest, "task-1");
+  assert.equal(stillRunning.changed, false);
+
+  output = "finished\nTASK_COMPLETE";
+  const result = await probe.probe({ type: "herdr_agent", workspaceId: "w1", paneId: "p1" }, running.digest, "task-1");
   assert.equal(result.status, "completed");
   assert.equal(result.terminal, true);
-  assert.equal(result.changed, false);
+  assert.equal(result.changed, true);
+  assert.equal(result.snapshot?.status, "TASK_COMPLETE");
 });
-

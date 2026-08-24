@@ -32,6 +32,7 @@ test("scheduled wake reuses task/cycle identity and avoids interactive memory pe
   await deliveryStore.init();
 
   let capturedProfile: { origin?: string; maxIterations?: number; maxToolCalls?: number; persistConversation?: boolean } | undefined;
+  let capturedMessage = "";
   let service!: ChatService;
   const engine = new SchedulerEngine({
     taskStore,
@@ -45,6 +46,12 @@ test("scheduled wake reuses task/cycle identity and avoids interactive memory pe
         sessionId: task.owner.sessionId,
         instruction: task.instruction ?? "Check",
         owner: { principalId: task.owner.principalId, channelKey: task.owner.channelKey, origin: "scheduler" },
+        snapshot: {
+          taskId: task.id,
+          status: "TASK_COMPLETE",
+          exitCode: 0,
+          stdout: ["all checks passed", "TASK_COMPLETE"],
+        },
       });
       return (await taskStore.get(task.id)) ?? task;
     },
@@ -64,7 +71,8 @@ test("scheduled wake reuses task/cycle identity and avoids interactive memory pe
     agentMaxToolCalls: 18,
     agentMaxParallelTools: 3,
     scheduler: engine,
-    runLoopRunner: async (_sessionId, _message, _runId, options) => {
+    runLoopRunner: async (_sessionId, message, _runId, options) => {
+      capturedMessage = message;
       capturedProfile = options.executionProfile;
       options.schedulerControl?.complete("Condition satisfied");
       return { status: "completed", assistantText: "completed" };
@@ -90,6 +98,9 @@ test("scheduled wake reuses task/cycle identity and avoids interactive memory pe
   assert.equal(capturedProfile?.maxIterations, 5);
   assert.equal(capturedProfile?.maxToolCalls, 5);
   assert.equal(capturedProfile?.persistConversation, false);
+  assert.match(capturedMessage, /Deterministic Herdr terminal snapshot/);
+  assert.match(capturedMessage, /TASK_COMPLETE/);
+  assert.match(capturedMessage, /all checks passed/);
   const runs = await runStore.listRuns(session.id, 10);
   assert.equal(runs.length, 1);
   assert.equal(runs[0]?.scheduler?.taskId, task.id);

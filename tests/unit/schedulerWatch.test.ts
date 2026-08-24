@@ -48,3 +48,59 @@ test("unchanged nonterminal watches reschedule without an LLM or notification", 
   assert.equal(result.cycleCount, 1);
 });
 
+test("a Herdr terminal transition feeds its structured snapshot into the wake turn", async () => {
+  const workspace = await createTempWorkspace("scheduler-watch-herdr-wake");
+  let now = Date.parse("2026-08-17T10:00:10.000Z");
+  const taskStore = new SchedulerTaskStore({ workspaceDir: workspace, nowMs: () => now, instanceId: "herdr-watch-task" });
+  const deliveryStore = new SchedulerDeliveryStore({ workspaceDir: workspace, nowMs: () => now, instanceId: "herdr-watch-delivery" });
+  await taskStore.init();
+  await deliveryStore.init();
+  const task = await taskStore.create({
+    kind: "watch",
+    label: "herdr",
+    owner: { sessionId: "session-1", principalId: "principal-1" },
+    createdByRunId: "run-1",
+    dueAt: "2026-08-17T10:00:20.000Z",
+    instruction: "Summarize the delegated task.",
+    watch: { type: "herdr_agent", workspaceId: "w1", paneId: "w1:p1" },
+  });
+  now += 10_000;
+  const claim = await taskStore.claim(task.id, task.updatedAt);
+  assert.equal(claim.claimed, true);
+  if (!claim.claimed) return;
+  await taskStore.markRunning(task.id, claim.cycleId);
+
+  let receivedSnapshot: unknown;
+  const executor = new WatchExecutor({
+    taskStore,
+    deliveryStore,
+    notifier: { async send() { return { delivered: true }; } },
+    probe: async () => ({
+      status: "completed" as const,
+      digest: "terminal-digest",
+      summary: "The Herdr task completed.",
+      terminal: true,
+      changed: true,
+      snapshot: {
+        taskId: task.id,
+        status: "TASK_COMPLETE" as const,
+        exitCode: 0,
+        stdout: ["tests passed", "TASK_COMPLETE"],
+      },
+    }),
+    executeWake: async (wakeTask, cycleId, snapshot) => {
+      receivedSnapshot = snapshot;
+      return taskStore.completeCycle({ taskId: wakeTask.id, cycleId, observationDigest: "terminal-digest" });
+    },
+    nowMs: () => now,
+  });
+
+  const result = await executor.execute(claim.task, claim.cycleId);
+  assert.deepEqual(receivedSnapshot, {
+    taskId: task.id,
+    status: "TASK_COMPLETE",
+    exitCode: 0,
+    stdout: ["tests passed", "TASK_COMPLETE"],
+  });
+  assert.equal(result.status, "completed");
+});

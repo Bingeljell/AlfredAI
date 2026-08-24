@@ -23,6 +23,7 @@ import {
 import type { AgentEventNotifier } from "../agentEvents/notifier.js";
 import { AgentEventStore } from "../agentEvents/eventStore.js";
 import type { ScheduledTaskV1 } from "../scheduler/types.js";
+import type { WatchSnapshot } from "../scheduler/probes/types.js";
 import { SchedulerTaskStore } from "../scheduler/taskStore.js";
 import { SchedulerDeliveryStore } from "../scheduler/deliveryStore.js";
 import { SchedulerTaskRunLog } from "../scheduler/taskRunLog.js";
@@ -182,7 +183,7 @@ const schedulerNotifier = new RoutingOutboundNotifier(
     : undefined
 );
 const schedulerTaskRunLog = new SchedulerTaskRunLog(appConfig.workspaceDir);
-let scheduledWakeExecutor: ((task: ScheduledTaskV1, cycleId: string) => Promise<ScheduledTaskV1>) | undefined;
+let scheduledWakeExecutor: ((task: ScheduledTaskV1, cycleId: string, snapshot?: WatchSnapshot, observationDigest?: string) => Promise<ScheduledTaskV1>) | undefined;
 const schedulerHerdrProbe = new HerdrAgentProbe(new DefaultHerdrReadOnlyClient());
 const schedulerWatchExecutor = new WatchExecutor({
   taskStore: schedulerTaskStore,
@@ -193,12 +194,12 @@ const schedulerWatchExecutor = new WatchExecutor({
     switch (task.watch.type) {
       case "run_status": return new RunStatusProbe(runStore).probe(task.watch, previousDigest);
       case "file_exists": return new FileExistsProbe(appConfig.workspaceDir).probe(task.watch, previousDigest);
-      case "herdr_agent": return schedulerHerdrProbe.probe(task.watch, previousDigest);
+      case "herdr_agent": return schedulerHerdrProbe.probe(task.watch, previousDigest, task.id);
     }
   },
-  executeWake: async (task, cycleId) => {
+  executeWake: async (task, cycleId, snapshot, observationDigest) => {
     if (!scheduledWakeExecutor) throw new Error("scheduler_wake_executor_unavailable");
-    return scheduledWakeExecutor(task, cycleId);
+    return scheduledWakeExecutor(task, cycleId, snapshot, observationDigest);
   }
 });
 const schedulerEngine = new SchedulerEngine({
@@ -211,9 +212,9 @@ const schedulerEngine = new SchedulerEngine({
     notifier: schedulerNotifier
   }),
   watchExecutor: schedulerWatchExecutor,
-  executeWake: async (task, cycleId) => {
+  executeWake: async (task, cycleId, snapshot, observationDigest) => {
     if (!scheduledWakeExecutor) throw new Error("scheduler_wake_executor_unavailable");
-    return scheduledWakeExecutor(task, cycleId);
+    return scheduledWakeExecutor(task, cycleId, snapshot, observationDigest);
   },
   maxConcurrency: appConfig.schedulerMaxConcurrency,
   tickMaxMs: appConfig.schedulerTickMaxMs,
@@ -251,12 +252,14 @@ const chatService = new ChatService({
   scheduler: appConfig.schedulerEnabled ? schedulerEngine : undefined
 });
 
-scheduledWakeExecutor = async (task, cycleId) => {
+scheduledWakeExecutor = async (task, cycleId, snapshot, observationDigest) => {
   await chatService.handleScheduledTurn({
     taskId: task.id,
     cycleId,
     sessionId: task.owner.sessionId,
     instruction: task.instruction ?? "Inspect the scheduled task and decide whether it is complete.",
+    snapshot,
+    observationDigest,
     owner: {
       principalId: task.owner.principalId,
       channelKey: task.owner.channelKey,

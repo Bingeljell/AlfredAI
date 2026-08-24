@@ -6,25 +6,39 @@ import { serve } from "@hono/node-server";
 import { appConfig } from "../config/env.js";
 import { app, sessionStore, runStore, chatService, searchManager, schedulerEngine } from "./app.js";
 import { TelegramAdapter } from "../channels/telegram/adapter.js";
+import { PidLock } from "./pidLock.js";
+import { ALFRED_SERVER_PROCESS_TAG, managedProcessTag } from "./processIdentity.js";
+
+process.title = ALFRED_SERVER_PROCESS_TAG;
+const serverPidLock = new PidLock({
+  lockPath: path.join(appConfig.workspaceDir, "alfred.pid"),
+  processTag: ALFRED_SERVER_PROCESS_TAG
+});
 
 // Track child processes started by Alfred so they die when Alfred dies
 const managedProcesses: ReturnType<typeof spawn>[] = [];
 let httpServer: { close: (cb?: () => void) => void } | null = null;
 
 function spawnManaged(cmd: string, label: string): void {
+  const processTag = managedProcessTag(label);
   const child = spawn(cmd, {
     stdio: "ignore",
     detached: true,  // own process group so SIGTERM propagates to shell children
-    shell: true
+    shell: true,
+    env: {
+      ...process.env,
+      ALFRED_PARENT_PID: String(process.pid),
+      ALFRED_PROCESS_TAG: processTag
+    }
   });
   child.once("error", (err) => {
-    console.error(`[${label}] spawn error: ${err.message}`);
+    console.error(`[${processTag}] spawn error: ${err.message}`);
   });
   child.once("exit", (code) => {
-    console.log(`[${label}] exited (code ${code ?? "?"})`);
+    console.log(`[${processTag}] exited (code ${code ?? "?"})`);
   });
   managedProcesses.push(child);
-  console.log(`[${label}] started (pid ${child.pid ?? "?"})`);
+  console.log(`[${processTag}] started (pid ${child.pid ?? "?"})`);
 }
 
 let shutdownPromise: Promise<void> | undefined;
@@ -32,26 +46,32 @@ let shutdownPromise: Promise<void> | undefined;
 async function shutdown(): Promise<void> {
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = (async () => {
-    if (appConfig.schedulerEnabled) await schedulerEngine.stop();
-    searchManager.shutdown();
-    for (const child of managedProcesses) {
-      try {
-        if (child.pid !== undefined) {
-          process.kill(-child.pid, "SIGTERM");
-        } else {
-          child.kill("SIGTERM");
+    try {
+      if (appConfig.schedulerEnabled) await schedulerEngine.stop();
+      searchManager.shutdown();
+      for (const child of managedProcesses) {
+        try {
+          if (child.pid !== undefined) {
+            process.kill(-child.pid, "SIGTERM");
+          } else {
+            child.kill("SIGTERM");
+          }
+        } catch {
+          // Already exited
         }
-      } catch {
-        // Already exited
       }
-    }
-    if (httpServer) {
-      await Promise.race([
-        new Promise<void>((resolve) => httpServer?.close(() => resolve())),
-        new Promise<void>((resolve) => setTimeout(resolve, 3_000))
-      ]);
-      process.exit(0);
-    } else {
+      if (httpServer) {
+        await Promise.race([
+          new Promise<void>((resolve) => httpServer?.close(() => resolve())),
+          new Promise<void>((resolve) => setTimeout(resolve, 3_000))
+        ]);
+      }
+    } finally {
+      try {
+        await serverPidLock.release();
+      } catch (error) {
+        console.error("[shutdown] failed to release Alfred PID lock:", error);
+      }
       process.exit(0);
     }
   })();
@@ -110,58 +130,67 @@ function ensureApiKey(): void {
 }
 
 async function bootstrap(): Promise<void> {
-  ensureApiKey();
+  await serverPidLock.acquire();
+  try {
+    ensureApiKey();
 
-  const recovered = await runStore.recoverInterruptedRuns();
-  if (recovered > 0) {
-    console.log(`[startup] Marked ${recovered} interrupted run(s) as failed.`);
-  }
-
-  const existingSessions = await sessionStore.listSessions(1);
-  if (existingSessions.length === 0) {
-    await sessionStore.createSession("Default Session");
-  }
-
-  // Auto-start managed services
-  if (appConfig.searxngStartCommand) {
-    spawnManaged(appConfig.searxngStartCommand, "searxng");
-  }
-  if (appConfig.enablePinchtab && appConfig.pinchtabStartCommand) {
-    spawnManaged(appConfig.pinchtabStartCommand, "pinchtab");
-  }
-
-  httpServer = serve(
-    {
-      fetch: app.fetch,
-      port: appConfig.port
-    },
-    (info: { port: number }) => {
-      console.log(`Alfred gateway listening on http://localhost:${info.port}`);
+    const recovered = await runStore.recoverInterruptedRuns();
+    if (recovered > 0) {
+      console.log(`[startup] Marked ${recovered} interrupted run(s) as failed.`);
     }
-  );
 
-  if (appConfig.telegramBotToken) {
-    if (appConfig.telegramAllowedUserIds.length === 0) {
-      console.warn(
-        "[telegram] TELEGRAM_BOT_TOKEN is set but TELEGRAM_ALLOWED_USER_IDS is empty — refusing to start the bot (fail closed). Add allowed numeric user IDs to enable Telegram."
-      );
-    } else {
-      const telegram = new TelegramAdapter(
-        appConfig.telegramBotToken,
-        chatService,
-        sessionStore,
-        runStore,
-        appConfig.workspaceDir,
-        appConfig.telegramAllowedUserIds
-      );
-      await telegram.start();
+    const existingSessions = await sessionStore.listSessions(1);
+    if (existingSessions.length === 0) {
+      await sessionStore.createSession("Default Session");
     }
-  }
 
-  if (appConfig.schedulerEnabled) {
-    await schedulerEngine.start();
-    console.log("[scheduler] autonomous wake/reminder engine started");
+    // Auto-start managed services
+    if (appConfig.searxngStartCommand) {
+      spawnManaged(appConfig.searxngStartCommand, "searxng");
+    }
+    if (appConfig.enablePinchtab && appConfig.pinchtabStartCommand) {
+      spawnManaged(appConfig.pinchtabStartCommand, "pinchtab");
+    }
+
+    httpServer = serve(
+      {
+        fetch: app.fetch,
+        port: appConfig.port
+      },
+      (info: { port: number }) => {
+        console.log(`Alfred gateway listening on http://localhost:${info.port}`);
+      }
+    );
+
+    if (appConfig.telegramBotToken) {
+      if (appConfig.telegramAllowedUserIds.length === 0) {
+        console.warn(
+          "[telegram] TELEGRAM_BOT_TOKEN is set but TELEGRAM_ALLOWED_USER_IDS is empty — refusing to start the bot (fail closed). Add allowed numeric user IDs to enable Telegram."
+        );
+      } else {
+        const telegram = new TelegramAdapter(
+          appConfig.telegramBotToken,
+          chatService,
+          sessionStore,
+          runStore,
+          appConfig.workspaceDir,
+          appConfig.telegramAllowedUserIds
+        );
+        await telegram.start();
+      }
+    }
+
+    if (appConfig.schedulerEnabled) {
+      await schedulerEngine.start();
+      console.log("[scheduler] autonomous wake/reminder engine started");
+    }
+  } catch (error) {
+    await serverPidLock.release();
+    throw error;
   }
 }
 
-void bootstrap();
+void bootstrap().catch((error) => {
+  console.error("[startup] Alfred server failed to start:", error);
+  process.exitCode = 1;
+});

@@ -1,6 +1,15 @@
 import type { SchedulerProvenance } from "./notifier.js";
 import type { EventMatch, ScheduledTaskV1, TaskOwner, WatchDefinition } from "./types.js";
 
+/**
+ * A wake executor returns the updated task plus the bounded explanation that
+ * should be delivered to the task owner. The optional field keeps existing
+ * deterministic executors and tests source-compatible.
+ */
+export type SchedulerWakeExecutionResult = ScheduledTaskV1 & {
+  assistantText?: string;
+};
+
 export type SchedulerControlAction =
   | { type: "complete"; summary?: string }
   | { type: "reschedule"; nextDueAt: string; reason?: string };

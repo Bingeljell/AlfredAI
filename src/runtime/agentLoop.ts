@@ -36,6 +36,87 @@ export interface AgentLoopOptions {
   maxToolCalls?: number;
 }
 
+const SCHEDULER_TERMINAL_ACTIONS = new Set([
+  "scheduler_task_complete",
+  "scheduler_task_reschedule"
+]);
+const SCHEDULER_FALLBACK_DELAY_SECONDS = 60;
+const SCHEDULER_SUMMARY_MAX_CHARS = 500;
+
+function isSchedulerTurn(options: AgentLoopOptions): boolean {
+  return options.executionProfile?.origin === "scheduler" && Boolean(options.schedulerControl);
+}
+
+function clipSchedulerText(value: string | undefined, maxChars = SCHEDULER_SUMMARY_MAX_CHARS): string {
+  return (value ?? "").replace(/\s+/g, " ").trim().slice(0, maxChars);
+}
+
+function schedulerTerminalOutcome(control: NonNullable<AgentLoopOptions["schedulerControl"]>, artifacts: string[]): RunOutcome {
+  const action = control.action;
+  if (!action) {
+    return {
+      status: "failed",
+      assistantText: "The scheduled task did not select a terminal action.",
+      artifactPaths: artifacts.length > 0 ? artifacts : undefined
+    };
+  }
+
+  const detail = action.type === "complete" ? action.summary : action.reason;
+  return {
+    status: "completed",
+    assistantText: action.type === "complete"
+      ? `Scheduled task completed${detail ? `: ${detail}` : "."}`
+      : `Scheduled task rescheduled${detail ? `: ${detail}` : "."}`,
+    artifactPaths: artifacts.length > 0 ? artifacts : undefined
+  };
+}
+
+async function forceSchedulerTerminalAction(
+  options: AgentLoopOptions,
+  state: ToolState,
+  reason: string,
+  progress?: string
+): Promise<RunOutcome> {
+  const control = options.schedulerControl;
+  if (!control || control.action) {
+    return control
+      ? schedulerTerminalOutcome(control, state.artifacts)
+      : {
+          status: "failed",
+          assistantText: "The scheduled task did not select a terminal action.",
+          artifactPaths: state.artifacts.length > 0 ? state.artifacts : undefined
+        };
+  }
+
+  const boundedProgress = clipSchedulerText(progress, 260);
+  const explanation = clipSchedulerText(
+    `${reason}${boundedProgress ? ` Partial result: ${boundedProgress}` : ""}`,
+    SCHEDULER_SUMMARY_MAX_CHARS
+  );
+  control.reschedule(
+    new Date(Date.now() + SCHEDULER_FALLBACK_DELAY_SECONDS * 1_000).toISOString(),
+    explanation
+  );
+  await options.runStore.appendEvent({
+    runId: options.runId,
+    sessionId: options.sessionId,
+    phase: "final",
+    eventType: "scheduler_terminal_action_forced",
+    payload: {
+      action: "reschedule",
+      reason: "bounded_scheduler_turn",
+      explanation
+    },
+    timestamp: nowIso()
+  });
+
+  return {
+    status: "completed",
+    assistantText: explanation,
+    artifactPaths: state.artifacts.length > 0 ? state.artifacts : undefined
+  };
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -177,6 +258,9 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
 
   let iteration = 0;
   let toolCallCount = 0;
+  let lastProgress: string | undefined;
+  const schedulerTurn = isSchedulerTurn(options);
+  const toolLimit = maxToolCalls ?? Number.MAX_SAFE_INTEGER;
 
   while (iteration < maxIterations) {
     iteration += 1;
@@ -191,6 +275,14 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
         payload: { iteration, maxIterations, artifactCount: state.artifacts.length },
         timestamp: nowIso()
       });
+      if (schedulerTurn) {
+        return forceSchedulerTerminalAction(
+          options,
+          state,
+          "The scheduled wake reached its time limit before selecting a terminal action.",
+          lastProgress
+        );
+      }
       // If work was completed before the deadline hit, surface it rather than reporting failure
       if (state.artifacts.length > 0) {
         return {
@@ -283,6 +375,14 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
           payload: { iteration, reason: "deadline_abort" },
           timestamp: nowIso()
         });
+        if (schedulerTurn) {
+          return forceSchedulerTerminalAction(
+            options,
+            state,
+            "The scheduled wake timed out before selecting a terminal action.",
+            lastProgress
+          );
+        }
         return {
           status: "failed",
           assistantText: "The task timed out before completing. Please try again with a simpler request."
@@ -304,6 +404,14 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
         },
         timestamp: nowIso()
       });
+      if (schedulerTurn) {
+        return forceSchedulerTerminalAction(
+          options,
+          state,
+          `The scheduled wake encountered ${llmResult.failureCode} before selecting a terminal action.`,
+          llmResult.failureMessage ?? lastProgress
+        );
+      }
       return {
         status: "failed",
         assistantText: `I encountered an error while processing your request: ${llmResult.failureMessage ?? llmResult.failureCode}`
@@ -315,6 +423,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     }
 
     const finishReason = llmResult.finishReason;
+    lastProgress = llmResult.content ?? lastProgress;
 
     // Model returned a final text response
     if (finishReason === "stop" || (!llmResult.toolCalls?.length && llmResult.content && finishReason !== "length")) {
@@ -333,6 +442,15 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
         },
         timestamp: nowIso()
       });
+
+      if (schedulerTurn) {
+        return forceSchedulerTerminalAction(
+          options,
+          state,
+          "The scheduled wake returned a response without selecting a terminal action.",
+          assistantText || lastProgress
+        );
+      }
 
       return {
         status: "completed",
@@ -355,7 +473,27 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
 
       // Execute each tool call and collect results
       for (const toolCall of llmResult.toolCalls) {
-        if (toolCallCount >= (maxToolCalls ?? Number.MAX_SAFE_INTEGER)) {
+        const isTerminalAction = schedulerTurn && SCHEDULER_TERMINAL_ACTIONS.has(toolCall.name);
+        // Reserve one call for the terminal action. This prevents a model from
+        // consuming the entire budget on probes and then leaving no room to
+        // complete or reschedule the cycle.
+        if (schedulerTurn && !isTerminalAction && toolCallCount >= toolLimit - 1) {
+          return forceSchedulerTerminalAction(
+            options,
+            state,
+            "The scheduled wake exhausted its observation budget before selecting a terminal action.",
+            lastProgress
+          );
+        }
+        if (toolCallCount >= toolLimit) {
+          if (schedulerTurn) {
+            return forceSchedulerTerminalAction(
+              options,
+              state,
+              "The scheduled wake reached its tool-call limit before selecting a terminal action.",
+              lastProgress
+            );
+          }
           await runStore.appendEvent({
             runId,
             sessionId,
@@ -391,6 +529,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
         const resultContent = envelope.status === "ok"
           ? JSON.stringify(scrubToolOutput(envelope.result))
           : JSON.stringify({ error: envelope.error });
+        lastProgress = resultContent;
 
         messages.push({
           role: "tool",
@@ -413,6 +552,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
           },
           timestamp: nowIso()
         });
+
+        if (isTerminalAction && envelope.status === "ok" && schedulerControl?.action) {
+          return schedulerTerminalOutcome(schedulerControl, state.artifacts);
+        }
       }
 
       continue;
@@ -429,6 +572,15 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
       payload: { iteration, finishReason },
       timestamp: nowIso()
     });
+
+    if (schedulerTurn) {
+      return forceSchedulerTerminalAction(
+        options,
+        state,
+        "The scheduled wake ended unexpectedly before selecting a terminal action.",
+        lastProgress
+      );
+    }
 
     return {
       status: "failed",
@@ -448,6 +600,15 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     payload: { iteration, maxIterations },
     timestamp: nowIso()
   });
+
+  if (schedulerTurn) {
+    return forceSchedulerTerminalAction(
+      options,
+      state,
+      "The scheduled wake exhausted its iteration budget before selecting a terminal action.",
+      lastProgress
+    );
+  }
 
   return {
     status: "failed",

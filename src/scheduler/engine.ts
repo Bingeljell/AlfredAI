@@ -11,8 +11,8 @@ import { ReminderExecutor } from "./reminder.js";
 import { SchedulerTaskRunLog } from "./taskRunLog.js";
 import type { ScheduledTaskV1 } from "./types.js";
 import { SchedulerTaskStore } from "./taskStore.js";
-import type { ScheduleTaskRequest, SchedulerTaskApi } from "./api.js";
-import type { SchedulerProvenance } from "./notifier.js";
+import type { ScheduleTaskRequest, SchedulerTaskApi, SchedulerWakeExecutionResult } from "./api.js";
+import type { OutboundNotifier, SchedulerProvenance } from "./notifier.js";
 import type { TaskOwner } from "./types.js";
 import type { WatchExecutor } from "./watch.js";
 import type { WatchSnapshot } from "./probes/types.js";
@@ -27,7 +27,8 @@ export interface SchedulerEngineDeps {
   taskRunLog: SchedulerTaskRunLog;
   reminderExecutor?: ReminderExecutor;
   watchExecutor?: WatchExecutor;
-  executeWake?: (task: ScheduledTaskV1, cycleId: string, snapshot?: WatchSnapshot, observationDigest?: string) => Promise<ScheduledTaskV1>;
+  executeWake?: (task: ScheduledTaskV1, cycleId: string, snapshot?: WatchSnapshot, observationDigest?: string) => Promise<SchedulerWakeExecutionResult>;
+  notifier?: OutboundNotifier;
   lookupRun?: (runId: string) => Promise<SchedulerRunStatus | undefined>;
   requestRunCancellation?: (runId: string) => Promise<void>;
   clock?: SchedulerClock;
@@ -260,7 +261,7 @@ export class SchedulerEngine implements SchedulerTaskApi {
       await this.deps.taskStore.markRunning(task.id, cycleId);
       await this.deps.taskRunLog.append({ version: 1, taskId: task.id, cycleId, event: "started", timestamp: new Date(this.clock.nowMs()).toISOString(), attempt: task.cycleCount });
       renewal = this.scheduleLeaseRenewal(task.id, cycleId);
-      let result: ScheduledTaskV1;
+      let result: SchedulerWakeExecutionResult;
       if (task.kind === "reminder") {
         if (!this.deps.reminderExecutor) throw new Error("reminder_executor_unavailable");
         result = await this.deps.reminderExecutor.execute(task, cycleId);
@@ -271,6 +272,9 @@ export class SchedulerEngine implements SchedulerTaskApi {
         result = await this.deps.executeWake(task, cycleId);
       } else {
         result = await this.deps.taskStore.failCycle({ taskId: task.id, cycleId, errorCode: "scheduler_executor_unavailable", terminal: true });
+      }
+      if (result.assistantText) {
+        await this.deliverWakeExplanation(result, cycleId, result.assistantText);
       }
       await this.deps.taskRunLog.append({ version: 1, taskId: task.id, cycleId, event: "completed", timestamp: new Date(this.clock.nowMs()).toISOString(), outcome: result.status === "failed" ? "terminal_failure" : "success", attempt: task.cycleCount });
     } catch {
@@ -283,6 +287,40 @@ export class SchedulerEngine implements SchedulerTaskApi {
     } finally {
       renewal?.cancel();
     }
+  }
+
+  private async deliverWakeExplanation(task: SchedulerWakeExecutionResult, cycleId: string, assistantText: string): Promise<void> {
+    const notifier = this.deps.notifier;
+    const destination = task.notificationDestination;
+    if (!notifier || !destination || !assistantText.trim()) return;
+
+    const delivery = await this.deps.deliveryStore.ensurePending({
+      taskId: task.id,
+      cycleId,
+      purpose: "wake_explanation",
+      destination,
+    });
+    if (delivery.status === "delivered") return;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const current = await this.deps.deliveryStore.get(delivery.id);
+      if (current?.status === "delivered") return;
+      const sending = await this.deps.deliveryStore.claimSending(delivery.id, attempt > 0);
+      if (!sending) continue;
+      try {
+        const result = await notifier.send({
+          destination,
+          text: assistantText.slice(0, 4_000),
+          deliveryId: sending.id,
+        });
+        await this.deps.deliveryStore.markDelivered(sending.id, result.externalMessageId);
+        return;
+      } catch {
+        await this.deps.deliveryStore.markFailed(sending.id, "notification_failed");
+      }
+    }
+
+    console.error(`[scheduler] wake explanation delivery failed for ${task.id}:${cycleId}`);
   }
 
   private scheduleLeaseRenewal(taskId: string, cycleId: string): { cancel(): void } {

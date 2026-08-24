@@ -28,6 +28,7 @@ import { SchedulerTaskStore } from "../scheduler/taskStore.js";
 import { SchedulerDeliveryStore } from "../scheduler/deliveryStore.js";
 import { SchedulerTaskRunLog } from "../scheduler/taskRunLog.js";
 import { SchedulerEngine } from "../scheduler/engine.js";
+import type { SchedulerWakeExecutionResult } from "../scheduler/api.js";
 import { ReminderExecutor } from "../scheduler/reminder.js";
 import { WatchExecutor } from "../scheduler/watch.js";
 import { RunStatusProbe } from "../scheduler/probes/runStatusProbe.js";
@@ -183,7 +184,7 @@ const schedulerNotifier = new RoutingOutboundNotifier(
     : undefined
 );
 const schedulerTaskRunLog = new SchedulerTaskRunLog(appConfig.workspaceDir);
-let scheduledWakeExecutor: ((task: ScheduledTaskV1, cycleId: string, snapshot?: WatchSnapshot, observationDigest?: string) => Promise<ScheduledTaskV1>) | undefined;
+let scheduledWakeExecutor: ((task: ScheduledTaskV1, cycleId: string, snapshot?: WatchSnapshot, observationDigest?: string) => Promise<SchedulerWakeExecutionResult>) | undefined;
 const schedulerHerdrProbe = new HerdrAgentProbe(new DefaultHerdrReadOnlyClient());
 const schedulerWatchExecutor = new WatchExecutor({
   taskStore: schedulerTaskStore,
@@ -206,6 +207,7 @@ const schedulerEngine = new SchedulerEngine({
   taskStore: schedulerTaskStore,
   deliveryStore: schedulerDeliveryStore,
   taskRunLog: schedulerTaskRunLog,
+  notifier: schedulerNotifier,
   reminderExecutor: new ReminderExecutor({
     taskStore: schedulerTaskStore,
     deliveryStore: schedulerDeliveryStore,
@@ -254,7 +256,7 @@ const chatService = new ChatService({
 });
 
 scheduledWakeExecutor = async (task, cycleId, snapshot, observationDigest) => {
-  await chatService.handleScheduledTurn({
+  const outcome = await chatService.handleScheduledTurn({
     taskId: task.id,
     cycleId,
     sessionId: task.owner.sessionId,
@@ -267,7 +269,8 @@ scheduledWakeExecutor = async (task, cycleId, snapshot, observationDigest) => {
       origin: "scheduler"
     }
   });
-  return await schedulerTaskStore.get(task.id) ?? task;
+  const updatedTask = await schedulerTaskStore.get(task.id) ?? task;
+  return { ...updatedTask, assistantText: outcome.assistantText };
 };
 
 app.get("/health", (c) => {

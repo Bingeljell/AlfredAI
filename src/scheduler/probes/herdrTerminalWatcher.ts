@@ -94,7 +94,7 @@ function extractExitCode(value: unknown): number | null | undefined {
 }
 
 function extractLifecycle(value: unknown): string | undefined {
-  const candidate = findField(value, ["status", "state", "lifecycle"]);
+  const candidate = findField(value, ["status", "state", "lifecycle", "agent_status"]);
   return typeof candidate === "string" ? candidate : undefined;
 }
 

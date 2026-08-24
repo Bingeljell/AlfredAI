@@ -87,8 +87,18 @@ export interface ICalendarProvider {
 
 ---
 
-## 4. Implementation Phasing for Luna Max
-1. **Phase 1: Config & Timezone Setup** — Add timezone configuration and date-time parser utilities.
-2. **Phase 2: Multi-Channel Reminder Broadcaster** — Decouple reminder notifications from hardcoded Telegram to support Web UI WebSocket/event streams.
-3. **Phase 3: Calendar Service & OAuth Handshake** — Implement unified Google + Microsoft Graph clients with gateway OAuth callback routes.
-4. **Phase 4: Tool Definitions & Verification** — Expose `calendar_*` tools to Alfred, write unit tests, run `pnpm tsc --noEmit`.
+## 4. Implementation Slices for Luna Max
+
+> **Luna's second opinion (2026-08-24):** Direction is right, but don't implement the 4 phases as written. Reorder into 4 slices that de-risk provider-specific failures and validate the domain model before writes or a second provider.
+
+1. **Slice 0: Contracts & Security** — Principal/account ownership, timezone semantics, OAuth state/PKCE, credential key management, delivery idempotency, event types. (Foundational — everything else depends on these contracts.)
+2. **Slice 1: Scheduler-Backed Reminders** — Extend the existing durable scheduler + delivery ledger. Add timezone-aware parsing + one reliable notifier path first. Note: current Web delivery is file-backed activity, not SSE/WebSocket — live push should be a separate adapter.
+3. **Slice 2: One Calendar Provider, Read-Only** — Google read/list/search first. Validate the domain model before writes or a second provider.
+4. **Slice 3: Microsoft Graph + Writes** — Outlook, then create/update/delete with confirmation, optimistic concurrency, attendee-invite safeguards.
+
+### Key changes from Luna's review
+- **Merge timezone into the reminder slice** — not a standalone phase.
+- **Split the OAuth/provider phase** — implementing Google + Microsoft together will obscure provider-specific failures.
+- **`ICalendarProvider` is too thin**: `Date` can't represent all-day events or timezone offsets reliably — needs richer temporal typing (e.g. `{ date, tz }` or `ZonedDateTime`).
+- **Defer live Web push** (SSE/WebSocket) to a separate adapter; don't conflate it with the file-backed activity log.
+- **Validate the domain model on one provider before adding writes or a second provider.**

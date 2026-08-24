@@ -1,6 +1,8 @@
 # Changelog
 
-- **2026-08-24** > `src/scheduler/taskTranscript.ts`, `src/scheduler/{taskStore,types,api,engine,watch}.ts`, `src/runner/chatService.ts`, `src/gateway/app.ts`, tests > task transcript persistence > Persist bounded scheduler coordination turns under `tasks/<taskId>/transcript.jsonl`, write terminal `task_summary.md` files, and keep scheduled observations out of interactive session memory.
+- **2026-08-24** > `src/scheduler/probes/herdrTerminalWatcher.ts` > watcher lifecycle fix > Added `agent_status` to the lifecycle field names so Herdr agent panes reporting `agent_status: "done"` are detected as `TASK_COMPLETE` instead of stalling as `RUNNING` until the cycle budget exhausts.
+
+- **2026-08-24** > `src/tasks/taskTranscript.ts`, `src/scheduler/{taskStore,types,api,engine,watch}.ts`, `src/runner/chatService.ts`, `src/gateway/app.ts`, tests > task transcript persistence > Persist bounded scheduler coordination turns under `tasks/<taskId>/transcript.jsonl`, write terminal `task_summary.md` files, and keep scheduled observations out of interactive session memory.
 
 - **2026-08-24** > `src/scheduler/probes/{herdrAgentProbe,herdrTerminalWatcher,defaultHerdrClient}.ts`, `src/scheduler/{watch,engine,execution}.ts`, `src/gateway/app.ts`, `src/runner/chatService.ts`, tests > deterministic Herdr terminal babysitter > Normalize pane lifecycle/output into bounded `TASK_COMPLETE`, `IDLE_WAITING_INPUT`, `ERROR`, or `RUNNING` snapshots and feed state transitions directly into bounded scheduler wake turns.
 

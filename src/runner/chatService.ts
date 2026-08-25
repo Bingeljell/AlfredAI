@@ -737,6 +737,7 @@ export class ChatService {
         undefined,
         input.observationDigest ?? control.action.summary,
         outcome.assistantText ?? control.action.summary,
+        input.snapshot?.status,
       );
     } else if (control.action?.type === "reschedule") {
       await scheduler.complete(
@@ -745,6 +746,7 @@ export class ChatService {
         control.action.nextDueAt,
         input.observationDigest ?? control.action.reason,
         outcome.assistantText ?? control.action.reason,
+        input.snapshot?.status,
       );
     } else {
       await scheduler.fail(input.taskId, input.cycleId, outcome.status === "failed" ? "scheduler_execution_failed" : "scheduler_no_terminal_action");

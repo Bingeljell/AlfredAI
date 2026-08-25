@@ -35,6 +35,7 @@ export interface CompleteCycleInput {
   completedAt?: string;
   nextDueAt?: string;
   observationDigest?: string;
+  observationStatus?: NonNullable<ScheduledTaskV1["lastObservationStatus"]>;
   errorCode?: string;
   completionSummary?: string;
 }
@@ -49,6 +50,6 @@ export interface FailCycleInput {
 
 export type ReconcileInput =
   | { taskId: string; cycleId: string; action: "reclaim"; dueAt: string; errorCode?: string }
-  | { taskId: string; cycleId: string; action: "complete"; completedAt?: string; nextDueAt?: string; observationDigest?: string }
+  | { taskId: string; cycleId: string; action: "complete"; completedAt?: string; nextDueAt?: string; observationDigest?: string; observationStatus?: NonNullable<ScheduledTaskV1["lastObservationStatus"]> }
   | { taskId: string; cycleId: string; action: "fail"; errorCode: string; retryAt?: string; terminal?: boolean }
   | { taskId: string; action: "expire"; errorCode?: string };

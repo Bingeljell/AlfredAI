@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-08-25** > `src/scheduler/watch.ts`, `src/scheduler/{schemas,types,api,taskStore,engine}.ts`, `src/runner/chatService.ts`, `tests/unit/schedulerWatch.test.ts` > Herdr watcher lifecycle baseline > Persist the last Herdr observation status, ignore initial idle and running-state observations, and wake only after a real `RUNNING` to terminal transition.
+
 - **2026-08-24** > `src/scheduler/probes/herdrTerminalWatcher.ts` > watcher lifecycle fix > Added `agent_status` to the lifecycle field names so Herdr agent panes reporting `agent_status: "done"` are detected as `TASK_COMPLETE` instead of stalling as `RUNNING` until the cycle budget exhausts.
 
 - **2026-08-24** > `src/tasks/taskTranscript.ts`, `src/scheduler/{taskStore,types,api,engine,watch}.ts`, `src/runner/chatService.ts`, `src/gateway/app.ts`, tests > task transcript persistence > Persist bounded scheduler coordination turns under `tasks/<taskId>/transcript.jsonl`, write terminal `task_summary.md` files, and keep scheduled observations out of interactive session memory.

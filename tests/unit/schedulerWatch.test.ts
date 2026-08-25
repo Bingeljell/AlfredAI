@@ -95,7 +95,7 @@ test("a Herdr terminal transition feeds its structured snapshot into the wake tu
     nowMs: () => now,
   });
 
-  const result = await executor.execute(claim.task, claim.cycleId);
+  const result = await executor.execute({ ...claim.task, lastObservationStatus: "RUNNING" }, claim.cycleId);
   assert.deepEqual(receivedSnapshot, {
     taskId: task.id,
     status: "TASK_COMPLETE",
@@ -103,4 +103,61 @@ test("a Herdr terminal transition feeds its structured snapshot into the wake tu
     stdout: ["tests passed", "TASK_COMPLETE"],
   });
   assert.equal(result.status, "completed");
+});
+
+test("an initial Herdr idle snapshot establishes a baseline instead of completing the watch", async () => {
+  const workspace = await createTempWorkspace("scheduler-watch-herdr-baseline");
+  let now = Date.parse("2026-08-17T10:00:10.000Z");
+  const taskStore = new SchedulerTaskStore({ workspaceDir: workspace, nowMs: () => now, instanceId: "herdr-baseline-task" });
+  const deliveryStore = new SchedulerDeliveryStore({ workspaceDir: workspace, nowMs: () => now, instanceId: "herdr-baseline-delivery" });
+  await taskStore.init();
+  await deliveryStore.init();
+  const task = await taskStore.create({
+    kind: "watch",
+    label: "herdr baseline",
+    owner: { sessionId: "session-1", principalId: "principal-1" },
+    createdByRunId: "run-1",
+    dueAt: "2026-08-17T10:00:20.000Z",
+    intervalSeconds: 60,
+    instruction: "Summarize the delegated task.",
+    watch: { type: "herdr_agent", workspaceId: "w1", paneId: "w1:p1" },
+  });
+  now += 10_000;
+  const claim = await taskStore.claim(task.id, task.updatedAt);
+  assert.equal(claim.claimed, true);
+  if (!claim.claimed) return;
+  await taskStore.markRunning(task.id, claim.cycleId);
+
+  let wakeCalled = false;
+  let notified = false;
+  const executor = new WatchExecutor({
+    taskStore,
+    deliveryStore,
+    notifier: { async send() { notified = true; return { delivered: true }; } },
+    probe: async () => ({
+      status: "completed" as const,
+      digest: "idle-digest",
+      summary: "The Herdr agent is idle and waiting for input.",
+      terminal: true,
+      changed: false,
+      snapshot: {
+        taskId: task.id,
+        status: "IDLE_WAITING_INPUT" as const,
+        exitCode: null,
+        stdout: ["IDLE_WAITING_INPUT"],
+      },
+    }),
+    executeWake: async () => {
+      wakeCalled = true;
+      throw new Error("wake should not run for the initial idle baseline");
+    },
+    nowMs: () => now,
+  });
+
+  const result = await executor.execute(claim.task, claim.cycleId);
+  assert.equal(result.status, "pending");
+  assert.equal(result.lastObservationStatus, "IDLE_WAITING_INPUT");
+  assert.equal((await taskStore.get(task.id))?.lastObservationStatus, "IDLE_WAITING_INPUT");
+  assert.equal(wakeCalled, false);
+  assert.equal(notified, false);
 });

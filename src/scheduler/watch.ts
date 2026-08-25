@@ -36,6 +36,18 @@ export class WatchExecutor {
       });
     }
 
+    // Herdr's IDLE_WAITING_INPUT state is a terminal *observation*, not proof
+    // that the delegated task completed. A watcher is commonly created while
+    // the pane is idle, just before Alfred dispatches work to it. Establish the
+    // idle baseline first; a later changed TASK_COMPLETE or ERROR snapshot can
+    // still wake Alfred even if the task finished between two polls. This
+    // state is persisted on the task so restarts do not lose the baseline.
+    const isHerdrWatch = task.watch?.type === "herdr_agent";
+    const herdrStatus = observation.snapshot?.status;
+    if (isHerdrWatch && herdrStatus === "IDLE_WAITING_INPUT" && task.lastObservationStatus !== "RUNNING") {
+      return this.rescheduleAfterObservation(task, cycleId, observation);
+    }
+
     if (observation.terminal && observation.changed && observation.snapshot && task.instruction && this.options.executeWake) {
       return this.options.executeWake(task, cycleId, observation.snapshot, observation.digest);
     }
@@ -53,15 +65,22 @@ export class WatchExecutor {
       return this.options.taskStore.failCycle({ taskId: task.id, cycleId, errorCode: observation.status === "missing" ? "watch_target_missing" : "watch_target_failed", terminal: true });
     }
 
-    if (observation.changed && task.instruction && this.options.executeWake) {
+    // Herdr watches are terminal-transition watchers. A change from one
+    // RUNNING snapshot to another must not wake Alfred prematurely.
+    if (!isHerdrWatch && observation.changed && task.instruction && this.options.executeWake) {
       return this.options.executeWake(task, cycleId, observation.snapshot, observation.digest);
     }
 
+    return this.rescheduleAfterObservation(task, cycleId, observation);
+  }
+
+  private async rescheduleAfterObservation(task: ScheduledTaskV1, cycleId: string, observation: ProbeResult): Promise<SchedulerWakeExecutionResult> {
     return this.options.taskStore.completeCycle({
       taskId: task.id,
       cycleId,
       nextDueAt: new Date(this.nowMs() + this.intervalMs(task)).toISOString(),
       observationDigest: observation.digest,
+      observationStatus: observation.snapshot?.status,
     });
   }
 

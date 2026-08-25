@@ -227,6 +227,9 @@ export class SchedulerTaskStore {
       task.consecutiveFailures = 0;
       task.lastCompletedAt = canonicalUtc(now);
       task.lastObservationDigest = input.observationDigest;
+      if (input.observationStatus !== undefined) {
+        task.lastObservationStatus = input.observationStatus;
+      }
       task.lastErrorCode = undefined;
       if (!input.nextDueAt || task.cycleCount >= task.maxCycles || (task.expiresAt && Date.parse(input.nextDueAt) >= Date.parse(task.expiresAt))) {
         transitionToTerminal(task, "completed", now);
@@ -537,6 +540,7 @@ function redactSnapshot(snapshot: SchedulerSnapshot): SchedulerSnapshot {
     reminderText: task.reminderText,
     lastErrorCode: task.lastErrorCode,
     lastObservationDigest: task.lastObservationDigest,
+    lastObservationStatus: task.lastObservationStatus,
     watch: task.watch,
     eventMatch: task.eventMatch,
   }));
@@ -550,6 +554,7 @@ function redactSnapshot(snapshot: SchedulerSnapshot): SchedulerSnapshot {
     task.reminderText = redacted.reminderText;
     task.lastErrorCode = redacted.lastErrorCode;
     task.lastObservationDigest = redacted.lastObservationDigest;
+    task.lastObservationStatus = redacted.lastObservationStatus;
     task.watch = redacted.watch;
     task.eventMatch = redacted.eventMatch;
   });

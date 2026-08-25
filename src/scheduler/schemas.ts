@@ -85,6 +85,7 @@ const TaskFields = {
   lastCompletedAt: CanonicalUtc.optional(),
   lastErrorCode: z.string().trim().min(1).max(128).optional(),
   lastObservationDigest: z.string().trim().max(256).optional(),
+  lastObservationStatus: z.enum(["RUNNING", "TASK_COMPLETE", "IDLE_WAITING_INPUT", "ERROR"]).optional(),
   notificationDestination: NotificationDestinationSchema.optional(),
 } as const;
 

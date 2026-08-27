@@ -2,8 +2,19 @@ import { config as loadDotEnv } from "dotenv";
 import path from "node:path";
 import { z } from "zod";
 import type { PolicyMode } from "../types.js";
+import type { LlmReasoningConfig, LlmReasoningEffort } from "../provider/types.js";
 
 loadDotEnv();
+
+const ReasoningEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const OptionalReasoningEffortSchema = z.preprocess(
+  (value) => value === "" ? undefined : value,
+  ReasoningEffortSchema.optional()
+);
+const OptionalPositiveIntegerSchema = z.preprocess(
+  (value) => value === "" || value === undefined ? undefined : value,
+  z.coerce.number().int().positive().max(128_000).optional()
+);
 
 const EnvSchema = z.object({
   ALFRED_ENV: z.enum(["dev", "prod"]).default("dev"),
@@ -19,6 +30,10 @@ const EnvSchema = z.object({
   LMSTUDIO_BASE_URL: z.string().default("http://localhost:1234"),
   OPENROUTER_API_KEY: z.string().optional(),
   OPENROUTER_BASE_URL: z.string().url().default("https://openrouter.ai/api"),
+  OPENROUTER_REASONING_ENABLED: z.enum(["auto", "true", "false"]).default("auto"),
+  OPENROUTER_REASONING_EFFORT: OptionalReasoningEffortSchema,
+  OPENROUTER_REASONING_MAX_TOKENS: OptionalPositiveIntegerSchema,
+  OPENROUTER_REASONING_EXCLUDE: z.enum(["true", "false"]).default("false"),
   ALFRED_CODEX_AUTH_FILE: z.string().optional(),
   SEARXNG_BASE_URL: z.string().url().default("http://127.0.0.1:8888"),
   SEARXNG_SEARCH_PATH: z.string().default("/search"),
@@ -68,9 +83,40 @@ const EnvSchema = z.object({
   TELEGRAM_ALLOWED_USER_IDS: z.string().default(""),
   // Destination chat ID for proactive agent-event pushes (approval gates etc.)
   TELEGRAM_ALERT_CHAT_ID: z.coerce.number().optional()
+}).superRefine((value, ctx) => {
+  if (value.OPENROUTER_REASONING_EFFORT && value.OPENROUTER_REASONING_MAX_TOKENS !== undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["OPENROUTER_REASONING_MAX_TOKENS"],
+      message: "Set OPENROUTER_REASONING_EFFORT or OPENROUTER_REASONING_MAX_TOKENS, not both"
+    });
+  }
+  if (
+    value.OPENROUTER_REASONING_ENABLED === "false" &&
+    (value.OPENROUTER_REASONING_EFFORT !== undefined || value.OPENROUTER_REASONING_MAX_TOKENS !== undefined)
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["OPENROUTER_REASONING_ENABLED"],
+      message: "Reasoning cannot be disabled while an effort or token budget is configured"
+    });
+  }
 });
 
 const parsed = EnvSchema.parse(process.env);
+
+function resolveOpenRouterReasoning(): LlmReasoningConfig | undefined {
+  const enabled = parsed.OPENROUTER_REASONING_ENABLED === "auto"
+    ? undefined
+    : parsed.OPENROUTER_REASONING_ENABLED === "true";
+  const effort = parsed.OPENROUTER_REASONING_EFFORT as LlmReasoningEffort | undefined;
+  const maxTokens = parsed.OPENROUTER_REASONING_MAX_TOKENS;
+  const exclude = parsed.OPENROUTER_REASONING_EXCLUDE === "true" ? true : undefined;
+  if (enabled === undefined && effort === undefined && maxTokens === undefined && exclude === undefined) {
+    return undefined;
+  }
+  return { enabled, effort, maxTokens, exclude };
+}
 
 export const appConfig = {
   env: parsed.ALFRED_ENV,
@@ -85,6 +131,7 @@ export const appConfig = {
   lmStudioBaseUrl: parsed.LMSTUDIO_BASE_URL,
   openRouterApiKey: parsed.OPENROUTER_API_KEY,
   openRouterBaseUrl: parsed.OPENROUTER_BASE_URL,
+  openRouterReasoning: resolveOpenRouterReasoning(),
   codexAuthFile: parsed.ALFRED_CODEX_AUTH_FILE,
   searxngBaseUrl: parsed.SEARXNG_BASE_URL,
   searxngSearchPath: parsed.SEARXNG_SEARCH_PATH,

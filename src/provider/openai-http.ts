@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { LlmUsage } from "../types.js";
+import type { LlmProviderMetadata, LlmReasoningConfig } from "./types.js";
 import {
   classifyStructuredFailure,
   computeRetryDelayMs,
@@ -16,7 +17,14 @@ interface OpenAiMessage {
   content: string;
 }
 
-interface OpenAiChatOptions {
+interface OpenAiRequestExtensions {
+  reasoning?: LlmReasoningConfig;
+  sessionId?: string;
+  extraHeaders?: Record<string, string>;
+  requireReasoningSupport?: boolean;
+}
+
+interface OpenAiChatOptions extends OpenAiRequestExtensions {
   apiKey?: string;
   model?: string;
   messages: OpenAiMessage[];
@@ -26,6 +34,10 @@ interface OpenAiChatOptions {
 }
 
 interface OpenAiResponse {
+  id?: unknown;
+  model?: unknown;
+  service_tier?: unknown;
+  openrouter_metadata?: unknown;
   choices?: Array<{
     message?: {
       content?: string;
@@ -36,6 +48,7 @@ interface OpenAiResponse {
     completion_tokens?: unknown;
     total_tokens?: unknown;
     prompt_tokens_details?: { cached_tokens?: number };
+    completion_tokens_details?: { reasoning_tokens?: number };
   };
 }
 
@@ -71,6 +84,7 @@ export interface OpenAiChatDiagnostic {
   softTimeoutMs?: number;
   hardTimeoutMs?: number;
   softTimeoutExceeded?: boolean;
+  providerMetadata?: LlmProviderMetadata;
 }
 
 export interface StructuredChatDiagnostic<T> {
@@ -86,6 +100,7 @@ export interface StructuredChatDiagnostic<T> {
   softTimeoutMs?: number;
   hardTimeoutMs?: number;
   softTimeoutExceeded?: boolean;
+  providerMetadata?: LlmProviderMetadata;
 }
 
 export interface StructuredChatHttpErrorDetails {
@@ -182,6 +197,7 @@ function formatHttpFailureMessage(details: StructuredChatHttpErrorDetails): stri
 interface ParsedOpenAiResponse {
   content?: string;
   usage?: LlmUsage;
+  providerMetadata?: LlmProviderMetadata;
 }
 
 const OPENAI_RETRY_POLICY: RetryPolicy = {
@@ -251,13 +267,59 @@ function parseUsage(payload: OpenAiResponse): LlmUsage | undefined {
   }
 
   const cachedTokens = payload.usage?.prompt_tokens_details?.cached_tokens ?? 0;
+  const reasoningTokens = payload.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
 
   return {
     promptTokens,
     completionTokens,
     totalTokens,
-    ...(cachedTokens > 0 ? { cachedTokens } : {})
+    ...(cachedTokens > 0 ? { cachedTokens } : {}),
+    ...(reasoningTokens > 0 ? { reasoningTokens } : {})
   };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function metadataString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, 160) : undefined;
+}
+
+function parseProviderMetadata(payload: OpenAiResponse): LlmProviderMetadata | undefined {
+  const router = asRecord(payload.openrouter_metadata);
+  const endpoints = asRecord(router?.endpoints);
+  const available = Array.isArray(endpoints?.available) ? endpoints.available : [];
+  const selected = available
+    .map(asRecord)
+    .find((candidate) => candidate?.selected === true);
+  const metadata: LlmProviderMetadata = {
+    responseId: metadataString(payload.id),
+    responseModel: metadataString(payload.model),
+    serviceTier: metadataString(payload.service_tier),
+    upstreamProvider: metadataString(selected?.provider),
+    routingStrategy: metadataString(router?.strategy),
+    routingAttempt: typeof router?.attempt === "number" ? Math.max(0, Math.round(router.attempt)) : undefined,
+    region: metadataString(router?.region)
+  };
+  return Object.values(metadata).some((value) => value !== undefined) ? metadata : undefined;
+}
+
+function applyRequestExtensions(body: Record<string, unknown>, options: OpenAiRequestExtensions): void {
+  if (options.sessionId) body.session_id = options.sessionId;
+  if (options.reasoning) {
+    body.reasoning = {
+      ...(options.reasoning.enabled !== undefined ? { enabled: options.reasoning.enabled } : {}),
+      ...(options.reasoning.effort ? { effort: options.reasoning.effort } : {}),
+      ...(options.reasoning.maxTokens !== undefined ? { max_tokens: options.reasoning.maxTokens } : {}),
+      ...(options.reasoning.exclude !== undefined ? { exclude: options.reasoning.exclude } : {})
+    };
+    if (options.requireReasoningSupport) {
+      body.provider = { require_parameters: true };
+    }
+  }
 }
 
 async function parseResponse(response: Response): Promise<ParsedOpenAiResponse | undefined> {
@@ -267,7 +329,8 @@ async function parseResponse(response: Response): Promise<ParsedOpenAiResponse |
   const payload = (await response.json()) as OpenAiResponse;
   return {
     content: payload.choices?.[0]?.message?.content?.trim() || undefined,
-    usage: parseUsage(payload)
+    usage: parseUsage(payload),
+    providerMetadata: parseProviderMetadata(payload)
   };
 }
 
@@ -289,6 +352,7 @@ export async function runOpenAiChatWithDiagnostics(options: OpenAiChatOptions): 
     model,
     messages: options.messages
   };
+  applyRequestExtensions(body, options);
   if (!shouldOmitTemperature(model)) {
     body.temperature = 0.2;
   }
@@ -299,6 +363,7 @@ export async function runOpenAiChatWithDiagnostics(options: OpenAiChatOptions): 
       response = await fetch(`${options.baseUrl ?? "https://api.openai.com"}/v1/chat/completions`, {
         method: "POST",
         headers: {
+          ...options.extraHeaders,
           "Content-Type": "application/json",
           Authorization: `Bearer ${options.apiKey}`
         },
@@ -376,7 +441,8 @@ export async function runOpenAiChatWithDiagnostics(options: OpenAiChatOptions): 
       elapsedMs,
       softTimeoutMs,
       hardTimeoutMs,
-      softTimeoutExceeded: elapsedMs > softTimeoutMs
+      softTimeoutExceeded: elapsedMs > softTimeoutMs,
+      providerMetadata: parsed.providerMetadata
     };
   }
 
@@ -453,9 +519,10 @@ export interface ToolCallDiagnostic {
   softTimeoutMs?: number;
   hardTimeoutMs?: number;
   softTimeoutExceeded?: boolean;
+  providerMetadata?: LlmProviderMetadata;
 }
 
-interface OpenAiToolCallOptions {
+interface OpenAiToolCallOptions extends OpenAiRequestExtensions {
   apiKey?: string;
   model?: string;
   messages: OpenAiConversationMessage[];
@@ -466,6 +533,10 @@ interface OpenAiToolCallOptions {
 }
 
 interface OpenAiToolCallResponsePayload {
+  id?: unknown;
+  model?: unknown;
+  service_tier?: unknown;
+  openrouter_metadata?: unknown;
   choices?: Array<{
     message?: {
       content?: string | null;
@@ -478,6 +549,7 @@ interface OpenAiToolCallResponsePayload {
     completion_tokens?: unknown;
     total_tokens?: unknown;
     prompt_tokens_details?: { cached_tokens?: number };
+    completion_tokens_details?: { reasoning_tokens?: number };
   };
 }
 
@@ -510,6 +582,7 @@ export async function runOpenAiToolCallWithDiagnostics(options: OpenAiToolCallOp
     tools: options.tools,
     tool_choice: "auto"
   };
+  applyRequestExtensions(body, options);
   if (!shouldOmitTemperature(model)) {
     body.temperature = 0.2;
   }
@@ -523,6 +596,7 @@ export async function runOpenAiToolCallWithDiagnostics(options: OpenAiToolCallOp
       response = await fetch(`${options.baseUrl ?? "https://api.openai.com"}/v1/chat/completions`, {
         method: "POST",
         headers: {
+          ...options.extraHeaders,
           "Content-Type": "application/json",
           Authorization: `Bearer ${options.apiKey}`
         },
@@ -617,12 +691,14 @@ export async function runOpenAiToolCallWithDiagnostics(options: OpenAiToolCallOp
   const message = choice?.message;
   const finishReason = choice?.finish_reason;
   const usage = parseUsage(payload as OpenAiResponse);
+  const providerMetadata = parseProviderMetadata(payload as OpenAiResponse);
 
   return {
     content: message?.content?.trim() || undefined,
     toolCalls: message?.tool_calls?.length ? message.tool_calls : undefined,
     finishReason,
     usage,
+    providerMetadata,
     attempts,
     elapsedMs,
     softTimeoutMs,
@@ -661,6 +737,7 @@ export async function runOpenAiStructuredChatWithDiagnostics<T>(
       }
     }
   };
+  applyRequestExtensions(body, options);
   if (!shouldOmitTemperature(model)) {
     body.temperature = 0;
   }
@@ -673,6 +750,7 @@ export async function runOpenAiStructuredChatWithDiagnostics<T>(
       response = await fetch(`${options.baseUrl ?? "https://api.openai.com"}/v1/chat/completions`, {
         method: "POST",
         headers: {
+          ...options.extraHeaders,
           "Content-Type": "application/json",
           Authorization: `Bearer ${options.apiKey}`
         },
@@ -790,6 +868,7 @@ export async function runOpenAiStructuredChatWithDiagnostics<T>(
     return {
       result: validator.parse(parsedJson),
       usage: parsed?.usage,
+      providerMetadata: parsed?.providerMetadata,
       attempts,
       elapsedMs,
       softTimeoutMs,

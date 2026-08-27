@@ -148,6 +148,7 @@ export interface LlmUsage {
   completionTokens: number;
   totalTokens: number;
   cachedTokens?: number;
+  reasoningTokens?: number;
 }
 
 export interface LlmUsageTotals extends LlmUsage {

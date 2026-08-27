@@ -16,7 +16,8 @@ import type {
   LlmToolCall,
   LlmToolCallRequest,
   LlmToolCallResult,
-  LlmToolDef
+  LlmToolDef,
+  LlmReasoningConfig
 } from "./types.js";
 
 interface OpenAiLlmProviderOptions {
@@ -24,6 +25,10 @@ interface OpenAiLlmProviderOptions {
   defaultModel?: string;
   baseUrl?: string;
   name?: string;
+  defaultReasoning?: LlmReasoningConfig;
+  extraHeaders?: Record<string, string>;
+  forwardSessionId?: boolean;
+  requireReasoningSupport?: boolean;
 }
 
 function toOpenAiMessages(messages: LlmConversationMessage[]): OpenAiConversationMessage[] {
@@ -62,12 +67,20 @@ export class OpenAiLlmProvider implements LlmProvider {
   private readonly apiKey: string;
   private readonly defaultModel?: string;
   private readonly baseUrl?: string;
+  private readonly defaultReasoning?: LlmReasoningConfig;
+  private readonly extraHeaders?: Record<string, string>;
+  private readonly forwardSessionId: boolean;
+  private readonly requireReasoningSupport: boolean;
 
   constructor(options: OpenAiLlmProviderOptions) {
     this.name = options.name ?? "openai";
     this.apiKey = options.apiKey;
     this.defaultModel = options.defaultModel;
     this.baseUrl = options.baseUrl;
+    this.defaultReasoning = options.defaultReasoning;
+    this.extraHeaders = options.extraHeaders;
+    this.forwardSessionId = options.forwardSessionId ?? false;
+    this.requireReasoningSupport = options.requireReasoningSupport ?? false;
   }
 
   async generateText(request: LlmTextRequest): Promise<LlmTextResult> {
@@ -77,7 +90,11 @@ export class OpenAiLlmProvider implements LlmProvider {
       timeoutMs: request.timeoutMs,
       maxAttempts: request.maxAttempts,
       messages: request.messages,
-      baseUrl: this.baseUrl
+      baseUrl: this.baseUrl,
+      reasoning: request.reasoning ?? this.defaultReasoning,
+      sessionId: this.forwardSessionId ? request.sessionId : undefined,
+      extraHeaders: this.extraHeaders,
+      requireReasoningSupport: this.requireReasoningSupport
     });
     if (diagnostic.content) {
       return {
@@ -88,7 +105,8 @@ export class OpenAiLlmProvider implements LlmProvider {
         elapsedMs: diagnostic.elapsedMs,
         softTimeoutMs: diagnostic.softTimeoutMs,
         hardTimeoutMs: diagnostic.hardTimeoutMs,
-        softTimeoutExceeded: diagnostic.softTimeoutExceeded
+        softTimeoutExceeded: diagnostic.softTimeoutExceeded,
+        providerMetadata: diagnostic.providerMetadata
       };
     }
     return {
@@ -114,7 +132,11 @@ export class OpenAiLlmProvider implements LlmProvider {
         timeoutMs: request.timeoutMs,
         maxAttempts: request.maxAttempts,
         messages: request.messages,
-        baseUrl: this.baseUrl
+        baseUrl: this.baseUrl,
+        reasoning: request.reasoning ?? this.defaultReasoning,
+        sessionId: this.forwardSessionId ? request.sessionId : undefined,
+        extraHeaders: this.extraHeaders,
+        requireReasoningSupport: this.requireReasoningSupport
       },
       validator
     );
@@ -130,7 +152,8 @@ export class OpenAiLlmProvider implements LlmProvider {
       elapsedMs: diagnostic.elapsedMs,
       softTimeoutMs: diagnostic.softTimeoutMs,
       hardTimeoutMs: diagnostic.hardTimeoutMs,
-      softTimeoutExceeded: diagnostic.softTimeoutExceeded
+      softTimeoutExceeded: diagnostic.softTimeoutExceeded,
+      providerMetadata: diagnostic.providerMetadata
     };
   }
 
@@ -142,7 +165,11 @@ export class OpenAiLlmProvider implements LlmProvider {
       tools: toOpenAiToolDefs(request.tools),
       timeoutMs: request.timeoutMs,
       maxAttempts: request.maxAttempts,
-      baseUrl: this.baseUrl
+      baseUrl: this.baseUrl,
+      reasoning: request.reasoning ?? this.defaultReasoning,
+      sessionId: this.forwardSessionId ? request.sessionId : undefined,
+      extraHeaders: this.extraHeaders,
+      requireReasoningSupport: this.requireReasoningSupport
     });
 
     if (diagnostic.failureCode) {
@@ -163,7 +190,8 @@ export class OpenAiLlmProvider implements LlmProvider {
       toolCalls: diagnostic.toolCalls?.length ? toUnifiedToolCalls(diagnostic.toolCalls) : undefined,
       finishReason: diagnostic.finishReason,
       usage: diagnostic.usage,
-      elapsedMs: diagnostic.elapsedMs
+      elapsedMs: diagnostic.elapsedMs,
+      providerMetadata: diagnostic.providerMetadata
     };
   }
 }

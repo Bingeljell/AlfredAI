@@ -446,6 +446,16 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     if (llmResult.usage) {
       await runStore.addLlmUsage(runId, llmResult.usage, 1);
     }
+    if (llmResult.providerMetadata) {
+      await runStore.appendEvent({
+        runId,
+        sessionId,
+        phase: "observe",
+        eventType: "llm_provider_metadata",
+        payload: { ...llmResult.providerMetadata },
+        timestamp: nowIso()
+      });
+    }
 
     const finishReason = llmResult.finishReason;
     lastProgress = llmResult.content ?? lastProgress;

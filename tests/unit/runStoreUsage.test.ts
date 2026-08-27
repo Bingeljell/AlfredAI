@@ -13,7 +13,8 @@ test("runStore accumulates llm usage totals across updates", async () => {
     {
       promptTokens: 100,
       completionTokens: 40,
-      totalTokens: 140
+      totalTokens: 140,
+      reasoningTokens: 12
     },
     1
   );
@@ -35,6 +36,7 @@ test("runStore accumulates llm usage totals across updates", async () => {
     completionTokens: 65,
     totalTokens: 225,
     cachedTokens: 0,
+    reasoningTokens: 12,
     callCount: 3
   });
 });

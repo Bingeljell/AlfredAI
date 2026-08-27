@@ -69,7 +69,8 @@ export function getActiveLlmProvider(): LlmProvider {
       _provider = new OpenRouterLlmProvider({
         apiKey: appConfig.openRouterApiKey,
         baseUrl: appConfig.openRouterBaseUrl,
-        defaultModel: appConfig.modelSmart
+        defaultModel: appConfig.modelSmart,
+        reasoning: appConfig.openRouterReasoning
       });
       break;
     }

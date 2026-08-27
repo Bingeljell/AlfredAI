@@ -26,6 +26,25 @@ export interface LlmProviderState {
   data: unknown;
 }
 
+export type LlmReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface LlmReasoningConfig {
+  enabled?: boolean;
+  effort?: LlmReasoningEffort;
+  maxTokens?: number;
+  exclude?: boolean;
+}
+
+export interface LlmProviderMetadata {
+  responseId?: string;
+  responseModel?: string;
+  serviceTier?: string;
+  upstreamProvider?: string;
+  routingStrategy?: string;
+  routingAttempt?: number;
+  region?: string;
+}
+
 export type LlmConversationMessage =
   | { role: "system"; content: string }
   | { role: "user"; content: string }
@@ -38,6 +57,7 @@ export interface LlmBaseRequest {
   maxAttempts?: number;
   sessionId?: string;
   signal?: AbortSignal;
+  reasoning?: LlmReasoningConfig;
 }
 
 export interface LlmToolCallRequest extends LlmBaseRequest {
@@ -61,6 +81,7 @@ export interface LlmToolCallResult {
   hardTimeoutMs?: number;
   softTimeoutExceeded?: boolean;
   providerState?: LlmProviderState;
+  providerMetadata?: LlmProviderMetadata;
 }
 
 // ─── Text and structured types ────────────────────────────────────────────────
@@ -87,6 +108,7 @@ export interface LlmTextResult {
   softTimeoutMs?: number;
   hardTimeoutMs?: number;
   softTimeoutExceeded?: boolean;
+  providerMetadata?: LlmProviderMetadata;
 }
 
 export interface LlmStructuredResult<T> {
@@ -102,6 +124,7 @@ export interface LlmStructuredResult<T> {
   softTimeoutMs?: number;
   hardTimeoutMs?: number;
   softTimeoutExceeded?: boolean;
+  providerMetadata?: LlmProviderMetadata;
 }
 
 // ─── Provider interface ───────────────────────────────────────────────────────

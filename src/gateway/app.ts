@@ -303,7 +303,10 @@ app.get("/v1/llm/status", (c) => {
   return c.json({
     provider: appConfig.llmProvider,
     modelFast: appConfig.modelFast,
-    modelSmart: appConfig.modelSmart
+    modelSmart: appConfig.modelSmart,
+    reasoning: appConfig.llmProvider === "openrouter"
+      ? appConfig.openRouterReasoning ?? { mode: "model_default" }
+      : null
   });
 });
 

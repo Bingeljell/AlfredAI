@@ -11,6 +11,11 @@ import type { SchedulerTaskApi } from "../scheduler/api.js";
 import type { SchedulerProvenance } from "../scheduler/notifier.js";
 import type { SchedulerTurnControl } from "../scheduler/api.js";
 import type { TurnExecutionProfile } from "./executionProfile.js";
+import {
+  buildGroundingFallback,
+  buildGroundingRepairInstruction,
+  findUngroundedActionClaims
+} from "./groundingGuard.js";
 
 export interface AgentLoopOptions {
   runId: string;
@@ -283,6 +288,8 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
 
   let iteration = 0;
   let toolCallCount = 0;
+  let groundingRepairAttempts = 0;
+  const successfulTools = new Set<string>();
   let lastProgress: string | undefined;
   const schedulerTurn = isSchedulerTurn(options);
   const toolLimit = maxToolCalls ?? Number.MAX_SAFE_INTEGER;
@@ -464,6 +471,41 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     if (finishReason === "stop" || (!llmResult.toolCalls?.length && llmResult.content && finishReason !== "length")) {
       const assistantText = llmResult.content ?? "";
 
+      if (!schedulerTurn) {
+        const groundingViolations = findUngroundedActionClaims(assistantText, successfulTools);
+        if (groundingViolations.length > 0) {
+          await runStore.appendEvent({
+            runId,
+            sessionId,
+            phase: "observe",
+            eventType: "grounding_violation",
+            payload: {
+              iteration,
+              repairAttempt: groundingRepairAttempts + 1,
+              successfulTools: Array.from(successfulTools).sort(),
+              violations: groundingViolations
+            },
+            timestamp: nowIso()
+          });
+
+          if (groundingRepairAttempts === 0 && iteration < maxIterations) {
+            groundingRepairAttempts += 1;
+            messages.push({ role: "assistant", content: assistantText });
+            messages.push({
+              role: "system",
+              content: buildGroundingRepairInstruction(groundingViolations, successfulTools)
+            });
+            continue;
+          }
+
+          return {
+            status: "completed",
+            assistantText: buildGroundingFallback(groundingViolations),
+            artifactPaths: state.artifacts.length > 0 ? state.artifacts : undefined
+          };
+        }
+      }
+
       await runStore.appendEvent({
         runId,
         sessionId,
@@ -560,6 +602,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
           runStore,
           runId
         });
+
+        if (envelope.status === "ok") {
+          successfulTools.add(toolName);
+        }
 
         const resultContent = envelope.status === "ok"
           ? JSON.stringify(scrubToolOutput(envelope.result))

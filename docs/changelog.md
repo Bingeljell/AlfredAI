@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-08-27** > `src/scheduler/execution.ts`, `src/tools/definitions/{schedulerTaskComplete,schedulerTaskReschedule,fileExists}.tool.ts`, scheduler tests > reliable bounded watcher wake completion > Bind terminal actions to the server-owned current task cycle instead of asking the model to guess opaque IDs, clarify that `file_exists` cannot inspect repository source, and direct terminal Herdr wakes to report unavailable verification honestly rather than loop on an already-finished agent.
+
 - **2026-08-27** > `src/runner/chatService.ts`, `src/runtime/agentLoop.ts`, `tests/{integration/sessionStore,unit/sessionContextConstruction}.test.ts` > unambiguous session context construction > Build inference context before persisting the in-flight request, use the completed conversation window as the sole history representation, and keep the current user message exactly once and last so models cannot latch onto duplicated stale branches.
 
 - **2026-08-27** > `docs/architecture/multimodal.md` > multimodal implementation plan > Added the channel-agnostic attachment, blob storage, STT/TTS, capability-checking, failure-mode, and staged rollout design that will guide the later multimodal passes.

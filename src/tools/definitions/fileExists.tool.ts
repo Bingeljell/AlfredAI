@@ -6,7 +6,7 @@ export const FileExistsInputSchema = z.object({ relativePath: z.string().min(1).
 
 export const toolDefinition: ToolDefinition<typeof FileExistsInputSchema> = {
   name: "file_exists",
-  description: "Check whether a safe workspace-relative file exists for a bounded scheduled task.",
+  description: "Check whether a safe path exists under Alfred's data workspace. This cannot inspect repository paths such as src/, tests/, docs/, or package files.",
   inputSchema: FileExistsInputSchema,
   inputHint: '{"relativePath":"workspace/result.md"}',
   async execute(input, context) {
@@ -14,4 +14,3 @@ export const toolDefinition: ToolDefinition<typeof FileExistsInputSchema> = {
     return { status: result.status, summary: result.summary, digest: result.digest, terminal: result.terminal, changed: result.changed, errorCode: result.errorCode };
   },
 };
-

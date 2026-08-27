@@ -71,7 +71,9 @@ class TerminalFirstProvider extends SchedulerProviderBase {
       toolCalls: [{
         id: "terminal-5",
         name: "scheduler_task_complete",
-        arguments: JSON.stringify({ taskId: TASK_ID, cycleId: CYCLE_ID, summary: "Observed the bounded result." }),
+        // Regression: older/model-invented identifiers must be ignored. The
+        // server-owned SchedulerTurnControl selects the real current cycle.
+        arguments: JSON.stringify({ taskId: TASK_ID, cycleId: "cycle-1", summary: "Observed the bounded result." }),
       }],
     };
   }

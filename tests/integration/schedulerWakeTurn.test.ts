@@ -11,6 +11,7 @@ import { SchedulerTaskStore } from "../../src/scheduler/taskStore.js";
 import type { SchedulerClock } from "../../src/scheduler/clock.js";
 import { InMemoryQueue } from "../../src/workers/inMemoryQueue.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
+import { SCHEDULER_SYSTEM_PROMPT } from "../../src/scheduler/execution.js";
 
 class FakeClock implements SchedulerClock {
   now = Date.parse("2026-08-17T10:00:00.000Z");
@@ -35,6 +36,7 @@ test("scheduled wake reuses task/cycle identity and avoids interactive memory pe
   let capturedProfile: { origin?: string; maxIterations?: number; maxToolCalls?: number; persistConversation?: boolean } | undefined;
   let capturedMessage = "";
   let capturedSessionContext: unknown = "not-captured";
+  let capturedSystemPrompt = "";
   let service!: ChatService;
   const engine = new SchedulerEngine({
     taskStore,
@@ -78,6 +80,7 @@ test("scheduled wake reuses task/cycle identity and avoids interactive memory pe
       capturedMessage = message;
       capturedSessionContext = options.sessionContext;
       capturedProfile = options.executionProfile;
+      capturedSystemPrompt = options.systemPrompt ?? "";
       options.schedulerControl?.complete("Condition satisfied");
       return { status: "completed", assistantText: "completed" };
     },
@@ -103,6 +106,8 @@ test("scheduled wake reuses task/cycle identity and avoids interactive memory pe
   assert.equal(capturedProfile?.maxToolCalls, 5);
   assert.equal(capturedProfile?.persistConversation, false);
   assert.equal(capturedSessionContext, undefined);
+  assert.equal(capturedSystemPrompt, SCHEDULER_SYSTEM_PROMPT);
+  assert.match(capturedSystemPrompt, /bound by the server/);
   assert.match(capturedMessage, /Deterministic Herdr terminal snapshot/);
   assert.match(capturedMessage, /TASK_COMPLETE/);
   assert.match(capturedMessage, /all checks passed/);

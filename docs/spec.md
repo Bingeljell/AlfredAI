@@ -97,7 +97,8 @@ All tools are Zod-defined, auto-discovered from `src/tools/definitions/*.tool.ts
 
 **Search & Web**
 - `search` — web search via SearXNG (primary) with Brave/BrightData fallback
-- `web_fetch` — fetch and render pages (Playwright or HTTP)
+- `web_fetch` — fetch and render pages through healthy Pinchtab first, with lazy Playwright fallback when enabled
+- `pinchtab_fetch`, `pinchtab_search` — direct JS-rendered fetch/search through Pinchtab
 - `search_status` — live provider health check
 - `recover_search` — trigger SearXNG recovery
 
@@ -125,7 +126,6 @@ All tools are Zod-defined, auto-discovered from `src/tools/definitions/*.tool.ts
 
 **Planned / Not Yet Shipped**
 - `send_emails` — outreach via Resend/SendGrid (approval required)
-- `pinchtab_fetch`, `pinchtab_search` — JS-rendered scraping via Pinchtab (optional)
 
 ## 6. Folder Structure
 
@@ -202,7 +202,7 @@ Alfred should not rely on retrieval for recent conversation that still fits comf
 - TypeScript + pnpm  
 - Gateway: Custom ReAct (Mastra/LangGraph.js optional later)  
 - Queue: p-queue + worker_threads pool using in-memory pnpm package - (BullMQ + Redis when we move to scale - 4-6 weeks)  
-- Browser: Playwright  
+- Browser: Pinchtab-first for read-only extraction; Playwright for fallback and persistent interactive control
 - Local execution: Node `child_process` + `shell_exec` tools  
 - Validation: Zod  
 - UI: React + Vite + Tailwind  
@@ -227,3 +227,4 @@ Alfred should not rely on retrieval for recent conversation that still fits comf
 - All shell/system commands require explicit approval (configurable in SOUL.md).  
 - Scraping = public sites only.  
 - Everything auditable in plain logs + Markdown.
+- Final replies cannot claim completed searches, fetches, file actions, commands, tests, or browser actions without a matching successful current-run tool receipt.

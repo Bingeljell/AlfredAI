@@ -1,5 +1,7 @@
 # Interactive Browser Automation Tool Spec (`browser_action`)
 
+> Implementation status (2026-08-27): the interactive capability shipped as eight atomic `browser_*` tools rather than one multiplexed `browser_action` tool. They use persistent Playwright sessions. Read-only extraction uses Pinchtab first and lazily falls back to Playwright when enabled. The design below is retained as the original proposal; see `provider-and-grounding-reliability.md` for the current backend boundary.
+
 ## 1. Overview & Objectives
 This specification outlines the design and implementation of an interactive, token-efficient browser automation tool (`browser_action`) for Alfred.
 
@@ -66,7 +68,6 @@ VISIBLE TEXT SUMMARY:
 ---
 
 ## 4. Integration with Alfred
-1. Implement `src/tools/definitions/browser_action.tool.ts`.
-2. Add `browser_action` to `toolAllowlist` in `src/runtime/specialists.ts`.
-3. Add Playwright dependency (`pnpm add playwright`) if not already present.
-4. Run `pnpm tsc --noEmit` to verify type safety.
+The shipped interface is `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_nav`, `browser_screenshot`, `browser_tabs`, and `browser_close`. These tools are allowlisted in `src/runtime/specialists.ts`; Playwright remains their interaction engine.
+
+`web_fetch`, `lead_extractor`, and `lead_generation` instead use `PreferredBrowserPool`, selecting healthy Pinchtab before creating Playwright. This keeps the read-only and stateful-interaction paths explicit.

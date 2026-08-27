@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { BlobNotFoundError, BlobStore } from "../../src/channels/blobStore.js";
+import { BlobNotFoundError, BlobStore, BlobTooLargeError } from "../../src/channels/blobStore.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
 
 function sha256Hex(bytes: Uint8Array): string {
@@ -190,4 +190,51 @@ test("BlobStore: concurrent puts for the same content yield one blob and one fil
   const blobs = entries.filter((name) => !name.startsWith("."));
   assert.equal(blobs.length, 1, `expected one file, got ${blobs.join(", ")}`);
   assert.equal(blobs[0], a);
+});
+
+test("BlobStore: metadata and LRU order survive a process restart", async () => {
+  const workspace = await createTempWorkspace("alfred-blob-restart");
+  let nowMs = 1_000;
+  const firstStore = new BlobStore({ baseDir: workspace, maxEntries: 3, now: () => nowMs });
+  const aId = await firstStore.put(bytesOf("A"), "text/x-first");
+  nowMs += 10;
+  const bId = await firstStore.put(bytesOf("B"), "text/x-second");
+  nowMs += 10;
+  await firstStore.get(aId);
+
+  // A new process reconstructs the complete index from disk. Tightening the
+  // cap to one entry must evict B according to the persisted access order.
+  nowMs += 10;
+  const restartedStore = new BlobStore({ baseDir: workspace, maxEntries: 1, now: () => nowMs });
+  assert.deepEqual(await restartedStore.getMetadata(aId), { mime: "text/x-first", size: 1 });
+  await assert.rejects(
+    restartedStore.get(bId),
+    (error: unknown) => error instanceof BlobNotFoundError && error.blobId === bId,
+  );
+  assert.equal(restartedStore.size(), 1);
+});
+
+test("BlobStore: rejects unsafe ids and blobs larger than the configured cap", async () => {
+  const workspace = await createTempWorkspace("alfred-blob-validation");
+  const store = new BlobStore({ baseDir: workspace, maxBytes: 4 });
+
+  await assert.rejects(store.get("../../outside"), /lowercase sha256 digest/);
+  await assert.rejects(
+    store.put(bytesOf("12345"), "text/plain"),
+    (error: unknown) => error instanceof BlobTooLargeError && error.size === 5 && error.maxBytes === 4,
+  );
+  assert.equal(store.size(), 0);
+});
+
+test("BlobStore: put repairs a corrupt file at an otherwise valid digest path", async () => {
+  const workspace = await createTempWorkspace("alfred-blob-corrupt");
+  const payload = bytesOf("correct bytes");
+  const blobId = sha256Hex(payload);
+  await writeFile(path.join(workspace, blobId), "wrong bytes");
+
+  const store = new BlobStore({ baseDir: workspace });
+  await store.put(payload, "text/plain");
+
+  assert.equal(Buffer.from(await store.get(blobId)).toString("utf8"), "correct bytes");
+  assert.deepEqual(await store.getMetadata(blobId), { mime: "text/plain", size: payload.byteLength });
 });

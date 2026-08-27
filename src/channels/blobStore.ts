@@ -1,33 +1,19 @@
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 
-/**
- * Options for {@link BlobStore}.
- *
- * The store enforces at least one of a byte cap or an entry-count cap. Both
- * caps are evaluated on every successful write; the store evicts least-
- * recently-used entries until it is under both limits. Touching a blob via
- * {@link BlobStore.get} or {@link BlobStore.getMetadata} refreshes its
- * recency so active attachments are not evicted under pressure.
- */
+const SHA256_HEX = /^[a-f0-9]{64}$/;
+const DEFAULT_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+const DEFAULT_MAX_ENTRIES = 10_000;
+
 export interface BlobStoreOptions {
-  /** Absolute path to the directory that holds the content-addressed blobs. */
+  /** Absolute directory containing content-addressed blob files. */
   baseDir: string;
-  /**
-   * Soft cap on total on-disk bytes. `0` or `undefined` disables this cap.
-   * @default 2 * 1024 * 1024 * 1024 (2 GiB)
-   */
+  /** On-disk byte cap. Zero disables the byte cap. */
   maxBytes?: number;
-  /**
-   * Soft cap on number of stored blobs. `0` or `undefined` disables this cap.
-   * @default 10_000
-   */
+  /** Stored-blob count cap. Zero disables the entry cap. */
   maxEntries?: number;
-  /**
-   * Source of "now" for LRU bookkeeping. Override in tests.
-   * @default Date.now
-   */
+  /** Injectable wall clock for deterministic LRU tests. */
   now?: () => number;
 }
 
@@ -36,18 +22,13 @@ export interface BlobMetadata {
   size: number;
 }
 
-interface BlobIndexEntry {
-  size: number;
-  mime: string;
+interface PersistedBlobMetadata extends BlobMetadata {
   lastAccessAtMs: number;
 }
 
-/**
- * Thrown when {@link BlobStore.get} or {@link BlobStore.getMetadata} is
- * called with a digest that does not exist on disk.
- */
 export class BlobNotFoundError extends Error {
   readonly blobId: string;
+
   constructor(blobId: string) {
     super(`blob not found: ${blobId}`);
     this.name = "BlobNotFoundError";
@@ -55,216 +36,263 @@ export class BlobNotFoundError extends Error {
   }
 }
 
+export class BlobTooLargeError extends Error {
+  readonly size: number;
+  readonly maxBytes: number;
+
+  constructor(size: number, maxBytes: number) {
+    super(`blob size ${size} exceeds store limit ${maxBytes}`);
+    this.name = "BlobTooLargeError";
+    this.size = size;
+    this.maxBytes = maxBytes;
+  }
+}
+
 /**
- * Content-addressed blob store with LRU eviction and size caps.
- *
- * Each blob lives at `{baseDir}/{sha256_hex}` (flat, no subdirs, no extension).
- * Writes are atomic: bytes are streamed to a temporary file and then renamed
- * into place, so a crash mid-write never produces a half-written file at the
- * final path. {@link BlobStore.put} is idempotent on identical content — the
- * sha256 is computed first, the index is consulted, and only the first writer
- * for a given digest actually writes bytes. Concurrent puts for the same
- * content are singleflighted so they observe the same result.
+ * Content-addressed blob storage with durable metadata and serialized LRU
+ * eviction. Blob bytes live at `{baseDir}/{sha256}`; hidden sidecars preserve
+ * MIME and recency across process restarts.
  */
 export class BlobStore {
   private readonly baseDir: string;
   private readonly maxBytes: number;
   private readonly maxEntries: number;
   private readonly now: () => number;
-  private readonly index = new Map<string, BlobIndexEntry>();
-  /** In-flight puts keyed by digest, used to singleflight concurrent writers. */
-  private readonly inFlight = new Map<string, Promise<string>>();
+  private readonly index = new Map<string, PersistedBlobMetadata>();
+  private operationTail: Promise<void> = Promise.resolve();
+  private initialized = false;
 
   constructor(options: BlobStoreOptions) {
-    if (!options || typeof options.baseDir !== "string" || options.baseDir.length === 0) {
+    if (!options || typeof options.baseDir !== "string" || options.baseDir.trim().length === 0) {
       throw new Error("BlobStore: baseDir is required");
     }
+    if (!path.isAbsolute(options.baseDir)) {
+      throw new Error("BlobStore: baseDir must be absolute");
+    }
+
     this.baseDir = options.baseDir;
-    this.maxBytes = options.maxBytes ?? 2 * 1024 * 1024 * 1024;
-    this.maxEntries = options.maxEntries ?? 10_000;
+    this.maxBytes = validateCap("maxBytes", options.maxBytes ?? DEFAULT_MAX_BYTES);
+    this.maxEntries = validateCap("maxEntries", options.maxEntries ?? DEFAULT_MAX_ENTRIES);
     this.now = options.now ?? Date.now;
   }
 
-  /**
-   * Write bytes to the store. Idempotent on identical content: the sha256 is
-   * computed first; if a blob with that digest already exists, no new file is
-   * written and the existing id is returned with its LRU entry refreshed.
-   *
-   * After a successful write, evicts least-recently-used entries until both
-   * the byte and entry-count caps are satisfied.
-   */
   async put(bytes: Uint8Array, mime: string): Promise<string> {
     if (!(bytes instanceof Uint8Array)) {
       throw new TypeError("BlobStore.put: bytes must be a Uint8Array");
     }
-    if (typeof mime !== "string" || mime.length === 0) {
+    if (typeof mime !== "string" || mime.trim().length === 0) {
       throw new TypeError("BlobStore.put: mime must be a non-empty string");
     }
-
-    const digest = sha256Hex(bytes);
-
-    // Fast path: already on disk — refresh LRU and return.
-    const existing = this.index.get(digest);
-    if (existing) {
-      existing.lastAccessAtMs = this.now();
-      return digest;
+    if (this.maxBytes > 0 && bytes.byteLength > this.maxBytes) {
+      throw new BlobTooLargeError(bytes.byteLength, this.maxBytes);
     }
 
-    // Singleflight: if another put for the same digest is in flight, wait.
-    const pending = this.inFlight.get(digest);
-    if (pending) {
-      return pending;
-    }
+    const blobId = sha256Hex(bytes);
+    return this.withLock(async () => {
+      await this.initializeLocked();
 
-    const work = this.writeBlob(digest, bytes, mime)
-      .then((id) => {
-        this.evictUntilUnderCap();
-        return id;
-      })
-      .finally(() => {
-        if (this.inFlight.get(digest) === work) {
-          this.inFlight.delete(digest);
-        }
-      });
-    this.inFlight.set(digest, work);
-    return work;
-  }
-
-  /**
-   * Read raw bytes for a blob. Refreshes the LRU entry. Throws
-   * {@link BlobNotFoundError} if the digest is unknown — including the
-   * race where the file was evicted between the index check and the read.
-   */
-  async get(blobId: string): Promise<Uint8Array> {
-    const entry = await this.touchOrThrow(blobId);
-    entry.lastAccessAtMs = this.now();
-    try {
-      return await readFile(this.pathFor(blobId));
-    } catch (error) {
-      if (isNotFoundError(error)) {
-        // The blob was evicted or otherwise vanished. Drop the stale index
-        // entry and surface a uniform "not found" to the caller.
-        this.index.delete(blobId);
-        throw new BlobNotFoundError(blobId);
+      const existing = this.index.get(blobId);
+      if (existing && await this.fileMatchesDigest(blobId)) {
+        existing.lastAccessAtMs = this.now();
+        if (existing.mime === "application/octet-stream") existing.mime = mime;
+        await this.writeMetadataLocked(blobId, existing);
+        return blobId;
       }
-      throw error;
-    }
+
+      this.index.delete(blobId);
+      await this.writeBlobLocked(blobId, bytes);
+      const metadata: PersistedBlobMetadata = {
+        mime,
+        size: bytes.byteLength,
+        lastAccessAtMs: this.now(),
+      };
+      this.index.set(blobId, metadata);
+      await this.writeMetadataLocked(blobId, metadata);
+      await this.evictUntilUnderCapLocked(blobId);
+      return blobId;
+    });
   }
 
-  /**
-   * Read metadata for a blob. Refreshes the LRU entry. Throws
-   * {@link BlobNotFoundError} if the digest is unknown.
-   */
+  async get(blobId: string): Promise<Uint8Array> {
+    validateBlobId(blobId);
+    return this.withLock(async () => {
+      await this.initializeLocked();
+      const metadata = this.index.get(blobId);
+      if (!metadata) throw new BlobNotFoundError(blobId);
+
+      try {
+        const bytes = await readFile(this.blobPath(blobId));
+        metadata.lastAccessAtMs = this.now();
+        await this.writeMetadataLocked(blobId, metadata);
+        return bytes;
+      } catch (error) {
+        if (isNotFoundError(error)) {
+          this.index.delete(blobId);
+          await unlink(this.metadataPath(blobId)).catch(() => undefined);
+          throw new BlobNotFoundError(blobId);
+        }
+        throw error;
+      }
+    });
+  }
+
   async getMetadata(blobId: string): Promise<BlobMetadata> {
-    const entry = await this.touchOrThrow(blobId);
-    entry.lastAccessAtMs = this.now();
-    return { mime: entry.mime, size: entry.size };
+    validateBlobId(blobId);
+    return this.withLock(async () => {
+      await this.initializeLocked();
+      const metadata = this.index.get(blobId);
+      if (!metadata) throw new BlobNotFoundError(blobId);
+
+      try {
+        await stat(this.blobPath(blobId));
+      } catch (error) {
+        if (isNotFoundError(error)) {
+          this.index.delete(blobId);
+          await unlink(this.metadataPath(blobId)).catch(() => undefined);
+          throw new BlobNotFoundError(blobId);
+        }
+        throw error;
+      }
+
+      metadata.lastAccessAtMs = this.now();
+      await this.writeMetadataLocked(blobId, metadata);
+      return { mime: metadata.mime, size: metadata.size };
+    });
   }
 
-  /**
-   * Return the index entry for `blobId`, hydrating it from disk if the
-   * process restarted and the in-memory index is cold. Throws
-   * {@link BlobNotFoundError} if neither the index nor the filesystem has
-   * the blob.
-   */
-  private async touchOrThrow(blobId: string): Promise<BlobIndexEntry> {
-    const known = this.index.get(blobId);
-    if (known) {
-      return known;
-    }
-    let fileStat;
-    try {
-      fileStat = await stat(this.pathFor(blobId));
-    } catch {
-      throw new BlobNotFoundError(blobId);
-    }
-    const hydrated: BlobIndexEntry = {
-      size: fileStat.size,
-      mime: "application/octet-stream",
-      lastAccessAtMs: this.now()
-    };
-    this.index.set(blobId, hydrated);
-    return hydrated;
-  }
-
-  /**
-   * Number of blobs currently tracked in the in-memory index. Useful for
-   * tests and for the periodic sweep the architecture doc mentions.
-   */
+  /** Number of initialized, currently indexed blobs. */
   size(): number {
     return this.index.size;
   }
 
-  private async writeBlob(digest: string, bytes: Uint8Array, mime: string): Promise<string> {
-    await mkdir(this.baseDir, { recursive: true });
-    const finalPath = this.pathFor(digest);
-    const tempPath = path.join(this.baseDir, `.tmp.${randomBytes(8).toString("hex")}`);
+  private async withLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.operationTail;
+    let release!: () => void;
+    this.operationTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
 
-    // Use a handle so we can write atomically and fsync before rename.
-    const handle = await open(tempPath, "w");
+  private async initializeLocked(): Promise<void> {
+    if (this.initialized) return;
+    await mkdir(this.baseDir, { recursive: true });
+    const entries = await readdir(this.baseDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !SHA256_HEX.test(entry.name)) continue;
+      const blobId = entry.name;
+      const blobStat = await stat(this.blobPath(blobId));
+      const persisted = await this.readMetadataLocked(blobId);
+      this.index.set(blobId, {
+        mime: persisted?.mime ?? "application/octet-stream",
+        size: blobStat.size,
+        lastAccessAtMs: persisted?.lastAccessAtMs ?? blobStat.mtimeMs,
+      });
+    }
+
+    await this.evictUntilUnderCapLocked();
+    this.initialized = true;
+  }
+
+  private async readMetadataLocked(blobId: string): Promise<PersistedBlobMetadata | undefined> {
+    try {
+      const parsed = JSON.parse(await readFile(this.metadataPath(blobId), "utf8")) as Partial<PersistedBlobMetadata>;
+      if (
+        typeof parsed.mime === "string" && parsed.mime.length > 0 &&
+        typeof parsed.size === "number" && Number.isSafeInteger(parsed.size) && parsed.size >= 0 &&
+        typeof parsed.lastAccessAtMs === "number" && Number.isFinite(parsed.lastAccessAtMs)
+      ) {
+        return parsed as PersistedBlobMetadata;
+      }
+    } catch {
+      // Missing or malformed sidecars are reconstructed from the blob.
+    }
+    return undefined;
+  }
+
+  private async fileMatchesDigest(blobId: string): Promise<boolean> {
+    try {
+      return sha256Hex(await readFile(this.blobPath(blobId))) === blobId;
+    } catch {
+      return false;
+    }
+  }
+
+  private async writeBlobLocked(blobId: string, bytes: Uint8Array): Promise<void> {
+    await writeAtomicFile(this.blobPath(blobId), bytes);
+  }
+
+  private async writeMetadataLocked(blobId: string, metadata: PersistedBlobMetadata): Promise<void> {
+    const encoded = new TextEncoder().encode(`${JSON.stringify(metadata)}\n`);
+    await writeAtomicFile(this.metadataPath(blobId), encoded);
+  }
+
+  private async evictUntilUnderCapLocked(protectedBlobId?: string): Promise<void> {
+    while (this.isOverCap()) {
+      const victim = pickLeastRecentlyUsed(this.index, protectedBlobId);
+      if (!victim) {
+        throw new Error("BlobStore: capacity cannot be satisfied without evicting the active blob");
+      }
+      await unlink(this.blobPath(victim)).catch((error) => {
+        if (!isNotFoundError(error)) throw error;
+      });
+      await unlink(this.metadataPath(victim)).catch((error) => {
+        if (!isNotFoundError(error)) throw error;
+      });
+      this.index.delete(victim);
+    }
+  }
+
+  private isOverCap(): boolean {
+    if (this.maxEntries > 0 && this.index.size > this.maxEntries) return true;
+    if (this.maxBytes <= 0) return false;
+    let totalBytes = 0;
+    for (const metadata of this.index.values()) totalBytes += metadata.size;
+    return totalBytes > this.maxBytes;
+  }
+
+  private blobPath(blobId: string): string {
+    return path.join(this.baseDir, blobId);
+  }
+
+  private metadataPath(blobId: string): string {
+    return path.join(this.baseDir, `.meta.${blobId}.json`);
+  }
+}
+
+async function writeAtomicFile(finalPath: string, bytes: Uint8Array): Promise<void> {
+  const tempPath = path.join(path.dirname(finalPath), `.tmp.${randomBytes(12).toString("hex")}`);
+  try {
+    const handle = await open(tempPath, "wx");
     try {
       await handle.writeFile(bytes);
       await handle.sync();
     } finally {
       await handle.close();
     }
-
-    // rename is atomic on POSIX when source and destination are on the same
-    // filesystem, which they are by construction.
-    try {
-      await rename(tempPath, finalPath);
-    } catch (error) {
-      // Best-effort cleanup of the temp file if rename failed.
-      await unlink(tempPath).catch(() => undefined);
-      throw error;
-    }
-
-    this.index.set(digest, {
-      size: bytes.byteLength,
-      mime,
-      lastAccessAtMs: this.now()
-    });
-    return digest;
+    await rename(tempPath, finalPath);
+  } catch (error) {
+    await unlink(tempPath).catch(() => undefined);
+    throw error;
   }
+}
 
-  private pathFor(blobId: string): string {
-    return path.join(this.baseDir, blobId);
+function validateCap(name: string, value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`BlobStore: ${name} must be a non-negative safe integer`);
   }
+  return value;
+}
 
-  private evictUntilUnderCap(): void {
-    const byteCap = this.maxBytes;
-    const entryCap = this.maxEntries;
-    if (byteCap <= 0 && entryCap <= 0) {
-      return;
-    }
-
-    // Sort once; re-derive on every loop so an evicted entry that turns out
-    // to be below cap is correctly skipped.
-    while (this.index.size > 0) {
-      const totalBytes = sumBytes(this.index);
-      const underBytes = byteCap <= 0 || totalBytes <= byteCap;
-      const underEntries = entryCap <= 0 || this.index.size <= entryCap;
-      if (underBytes && underEntries) {
-        return;
-      }
-
-      const lru = pickLeastRecentlyUsed(this.index);
-      if (!lru) {
-        return;
-      }
-      this.index.delete(lru.id);
-      // Best-effort unlink: ignore ENOENT (already gone) and surface the
-      // rest, since a leaked file would defeat the size cap.
-      void unlink(this.pathFor(lru.id)).catch((error: NodeJS.ErrnoException) => {
-        if (error && error.code !== "ENOENT") {
-          // Re-throw asynchronously so it is observable but does not
-          // interrupt the eviction loop mid-write.
-          queueMicrotask(() => {
-            throw error;
-          });
-        }
-      });
-    }
+function validateBlobId(blobId: string): void {
+  if (!SHA256_HEX.test(blobId)) {
+    throw new TypeError("BlobStore: blobId must be a lowercase sha256 digest");
   }
 }
 
@@ -272,36 +300,23 @@ function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function sumBytes(index: Map<string, BlobIndexEntry>): number {
-  let total = 0;
-  for (const entry of index.values()) {
-    total += entry.size;
-  }
-  return total;
-}
-
 function pickLeastRecentlyUsed(
-  index: Map<string, BlobIndexEntry>
-): { id: string; entry: BlobIndexEntry } | undefined {
-  let oldestId: string | undefined;
+  index: Map<string, PersistedBlobMetadata>,
+  protectedBlobId?: string,
+): string | undefined {
+  let victim: string | undefined;
   let oldestAt = Number.POSITIVE_INFINITY;
-  for (const [id, entry] of index) {
-    if (entry.lastAccessAtMs < oldestAt) {
-      oldestAt = entry.lastAccessAtMs;
-      oldestId = id;
+  for (const [blobId, metadata] of index) {
+    if (blobId === protectedBlobId) continue;
+    if (metadata.lastAccessAtMs < oldestAt) {
+      oldestAt = metadata.lastAccessAtMs;
+      victim = blobId;
     }
   }
-  if (oldestId === undefined) {
-    return undefined;
-  }
-  return { id: oldestId, entry: index.get(oldestId)! };
+  return victim;
 }
 
 function isNotFoundError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === "ENOENT"
-  );
+  return typeof error === "object" && error !== null && "code" in error &&
+    (error as { code?: unknown }).code === "ENOENT";
 }

@@ -72,27 +72,17 @@ export interface ChannelDocumentAttachment {
 }
 
 /**
- * URL attachment. Carries no `blobId` because the URL has not been fetched
- * yet — the resolver decides whether to inline the body, extract text, or
- * hand the URL to a downstream tool.
+ * URL attachment whose fetched representation has been frozen in the blob
+ * store. `url` preserves the source identity while `blobId` keeps resolver
+ * input content-addressed like every other attachment variant.
  */
 export interface ChannelUrlAttachment {
   kind: "url";
-  url: string;
-  title?: string;
-}
-
-/**
- * Generic file attachment. Used for blobs the channel classifies as a file
- * but that do not fit the more specific variants (e.g. an unknown binary
- * uploaded through the web UI).
- */
-export interface ChannelFileAttachment {
-  kind: "file";
   blobId: string;
   mime: string;
   size: number;
-  filename?: string;
+  url: string;
+  title?: string;
 }
 
 /**
@@ -106,5 +96,4 @@ export type ChannelAttachment =
   | ChannelAudioAttachment
   | ChannelVideoAttachment
   | ChannelDocumentAttachment
-  | ChannelUrlAttachment
-  | ChannelFileAttachment;
+  | ChannelUrlAttachment;

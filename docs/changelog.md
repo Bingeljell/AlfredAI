@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-08-27** > `docs/architecture/multimodal.md` > multimodal implementation plan > Added the channel-agnostic attachment, blob storage, STT/TTS, capability-checking, failure-mode, and staged rollout design that will guide the later multimodal passes.
+
 - **2026-08-25** > `src/channels/blobStore.ts`, `src/channels/types.ts`, `tests/unit/blobStore.test.ts` > multimodal keystone: content-addressed blob store + ChannelAttachment type > Added a sha256-addressed `BlobStore` with atomic temp+rename writes, idempotent dedup on identical content, singleflighted concurrent puts, LRU eviction under configurable byte and entry-count caps, and a `BlobNotFoundError` for missing ids; introduced the `ChannelAttachment` discriminated union (image, voice, audio, video, document, url, file) with mandatory `blobId`/`mime`/`size` and variant-specific metadata, ready for the resolver and channel adapters to consume.
 
 - **2026-08-25** > `src/scheduler/watch.ts`, `src/scheduler/{schemas,types,api,taskStore,engine}.ts`, `src/runner/chatService.ts`, `tests/unit/schedulerWatch.test.ts` > Herdr watcher lifecycle baseline > Persist the last Herdr observation status, ignore initial idle and running-state observations, and wake only after a changed terminal observation.

@@ -9,21 +9,30 @@ Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reas
 ## What Alfred Does Today
 
 - **General-purpose ReAct agent** — research, writing, lead generation, ops, file work, shell commands
-- **Multi-provider LLM** — Gemini, Anthropic, OpenAI, Ollama, LM Studio, OpenRouter, and Codex subscription auth; configurable per deployment, with fast/smart model tiers
-- **Headless browser control** — Alfred can drive a live browser session: navigate, click, type, fill forms, take screenshots
+- **Multi-provider LLM** — Gemini, Anthropic, OpenAI, Ollama, LM Studio, OpenRouter, and Codex subscription auth; OpenRouter deployments can explicitly tune supported models' reasoning effort or token budget
+- **Pinchtab-first read-only browsing** — `web_fetch` and lead extraction prefer healthy Pinchtab, with supervised startup and lazy Playwright fallback
+- **Interactive browser control** — Alfred can drive a persistent Playwright session: navigate, click, type, fill forms, and take screenshots
 - **Remote agent orchestration** — monitors and dispatches tasks to coding agents (Claude, Codex, Pi, …) running in Herdr workspaces
 - **Decoupled agent event webhook** — external agents/terminal wrappers push lifecycle events (`needs_approval`, `completed`, `failed`, `progress`) to Alfred, which routes them to Telegram
 - **Telegram + Web UI** — converse from your phone or browser; live, edit-in-place progress updates as he works
 - **Tiered persistent memory** — context card, per-day session logs, group chat logs, and QMD semantic recall across sessions
 - **Self-extending** — Alfred can read his own codebase and write new tools mid-session
 - **Credential-safe by default** — tool output and run telemetry are scrubbed of API keys and high-entropy secrets before they enter LLM context or logs
+- **Grounded action reporting** — claims that Alfred searched, fetched, read, wrote, ran, tested, or browsed require a matching successful current-run tool receipt
 - **Tool ecosystem** — 30+ tools: search, web fetch, file ops, shell exec, process management, lead pipeline, writer, browser control, Herdr, memory (full catalog below)
 
-## Important notes as of 15th August 2026
+## Important notes as of 27th August 2026
 
 - **Personality** - Alfred's personality is meant to be a first principle's thinker, but not one who will overthink.
 - **Ownership** - There's no onboarding right now, so you'll have to edit `SOUL.md` yourself and switch out the name, else Alfred's going to think he's working for me
 - **Features** - Alfred is substantially built out (browser control, agent events, persistent memory, remote agent orchestration), but he's still evolving — new capabilities land regularly and behaviour may shift between releases.
+
+### Recent reliability fixes
+
+- Conversation history is injected once as ordinary messages, with the current request exactly once and last. This removes duplicated summary/window branches that could pull weaker models back toward stale turns.
+- OpenRouter reasoning is configurable per deployment, reasoning-token usage is tracked, Alfred forwards a stable session ID, and bounded upstream routing metadata is recorded for diagnosis.
+- Pinchtab is now the preferred backend for read-only browsing. Playwright is created only as an enabled fallback; Pinchtab startup failures are visible and supervised.
+- Final replies are checked against the current run's successful tool ledger. An unsupported action claim is withheld and repaired once; a repeated claim becomes an explicit correction.
 
 ## Tool Catalog
 
@@ -38,7 +47,8 @@ Alfred auto-discovers tools from `src/tools/definitions/` — each `*.tool.ts` f
 | `fetch_tweet` | Fetches a tweet via the Twitter API (`TWITTER_BEARER_TOKEN`) |
 | **Search & web** | |
 | `search` | Web search via SearXNG (primary), with Bright Data and Brave fallbacks |
-| `web_fetch` | One-shot, read-only page extraction (title, text, tables, links) via headless Chromium |
+| `web_fetch` | One-shot page extraction via healthy Pinchtab first, with lazy Playwright fallback when enabled |
+| `pinchtab_fetch` / `pinchtab_search` | Direct JS-rendered fetch and search through Pinchtab |
 | `search_status` / `recover_search` / `run_diagnostics` | Search health checks and recovery |
 | **Browser control** (persistent session) | |
 | `browser_navigate` | Open a URL; returns page text + numbered interactive elements |
@@ -83,13 +93,17 @@ cp .env.example .env
 | `GEMINI_API_KEY` | — | Google Gemini (Google's naming convention) |
 | `OPENROUTER_API_KEY` | — | OpenRouter (one key, many models) |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api` | OpenRouter API root — the code appends `/v1/chat/completions`, so **do not** set the `/api/v1` form |
+| `OPENROUTER_REASONING_ENABLED` | `auto` | Preserve the model default, or explicitly set `true` / `false` |
+| `OPENROUTER_REASONING_EFFORT` | — | Optional `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` effort for supporting models |
+| `OPENROUTER_REASONING_MAX_TOKENS` | — | Optional positive reasoning-token budget; mutually exclusive with effort |
+| `OPENROUTER_REASONING_EXCLUDE` | `false` | Request that reasoning content be excluded from the response |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama (OpenAI-compatible) |
 | `LMSTUDIO_BASE_URL` | `http://localhost:1234` | Local LM Studio (OpenAI-compatible) |
 | `ALFRED_CODEX_AUTH_FILE` | `~/.alfred/codex-auth.json` | Optional Alfred Codex credential path; use `pnpm codex:login`, not `OPENAI_API_KEY` |
 | `ALFRED_MODEL_SMART` | `gpt-4o` | Main agent loop |
 | `ALFRED_MODEL_FAST` | `gpt-4o-mini` | Cheap/fast calls (classification, session extraction) |
 
-For **OpenRouter**, use model slugs exactly as OpenRouter lists them (e.g. `anthropic/claude-sonnet-4-20250514`, `openai/gpt-4o`). With Ollama/LM Studio use the model id the local server reports (e.g. `gemma-4-31b-it-qat`). For **Codex**, run `pnpm codex:login` (or `pnpm codex:login -- --device`) and set compatible model IDs in both `ALFRED_MODEL_SMART` and `ALFRED_MODEL_FAST`. `pnpm probe:model` helps discover locally served models.
+For **OpenRouter**, use model slugs exactly as OpenRouter lists them (e.g. `anthropic/claude-sonnet-4-20250514`, `openai/gpt-4o`). If reasoning is configured, Alfred asks OpenRouter to route only to endpoints that accept the requested parameters; unsupported model/provider combinations therefore fail clearly instead of silently ignoring the setting. Effort and token budget cannot both be set. With Ollama/LM Studio use the model id the local server reports (e.g. `gemma-4-31b-it-qat`). For **Codex**, run `pnpm codex:login` (or `pnpm codex:login -- --device`) and set compatible model IDs in both `ALFRED_MODEL_SMART` and `ALFRED_MODEL_FAST`. `pnpm probe:model` helps discover locally served models.
 
 ### Server, auth & channels
 
@@ -147,10 +161,10 @@ curl -X POST 'http://localhost:9001/v1/scheduled-tasks/<task-id>/cancel?sessionI
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ALFRED_ENABLE_PLAYWRIGHT` | `true` | Enables headless Chromium for `web_fetch` and browser control tools |
+| `ALFRED_ENABLE_PLAYWRIGHT` | `true` | Enables persistent interactive browser tools and fallback for Pinchtab-first read-only browsing |
 | `ALFRED_BROWSE_CONCURRENCY` | `3` | Parallel pages per `web_fetch` |
-| `ALFRED_ENABLE_PINCHTAB` | `false` | Optional Pinchtab integration (`pinchtab_fetch`/`pinchtab_search`) |
-| `PINCHTAB_BASE_URL` / `PINCHTAB_START_CMD` | `http://127.0.0.1:9867` / — | Pinchtab server config |
+| `ALFRED_ENABLE_PINCHTAB` | `false` | Enable Pinchtab as the preferred read-only browser and expose its direct tools |
+| `PINCHTAB_BASE_URL` / `PINCHTAB_START_CMD` | `http://127.0.0.1:9867` / — | Pinchtab endpoint and optional supervised startup command; it need not share SearXNG's container |
 
 ### Agent runtime
 
@@ -219,6 +233,11 @@ ALFRED_LLM_PROVIDER=openrouter
 OPENROUTER_API_KEY=sk-or-...
 ALFRED_MODEL_SMART=anthropic/claude-sonnet-4-20250514
 ALFRED_MODEL_FAST=openai/gpt-4o-mini
+
+# Optional: use one supported reasoning control (effort OR token budget)
+OPENROUTER_REASONING_ENABLED=true
+OPENROUTER_REASONING_EFFORT=high
+OPENROUTER_REASONING_EXCLUDE=true
 ```
 
 ### 4. Build and run
@@ -274,7 +293,12 @@ Re-run `qmd embed` periodically (or after significant sessions) to keep the inde
 
 ## Browser control
 
-Alfred keeps one headless Chromium session per chat, so he can work through a live page across multiple tool calls: navigate → snapshot (numbered interactive elements) → click/type → re-snapshot → screenshot.
+Alfred has two explicit browser paths:
+
+- Read-only extraction (`web_fetch`, lead tools) prefers healthy Pinchtab. If Pinchtab is down or returns only failures, Alfred falls back to Playwright when `ALFRED_ENABLE_PLAYWRIGHT=true` and reports the backend/fallback reason.
+- Interactive work uses one persistent Playwright Chromium session per chat, so Alfred can navigate → snapshot (numbered interactive elements) → click/type → re-snapshot → screenshot.
+
+Pinchtab and SearXNG are independent services. They can run on the host or in separate containers as long as Alfred can reach `PINCHTAB_BASE_URL` and `SEARXNG_BASE_URL`.
 
 Typical flow:
 
@@ -426,7 +450,7 @@ tail -f logs/alfred-error.log
 src/runtime/        — agent loop, system prompt, specialists config
 src/agentEvents/    — agent event webhook (schema, auth, dispatcher, Telegram notifier, event store)
 src/tools/          — all tool definitions (drop a *.tool.ts here to add a tool)
-src/tools/browser/  — persistent browser control engine (session registry, DOM helpers)
+src/tools/browser/  — Pinchtab-first read-only routing plus persistent Playwright interaction
 src/tools/search/   — search providers (SearXNG, Bright Data, Brave)
 src/provider/       — LLM adapters (Anthropic, Gemini, OpenAI, Ollama, LM Studio, OpenRouter, Codex)
 src/channels/       — Telegram + channel adapter interface
@@ -448,7 +472,7 @@ docs/               — architecture docs, spec, changelog, feature specs
 pnpm run build          # compile TypeScript
 pnpm start              # run compiled build
 pnpm run dev:gateway    # run with auto-rebuild
-pnpm setup:browsers     # install Playwright Chromium (for browser control / web_fetch)
+pnpm setup:browsers     # install Playwright Chromium (interactive control and read-only fallback)
 pnpm probe:model        # probe a local LLM server for its model list
 pnpm run test           # unit + integration + security
 pnpm run test:unit
@@ -465,4 +489,5 @@ pnpm run lint:layers    # eslint + architectural boundary checks
 - `docs/changelog.md` — change history
 - `docs/tool_contract.md` — the single-agent tool contract
 - `docs/features/herdr_control.md` — Herdr remote orchestration feature spec
+- `docs/architecture/provider-and-grounding-reliability.md` — Pinchtab routing, OpenRouter reasoning, and action-claim grounding
 - `docs/architecture/` — deep dives: security model, agent event webhook spec, Alfred's identity, turn lifecycle, refactor history

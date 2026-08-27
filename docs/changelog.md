@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-08-27** > `README.md`, `docs/changelog.md` > Refreshed the project overview, tool catalog, configuration reference, OpenRouter example, and browser guide for reasoning controls, Pinchtab-first extraction with Playwright fallback, canonical session context, provider telemetry, and deterministic action-claim grounding.
+
 - **2026-08-27** > `docs/architecture/provider-and-grounding-reliability.md`, `docs/{spec,changelog}.md`, `docs/features/browser_action.md` > Documented the shipped Pinchtab-first browser boundary, supervised fallback behavior, OpenRouter reasoning validation and telemetry, current-run action-evidence guardrail, and the atomic interactive browser implementation.
 
 - **2026-08-27** > `src/runtime/{agentLoop,groundingGuard,specialists}.ts`, `tests/unit/{groundingAgentLoop,groundingGuard}.test.ts` > Added deterministic action-claim grounding: final replies that claim searches, fetches, file changes, commands, or browser actions now require a matching successful tool receipt from the current run, receive one automatic repair pass, and fall back to an explicit correction rather than emitting an unsupported claim.

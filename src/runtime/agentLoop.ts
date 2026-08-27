@@ -147,6 +147,49 @@ function buildSessionContextBlock(ctx: SessionPromptContext): string {
   return parts.join("\n\n");
 }
 
+/**
+ * Build the provider-facing conversation for a turn.
+ *
+ * `conversationWindow` is the canonical representation of completed chat
+ * history. When it exists, do not also inject summaries or recent-turn
+ * snippets: those are lossy duplicates of the same exchange and can make an
+ * older branch look newer than the final user message. The current request is
+ * always represented exactly once, as the last message.
+ */
+export function buildInitialConversationMessages(
+  systemPrompt: string,
+  message: string,
+  sessionContext?: SessionPromptContext
+): LlmConversationMessage[] {
+  const messages: LlmConversationMessage[] = [
+    { role: "system", content: systemPrompt }
+  ];
+  const window = sessionContext?.conversationWindow ?? [];
+
+  if (window.length > 0) {
+    for (const entry of window) {
+      messages.push({
+        role: entry.role === "user" ? "user" : "assistant",
+        content: entry.content
+      });
+    }
+  } else if (sessionContext) {
+    // Compatibility path for sessions created before conversationWindow was
+    // introduced. Keep the fallback context separate from the current request
+    // so it cannot be mistaken for the latest user instruction.
+    const contextBlock = buildSessionContextBlock(sessionContext);
+    if (contextBlock) {
+      messages.push({
+        role: "system",
+        content: `Prior session context (background only; the final user message is authoritative):\n${contextBlock}`
+      });
+    }
+  }
+
+  messages.push({ role: "user", content: message });
+  return messages;
+}
+
 export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcome> {
   const {
     runId,
@@ -219,33 +262,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
   const tools = applyToolAllowlist(allTools, toolAllowlist);
   const llmTools = toolDefsToLlm(tools);
 
-  // Build initial conversation — inject sliding window as proper message pairs
-  // so Gemini's implicit caching benefits from the stable conversation prefix.
-  const contextBlock = sessionContext ? buildSessionContextBlock(sessionContext) : "";
-  const window = sessionContext?.conversationWindow ?? [];
-
-  const messages: LlmConversationMessage[] = [
-    { role: "system", content: systemPrompt }
-  ];
-
-  if (window.length > 0) {
-    // Prepend the context summary to the first user entry in the window,
-    // then replay all window turns as real messages before the current one.
-    for (let i = 0; i < window.length; i++) {
-      const entry = window[i]!;
-      const role = entry.role === "user" ? "user" as const : "assistant" as const;
-      if (i === 0 && contextBlock && entry.role === "user") {
-        messages.push({ role: "user", content: `${contextBlock}\n\n---\n\n${entry.content}` });
-      } else {
-        messages.push({ role, content: entry.content });
-      }
-    }
-    messages.push({ role: "user", content: message });
-  } else {
-    // No window yet — existing behaviour: prepend context to the current message.
-    const userContent = contextBlock ? `${contextBlock}\n\n---\n\n${message}` : message;
-    messages.push({ role: "user", content: userContent });
-  }
+  const messages = buildInitialConversationMessages(systemPrompt, message, sessionContext);
 
   await runStore.appendEvent({
     runId,

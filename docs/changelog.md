@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-08-27** > `src/runner/chatService.ts`, `src/runtime/agentLoop.ts`, `tests/{integration/sessionStore,unit/sessionContextConstruction}.test.ts` > unambiguous session context construction > Build inference context before persisting the in-flight request, use the completed conversation window as the sole history representation, and keep the current user message exactly once and last so models cannot latch onto duplicated stale branches.
+
 - **2026-08-27** > `docs/architecture/multimodal.md` > multimodal implementation plan > Added the channel-agnostic attachment, blob storage, STT/TTS, capability-checking, failure-mode, and staged rollout design that will guide the later multimodal passes.
 
 - **2026-08-25** > `src/channels/blobStore.ts`, `src/channels/types.ts`, `tests/unit/blobStore.test.ts` > multimodal keystone: content-addressed blob store + ChannelAttachment type > Added a sha256-addressed `BlobStore` with atomic temp+rename writes, idempotent dedup on identical content, singleflighted concurrent puts, LRU eviction under configurable byte and entry-count caps, and a `BlobNotFoundError` for missing ids; introduced the `ChannelAttachment` discriminated union (image, voice, audio, video, document, url, file) with mandatory `blobId`/`mime`/`size` and variant-specific metadata, ready for the resolver and channel adapters to consume.

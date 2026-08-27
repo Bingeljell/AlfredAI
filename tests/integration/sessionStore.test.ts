@@ -86,12 +86,7 @@ test("chat service injects session context on follow-up turns and supports /news
 
   assert.equal(followUp.status, "completed");
   assert.equal(capturedContexts.length, 2);
-  const firstContext = capturedContexts[0] as {
-    recentTurns?: Array<{ role: string; content: string }>;
-  };
-  assert.equal(firstContext.recentTurns?.length, 1);
-  assert.equal(firstContext.recentTurns?.[0]?.role, "user");
-  assert.equal(firstContext.recentTurns?.[0]?.content, "Find 3 leads");
+  assert.equal(capturedContexts[0], undefined);
   const secondContext = capturedContexts[1] as {
     lastCompletedRun?: { message?: string; artifactPaths?: string[] };
     lastOutcomeSummary?: string;
@@ -102,6 +97,7 @@ test("chat service injects session context on follow-up turns and supports /news
       title: string;
       artifactPath?: string;
     }>;
+    conversationWindow?: Array<{ role: string; content: string }>;
   };
   assert.equal(secondContext.lastCompletedRun?.message, "Find 3 leads");
   assert.deepEqual(secondContext.lastCompletedRun?.artifactPaths, ["/tmp/leads.csv"]);
@@ -112,8 +108,11 @@ test("chat service injects session context on follow-up turns and supports /news
   assert.equal(secondContext.recentOutputs?.[0]?.artifactPath, "/tmp/leads.csv");
   assert.ok(secondContext.recentTurns?.some((turn) => turn.role === "user" && turn.content === "Find 3 leads"));
   assert.ok(secondContext.recentTurns?.some((turn) => turn.role === "assistant" && /Handled: Find 3 leads/.test(turn.content)));
-  assert.equal(secondContext.recentTurns?.at(-1)?.role, "user");
-  assert.equal(secondContext.recentTurns?.at(-1)?.content, "Paste them");
+  assert.equal(secondContext.recentTurns?.some((turn) => turn.content === "Paste them"), false);
+  assert.deepEqual(secondContext.conversationWindow?.map(({ role, content }) => ({ role, content })), [
+    { role: "user", content: "Find 3 leads" },
+    { role: "assistant", content: "Handled: Find 3 leads" }
+  ]);
 
   const reset = await chatService.handleTurn({
     sessionId: session.id,

@@ -584,8 +584,11 @@ export class ChatService {
       });
 
       if (input.requestJob) {
+        // Build inference context from completed turns only. The current turn
+        // is passed to the agent separately and must not be duplicated in its
+        // summaries or recent-turn snippets.
+        const queuedSessionContext = await this.buildSessionContext(session);
         await this.persistQueuedRunStart(input.sessionId, run.runId, input.message);
-        const queuedSessionContext = await this.buildSessionContext((await this.options.sessionStore.getSession(input.sessionId)) ?? session);
         releaseAfterReturn = false;
         void this.executeQueuedTurn(
           run.runId,
@@ -602,8 +605,10 @@ export class ChatService {
         };
       }
 
+      // Snapshot completed history before recording the in-flight user turn.
+      // This keeps the current request out of its own context block.
+      const sessionContext = await this.buildSessionContext(session);
       await this.persistQueuedRunStart(input.sessionId, run.runId, input.message);
-      const sessionContext = await this.buildSessionContext((await this.options.sessionStore.getSession(input.sessionId)) ?? session);
       const outcome = await this.executeRun(run.runId, input.sessionId, input.message, sessionContext, provenance);
       await this.persistRunOutcome(input.sessionId, run.runId, input.message, outcome);
       if (input.channelKey && this.options.groupChatStore) {

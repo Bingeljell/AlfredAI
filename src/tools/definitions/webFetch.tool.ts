@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ToolDefinition } from "../types.js";
-import { BrowserPool } from "../browser/browserPool.js";
+import { PreferredBrowserPool } from "../browser/preferredBrowserPool.js";
 import { SearchManagerError } from "../search/searchManager.js";
 
 export const WebFetchToolInputSchema = z
@@ -163,7 +163,7 @@ export const toolDefinition: ToolDefinition<typeof WebFetchToolInputSchema> = {
       };
     }
 
-    const browserPool = await BrowserPool.create();
+    const browserPool = new PreferredBrowserPool(context.browser ?? { enablePlaywright: true });
     try {
       const primaryCollection = await browserPool.collectPages(primaryUrls, browseConcurrency, context.deadlineAtMs);
       let allPages = [...primaryCollection.pages];
@@ -198,6 +198,8 @@ export const toolDefinition: ToolDefinition<typeof WebFetchToolInputSchema> = {
         degradedPageCount: selection.degradedCount,
         retryUrlCount,
         retryPagesFetched,
+        browserBackend: browserPool.backend ?? null,
+        browserFallbackReason: browserPool.browserFallbackReason ?? null,
         browseFailureCount: allFailures.length,
         browseFailureSamples: allFailures.slice(0, 8),
         degradedPageSamples: selection.quality

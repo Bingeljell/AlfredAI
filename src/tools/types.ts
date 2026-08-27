@@ -40,6 +40,10 @@ export interface ToolContext {
   workspaceDir: string;
   openAiApiKey?: string;
   llmProviders?: LlmProvider[];
+  browser?: {
+    pinchtabBaseUrl?: string;
+    enablePlaywright: boolean;
+  };
   defaults: ToolDefaults;
   state: ToolState;
   isCancellationRequested: () => Promise<boolean>;

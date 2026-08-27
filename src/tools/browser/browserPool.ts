@@ -17,6 +17,11 @@ export interface PageCollectionResult {
   failures: PageCollectionFailure[];
 }
 
+export interface PageCollector {
+  collectPages(urls: string[], concurrency: number, deadlineAtMs?: number): Promise<PageCollectionResult>;
+  close(): Promise<void>;
+}
+
 function compactText(input: string, max = 5000): string {
   return input.replace(/\s+/g, " ").trim().slice(0, max);
 }
@@ -32,7 +37,7 @@ function computeNavigationTimeout(defaultMs: number, deadlineAtMs: number | unde
   return Math.max(1200, Math.min(defaultMs, remainingMs));
 }
 
-export class BrowserPool {
+export class BrowserPool implements PageCollector {
   private constructor(
     private readonly browser: any,
     private readonly context: any

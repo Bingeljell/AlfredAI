@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { extractLead } from "./leadExtractor.tool.js";
-import { BrowserPool } from "../browser/browserPool.js";
+import { PreferredBrowserPool } from "../browser/preferredBrowserPool.js";
 import type { ToolDefinition } from "../types.js";
 import path from "node:path";
 import {
@@ -88,7 +88,7 @@ export const toolDefinition: ToolDefinition<typeof LeadGenerationInputSchema> = 
       totalUsage.callCount += current.callCount || 1;
     };
 
-    const browserPool = await BrowserPool.create();
+    const browserPool = new PreferredBrowserPool(context.browser ?? { enablePlaywright: true });
     try {
       for (const url of candidateUrls) {
         if (newLeads.length >= maxLeads) break;

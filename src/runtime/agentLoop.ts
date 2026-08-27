@@ -22,6 +22,8 @@ export interface AgentLoopOptions {
   maxIterations: number;
   maxDurationMs: number;
   openAiApiKey?: string;
+  enablePlaywright?: boolean;
+  pinchtabBaseUrl?: string;
   runStore: RunStore;
   searchManager: SearchManager;
   workspaceDir: string;
@@ -201,6 +203,8 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     maxIterations,
     maxDurationMs,
     openAiApiKey,
+    enablePlaywright,
+    pinchtabBaseUrl,
     runStore,
     searchManager,
     workspaceDir,
@@ -238,6 +242,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
     workspaceDir,
     openAiApiKey,
     llmProviders: [provider],
+    browser: {
+      pinchtabBaseUrl,
+      enablePlaywright: enablePlaywright ?? false
+    },
     defaults,
     state,
     isCancellationRequested,

@@ -87,10 +87,10 @@ export class PinchtabPool {
   /** No-op for interface compatibility with BrowserPool. */
   async close(): Promise<void> {}
 
-  async health(): Promise<boolean> {
+  async health(timeoutMs = 3000): Promise<boolean> {
     try {
       // Hit the tabs list endpoint — if Pinchtab is up it will respond
-      const res = await fetch(`${this.baseUrl}/tabs`, { signal: AbortSignal.timeout(3000) });
+      const res = await fetch(`${this.baseUrl}/tabs`, { signal: AbortSignal.timeout(timeoutMs) });
       return res.ok;
     } catch {
       return false;

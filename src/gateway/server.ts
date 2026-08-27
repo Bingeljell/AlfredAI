@@ -17,12 +17,14 @@ const serverPidLock = new PidLock({
 
 // Track child processes started by Alfred so they die when Alfred dies
 const managedProcesses: ReturnType<typeof spawn>[] = [];
+const managedRestartTimers = new Set<NodeJS.Timeout>();
 let httpServer: { close: (cb?: () => void) => void } | null = null;
+let shuttingDown = false;
 
-function spawnManaged(cmd: string, label: string): void {
+function spawnManaged(cmd: string, label: string, maxRestarts = 0, restartAttempt = 0): void {
   const processTag = managedProcessTag(label);
   const child = spawn(cmd, {
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
     detached: true,  // own process group so SIGTERM propagates to shell children
     shell: true,
     env: {
@@ -36,6 +38,26 @@ function spawnManaged(cmd: string, label: string): void {
   });
   child.once("exit", (code) => {
     console.log(`[${processTag}] exited (code ${code ?? "?"})`);
+    if (!shuttingDown && restartAttempt < maxRestarts) {
+      const delayMs = Math.min(10_000, 1_000 * 2 ** restartAttempt);
+      console.warn(
+        `[${processTag}] restarting in ${delayMs}ms (${restartAttempt + 1}/${maxRestarts})`
+      );
+      const timer = setTimeout(() => {
+        managedRestartTimers.delete(timer);
+        spawnManaged(cmd, label, maxRestarts, restartAttempt + 1);
+      }, delayMs);
+      timer.unref?.();
+      managedRestartTimers.add(timer);
+    }
+  });
+  child.stdout?.on("data", (chunk) => {
+    const message = String(chunk).trim();
+    if (message) console.log(`[${processTag}] ${message.slice(0, 2_000)}`);
+  });
+  child.stderr?.on("data", (chunk) => {
+    const message = String(chunk).trim();
+    if (message) console.error(`[${processTag}] ${message.slice(0, 2_000)}`);
   });
   managedProcesses.push(child);
   console.log(`[${processTag}] started (pid ${child.pid ?? "?"})`);
@@ -46,6 +68,9 @@ let shutdownPromise: Promise<void> | undefined;
 async function shutdown(): Promise<void> {
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = (async () => {
+    shuttingDown = true;
+    for (const timer of managedRestartTimers) clearTimeout(timer);
+    managedRestartTimers.clear();
     try {
       if (appConfig.schedulerEnabled) await schedulerEngine.stop();
       searchManager.shutdown();
@@ -149,7 +174,7 @@ async function bootstrap(): Promise<void> {
       spawnManaged(appConfig.searxngStartCommand, "searxng");
     }
     if (appConfig.enablePinchtab && appConfig.pinchtabStartCommand) {
-      spawnManaged(appConfig.pinchtabStartCommand, "pinchtab");
+      spawnManaged(appConfig.pinchtabStartCommand, "pinchtab", 3);
     }
 
     httpServer = serve(

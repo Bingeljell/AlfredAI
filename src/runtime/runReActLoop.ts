@@ -124,6 +124,8 @@ export async function runReActLoop(
     toolAllowlist: options.executionProfile?.toolAllowlist ?? ALFRED_AGENT.toolAllowlist,
     systemPrompt: options.systemPrompt ?? ALFRED_AGENT.systemPrompt,
     openAiApiKey: options.openAiApiKey,
+    enablePlaywright: options.enablePlaywright,
+    pinchtabBaseUrl: options.pinchtabBaseUrl,
     runStore,
     searchManager: options.searchManager,
     workspaceDir: options.workspaceDir,

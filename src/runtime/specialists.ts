@@ -150,6 +150,8 @@ ${agentsContent ? `════════════════════�
     // Search & web
     "search",
     "web_fetch",
+    "pinchtab_fetch",
+    "pinchtab_search",
     "search_status",
     "recover_search",
     "run_diagnostics",

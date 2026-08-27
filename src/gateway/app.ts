@@ -9,6 +9,7 @@ import { SearxngProvider } from "../tools/search/providers/searxngProvider.js";
 import { BraveProvider } from "../tools/search/providers/braveProvider.js";
 import { BrightDataProvider } from "../tools/search/providers/brightDataProvider.js";
 import { SearchManager } from "../tools/search/searchManager.js";
+import { PinchtabPool } from "../tools/browser/pinchtabPool.js";
 import { InMemoryQueue } from "../workers/inMemoryQueue.js";
 import { ChatService, SessionMutex } from "../runner/chatService.js";
 import { ChannelSessionStore } from "../channels/telegram/channelSessionStore.js";
@@ -283,7 +284,19 @@ app.get("/health", (c) => {
 
 app.get("/v1/providers/status", async (c) => {
   const status = await searchManager.getProviderStatus();
-  return c.json(status);
+  const pinchtabConfigured = appConfig.enablePinchtab && Boolean(appConfig.pinchtabBaseUrl);
+  const pinchtabHealthy = pinchtabConfigured
+    ? await PinchtabPool.create(appConfig.pinchtabBaseUrl).health(750)
+    : false;
+  return c.json({
+    ...status,
+    browser: {
+      preferred: pinchtabConfigured ? "pinchtab" : "playwright",
+      pinchtabConfigured,
+      pinchtabHealthy,
+      playwrightFallbackEnabled: appConfig.enablePlaywright
+    }
+  });
 });
 
 app.get("/v1/llm/status", (c) => {

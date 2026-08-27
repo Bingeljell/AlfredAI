@@ -2,19 +2,26 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { chromium } from "playwright";
 
-const baseDir = process.env.PLAYWRIGHT_BROWSERS_PATH || path.join(os.homedir(), ".cache", "ms-playwright");
+const platformCacheDir = process.platform === "darwin"
+  ? path.join(os.homedir(), "Library", "Caches", "ms-playwright")
+  : path.join(os.homedir(), ".cache", "ms-playwright");
+const baseDir = process.env.PLAYWRIGHT_BROWSERS_PATH || platformCacheDir;
 
-function hasBrowsersInstalled(directory) {
-  if (!fs.existsSync(directory)) {
-    return false;
-  }
-  const entries = fs.readdirSync(directory).filter((entry) => !entry.startsWith("."));
-  return entries.length > 0;
+function hasBrowsersInstalled() {
+  const chromiumExecutable = chromium.executablePath();
+  if (!fs.existsSync(chromiumExecutable)) return false;
+  const revisionDir = chromiumExecutable
+    .split(path.sep)
+    .find((segment) => /^chromium-\d+$/.test(segment));
+  if (!revisionDir) return false;
+  const revision = revisionDir.slice("chromium-".length);
+  return fs.existsSync(path.join(baseDir, `chromium_headless_shell-${revision}`));
 }
 
 try {
-  if (hasBrowsersInstalled(baseDir)) {
+  if (hasBrowsersInstalled()) {
     console.log("Playwright browsers already installed.");
     process.exit(0);
   }

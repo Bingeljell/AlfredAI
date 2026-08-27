@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ToolDefinition } from "../types.js";
-import { BrowserPool } from "../browser/browserPool.js";
+import type { PageCollector } from "../browser/browserPool.js";
+import { PreferredBrowserPool } from "../browser/preferredBrowserPool.js";
 
 const InputSchema = z.object({
   url: z.string().url("Must be a valid URL"),
@@ -11,9 +12,9 @@ export async function extractLead(
   url: string,
   deep: boolean,
   context: any,
-  providedBrowserPool?: BrowserPool
+  providedBrowserPool?: PageCollector
 ): Promise<Record<string, any>> {
-  const browserPool = providedBrowserPool || (await BrowserPool.create());
+  const browserPool = providedBrowserPool || new PreferredBrowserPool(context.browser ?? { enablePlaywright: true });
   
   try {
     // 1. Fetch homepage

@@ -110,6 +110,7 @@ export class CodexAppServerClient {
   private nextRequestId = 1;
   private closed = false;
   private initialized = false;
+  private readonly notificationSubscribers = new Set<(notification: AppServerNotification) => void>();
 
   constructor(options: AppServerClientOptions = {}) {
     this.options = {
@@ -122,6 +123,11 @@ export class CodexAppServerClient {
 
   get isConnected(): boolean {
     return Boolean(this.child) && !this.closed;
+  }
+
+  subscribeNotifications(listener: (notification: AppServerNotification) => void): () => void {
+    this.notificationSubscribers.add(listener);
+    return () => this.notificationSubscribers.delete(listener);
   }
 
   async initialize(params: AppServerInitializeParams): Promise<Record<string, unknown>> {
@@ -263,7 +269,9 @@ export class CodexAppServerClient {
       return;
     }
     if (message.method) {
-      this.options.onNotification?.({ method: message.method, params: message.params });
+      const notification = { method: message.method, params: message.params };
+      this.options.onNotification?.(notification);
+      for (const subscriber of this.notificationSubscribers) subscriber(notification);
     }
   }
 

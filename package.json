@@ -14,6 +14,7 @@
     "codex:login": "tsx scripts/codex-auth.ts login",
     "codex:status": "tsx scripts/codex-auth.ts status",
     "codex:logout": "tsx scripts/codex-auth.ts logout",
+    "codex:app-server-gate": "tsx scripts/codex-app-server-gate.ts",
     "test": "pnpm test:unit && pnpm test:integration && pnpm test:security",
     "test:unit": "node --import tsx --import ./tests/setup/env.mjs --test tests/unit/**/*.test.ts",
     "test:integration": "node --import tsx --import ./tests/setup/env.mjs --test tests/integration/**/*.test.ts",

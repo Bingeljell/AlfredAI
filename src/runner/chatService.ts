@@ -9,7 +9,8 @@ import type {
   SessionWorkingMemory
 } from "../types.js";
 import type { GroupChatStore } from "../memory/groupChatStore.js";
-import { runReActLoop } from "../runtime/runReActLoop.js";
+import type { runReActLoop } from "../runtime/runReActLoop.js";
+import { AlfredAgentRuntime, type AgentRuntime } from "../runtime/agentRuntime.js";
 import { TurnRuntime } from "../runtime/turnRuntime.js";
 import { ThreadRuntimeManager } from "../runtime/threadRuntime.js";
 import { deriveSessionOutputRecordFromRun } from "../memory/sessionOutputs.js";
@@ -17,13 +18,12 @@ import type { SessionStore } from "../memory/sessionStore.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import type { InMemoryQueue } from "../workers/inMemoryQueue.js";
-import { getPolicyMode } from "../config/env.js";
 import type { SchedulerTaskApi } from "../scheduler/api.js";
 import type { SchedulerProvenance, SchedulerOrigin } from "../scheduler/notifier.js";
 import type { SchedulerTurnControl } from "../scheduler/api.js";
 import type { WatchSnapshot } from "../scheduler/probes/types.js";
 import type { TaskTranscriptEntry, TaskTranscriptStore } from "../scheduler/taskTranscript.js";
-import { createSchedulerTurnControl, SCHEDULER_SYSTEM_PROMPT } from "../scheduler/execution.js";
+import { createSchedulerTurnControl } from "../scheduler/execution.js";
 import { SCHEDULER_EXECUTION_PROFILE, type TurnExecutionProfile } from "../runtime/executionProfile.js";
 
 interface ChatTurnInput {
@@ -52,6 +52,7 @@ interface ChatServiceOptions {
   agentMaxToolCalls: number;
   agentMaxParallelTools: number;
   runLoopRunner?: typeof runReActLoop;
+  agentRuntime?: AgentRuntime;
   groupChatStore?: GroupChatStore;
   scheduler?: SchedulerTaskApi;
   sessionMutex?: SessionMutex;
@@ -120,9 +121,27 @@ export class ChatService {
   private readonly subscribedThreadSessions = new Set<string>();
   private readonly scheduledTurnPromises = new Map<string, Promise<RunOutcome>>();
   private readonly sessionMutex: SessionMutex;
+  private readonly agentRuntime: AgentRuntime;
 
   constructor(private readonly options: ChatServiceOptions) {
     this.sessionMutex = this.options.sessionMutex ?? new SessionMutex();
+    this.agentRuntime = this.options.agentRuntime ?? new AlfredAgentRuntime({
+      runStore: this.options.runStore,
+      searchManager: this.options.searchManager,
+      workspaceDir: this.options.workspaceDir,
+      searchMaxResults: this.options.searchMaxResults,
+      fastScrapeCount: this.options.fastScrapeCount,
+      enablePlaywright: this.options.enablePlaywright,
+      maxSteps: this.options.maxSteps,
+      openAiApiKey: this.options.openAiApiKey,
+      browseConcurrency: this.options.browseConcurrency,
+      pinchtabBaseUrl: this.options.pinchtabBaseUrl,
+      agentMaxDurationMs: this.options.agentMaxDurationMs,
+      agentMaxToolCalls: this.options.agentMaxToolCalls,
+      agentMaxParallelTools: this.options.agentMaxParallelTools,
+      runLoopRunner: this.options.runLoopRunner,
+      scheduler: this.options.scheduler
+    });
     this.threadRuntimeManager = new ThreadRuntimeManager({
       queue: this.options.queue,
       createTurnRuntime: (_sessionId) =>
@@ -488,28 +507,14 @@ export class ChatService {
     heartbeatTimer.unref?.();
 
     try {
-      const outcome = await (this.options.runLoopRunner ?? runReActLoop)(sessionId, message, runId, {
-        runStore: this.options.runStore,
-        searchManager: this.options.searchManager,
-        workspaceDir: this.options.workspaceDir,
-        policyMode: getPolicyMode(),
-        searchMaxResults: this.options.searchMaxResults,
-        fastScrapeCount: this.options.fastScrapeCount,
-        enablePlaywright: this.options.enablePlaywright,
-        maxSteps: this.options.maxSteps,
-        openAiApiKey: this.options.openAiApiKey,
-        browseConcurrency: this.options.browseConcurrency,
-        pinchtabBaseUrl: this.options.pinchtabBaseUrl,
-        agentMaxDurationMs: this.options.agentMaxDurationMs,
-        agentMaxToolCalls: this.options.agentMaxToolCalls,
-        agentMaxParallelTools: this.options.agentMaxParallelTools,
+      const outcome = await this.agentRuntime.runTurn({
+        runId,
+        sessionId,
+        message,
         sessionContext,
-        isCancellationRequested: () => this.options.runStore.isCancellationRequested(runId),
-        scheduler: this.options.scheduler,
         provenance,
         executionProfile,
-        schedulerControl,
-        systemPrompt: executionProfile?.origin === "scheduler" ? SCHEDULER_SYSTEM_PROMPT : undefined
+        schedulerControl
       });
 
       await this.options.runStore.updateRun(runId, {

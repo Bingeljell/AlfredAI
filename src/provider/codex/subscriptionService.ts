@@ -96,7 +96,7 @@ function mapModel(value: unknown): CodexModel | null {
     isDefault: asBoolean(value.isDefault),
     defaultReasoningEffort: asString(value.defaultReasoningEffort),
     supportedReasoningEfforts: efforts,
-    inputModalities: Array.isArray(value.inputModalities) ? value.inputModalities.filter((item): item is string => typeof item === "string") : ["text"]
+    inputModalities: Array.isArray(value.inputModalities) ? value.inputModalities.filter((item): item is string => typeof item === "string") : ["text", "image"]
   };
 }
 

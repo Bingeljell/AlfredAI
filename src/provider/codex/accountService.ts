@@ -53,6 +53,7 @@ export interface AccountClient {
   request<T>(method: string, params: unknown): Promise<T>;
   subscribeNotifications?(listener: (notification: AppServerNotification) => void): () => void;
   close?(): Promise<void>;
+  readonly isConnected?: boolean;
 }
 
 interface LoginSubscriber {
@@ -130,7 +131,8 @@ export class CodexAccountService {
   }
 
   async initialize(): Promise<void> {
-    if (this.initialized) return;
+    if (this.initialized && this.client.isConnected !== false) return;
+    this.initialized = false;
     await this.client.initialize({
       clientInfo: { name: "alfred", version: "0.1.0" },
       capabilities: { experimentalApi: true }
@@ -140,8 +142,13 @@ export class CodexAccountService {
 
   async readAccount(): Promise<OpenAiAccountState> {
     await this.initialize();
-    const response = await this.client.request<Record<string, unknown>>("account/read", { refreshToken: false });
-    return mapAccountState(response);
+    try {
+      const response = await this.client.request<Record<string, unknown>>("account/read", { refreshToken: false });
+      return mapAccountState(response);
+    } catch (error) {
+      if (this.client.isConnected === false) this.initialized = false;
+      throw error;
+    }
   }
 
   async startLogin(mode: OpenAiLoginMode): Promise<OpenAiLoginStart> {

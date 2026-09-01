@@ -471,7 +471,9 @@ export class ChatService {
     }
 
     if (parsed.command === "/usage") {
-      if (!this.options.subscriptionService) return "Subscription usage is unavailable for the configured provider. Alfred local token usage is available in /status.";
+      if (!this.options.subscriptionService) {
+        return `Subscription usage is unavailable for the configured provider. Alfred local session token usage: ${await this.localSessionTokens(session.id)} tokens.`;
+      }
       const [usage, tokens] = await Promise.all([
         this.options.subscriptionService.readUsage(true),
         this.localSessionTokens(session.id)
@@ -707,7 +709,19 @@ export class ChatService {
         return await this.handleNewSessionCommand(input.sessionId);
       }
 
-      const control = await this.controlResponse(session, input.message);
+      let control: string | undefined;
+      try {
+        control = await this.controlResponse(session, input.message);
+      } catch (error) {
+        if (parseControlCommand(input.message)) {
+          return {
+            runId: "",
+            status: "failed",
+            assistantText: `Alfred could not complete that control command: ${error instanceof Error ? error.message : "provider unavailable"}`
+          };
+        }
+        throw error;
+      }
       if (control !== undefined) {
         return { runId: "", status: "completed", assistantText: control };
       }

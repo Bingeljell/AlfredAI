@@ -62,6 +62,7 @@ test("Codex App Server runtime injects Alfred context and dispatches dynamic too
     runId: run.runId,
     sessionId: "session-1",
     message: "check this now",
+    modelSelection: { modelId: "gpt-live", reasoningEffort: "medium" },
     executionProfile: {
       origin: "interactive",
       maxIterations: 2,
@@ -87,6 +88,7 @@ test("Codex App Server runtime injects Alfred context and dispatches dynamic too
   assert.deepEqual(injected.items.map((item) => item.content[0]?.text), ["previous", "old answer"]);
   const turn = client.requests[2]?.params as Record<string, unknown>;
   assert.deepEqual(turn.input, [{ type: "text", text: "check this now" }]);
+  assert.equal(turn.effort, "medium");
   assert.deepEqual(turn.sandboxPolicy, { type: "readOnly", networkAccess: false });
   assert.deepEqual(turn.environments, []);
   assert.deepEqual(turn.runtimeWorkspaceRoots, []);

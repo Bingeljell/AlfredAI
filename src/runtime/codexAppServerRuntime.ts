@@ -127,7 +127,8 @@ export class CodexAppServerRuntime implements AgentRuntime {
           return dynamicResponse(envelope);
         }
       });
-      if (await runStore.isCancellationRequested(request.runId) || result.status === "interrupted" && !limitReached) return { status: "cancelled", artifactPaths: state.artifacts.length ? state.artifacts : undefined };
+      if (await runStore.isCancellationRequested(request.runId) || result.status === "interrupted" && !limitReached && controller.signal.reason === "caller_cancellation") return { status: "cancelled", artifactPaths: state.artifacts.length ? state.artifacts : undefined };
+      if (result.status === "interrupted" && limitReached) return { status: "failed", assistantText: "The ChatGPT turn exceeded Alfred's tool-call limit.", artifactPaths: state.artifacts.length ? state.artifacts : undefined };
       if (result.status === "timeout") {
         if (schedulerTurn && request.schedulerControl && !request.schedulerControl.action) request.schedulerControl.reschedule(new Date(Date.now() + 60_000).toISOString(), "The scheduled ChatGPT turn timed out before completion.");
         return { status: schedulerTurn ? "completed" : "failed", assistantText: "The ChatGPT turn timed out before completing.", artifactPaths: state.artifacts.length ? state.artifacts : undefined };

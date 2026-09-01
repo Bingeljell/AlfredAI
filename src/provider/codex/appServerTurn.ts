@@ -205,7 +205,13 @@ export async function runSafeAppServerTurn(options: SafeAppServerTurnOptions): P
   };
 
   try {
-    client = clientFactory(buildClientOptions(options, onNotification));
+    client = clientFactory(buildClientOptions({
+      ...options,
+      onCrash: (error) => {
+        options.onCrash?.(error);
+        complete({ status: "failed", content, usage, threadId, turnId, error: safeError(error) });
+      }
+    }, onNotification));
     await client.initialize({
       clientInfo: { name: "alfred", version: "0.1.0" },
       capabilities: { experimentalApi: true }

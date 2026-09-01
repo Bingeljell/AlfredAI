@@ -22,7 +22,11 @@ const state = {
   providerTimer: null,
   isSending: false,
   telemetryFilter: '',
-  thinkingCache: new Map()
+  thinkingCache: new Map(),
+  openAiAccount: null,
+  openAiLogin: null,
+  openAiAccountError: '',
+  openAiLoginPollTimer: null
 };
 
 const els = {
@@ -49,6 +53,7 @@ const els = {
   dpaneTelemetry: document.getElementById('dpane-telemetry'),
   dpaneStatus: document.getElementById('dpane-status'),
   dpaneSettings: document.getElementById('dpane-settings'),
+  settingsAccountCard: document.getElementById('settings-account-card'),
   inspectorRunStatus: document.getElementById('inspector-run-status'),
   livePulse: document.getElementById('live-pulse'),
   thoughtFeed: document.getElementById('thought-feed'),
@@ -829,6 +834,74 @@ async function refreshLlmStatus() {
   }
 }
 
+function stopOpenAiLoginPolling() {
+  if (state.openAiLoginPollTimer) {
+    clearInterval(state.openAiLoginPollTimer);
+    state.openAiLoginPollTimer = null;
+  }
+}
+
+async function refreshOpenAiAccount() {
+  try {
+    const payload = await api('/v1/accounts/openai');
+    state.openAiAccount = payload.account || null;
+    state.openAiAccountError = '';
+  } catch (error) {
+    state.openAiAccountError = error?.message || 'OpenAI account status unavailable.';
+  }
+  if (state.drawerOpen && state.drawerTab === 'settings') {
+    renderSettingsPage();
+  }
+}
+
+async function pollOpenAiLogin(loginId) {
+  try {
+    const payload = await api(`/v1/accounts/openai/login/${encodeURIComponent(loginId)}`);
+    state.openAiLogin = payload;
+    if (payload.status === 'completed' || payload.status === 'failed' || payload.status === 'cancelled') {
+      stopOpenAiLoginPolling();
+      await refreshOpenAiAccount();
+    }
+    renderSettingsPage();
+  } catch (error) {
+    stopOpenAiLoginPolling();
+    state.openAiAccountError = error?.message || 'OpenAI login status unavailable.';
+    renderSettingsPage();
+  }
+}
+
+async function startOpenAiLogin(mode) {
+  stopOpenAiLoginPolling();
+  state.openAiAccountError = '';
+  const path = mode === 'device-code' ? '/v1/accounts/openai/login/device' : '/v1/accounts/openai/login';
+  const payload = await api(path, {
+    method: 'POST',
+    body: JSON.stringify(mode === 'device-code' ? {} : { mode })
+  });
+  state.openAiLogin = { ...payload, mode, status: 'started' };
+  if (payload.authorizationUrl) {
+    window.open(payload.authorizationUrl, '_blank', 'noopener,noreferrer');
+  }
+  await pollOpenAiLogin(payload.loginId);
+  state.openAiLoginPollTimer = setInterval(() => {
+    void pollOpenAiLogin(payload.loginId);
+  }, 1_500);
+  renderSettingsPage();
+}
+
+async function cancelOpenAiLogin(loginId) {
+  stopOpenAiLoginPolling();
+  await api(`/v1/accounts/openai/login/${encodeURIComponent(loginId)}`, { method: 'DELETE' });
+  state.openAiLogin = { ...(state.openAiLogin || {}), loginId, status: 'cancelled' };
+  renderSettingsPage();
+}
+
+async function logoutOpenAi() {
+  await api('/v1/accounts/openai/logout', { method: 'POST', body: JSON.stringify({}) });
+  state.openAiLogin = null;
+  await refreshOpenAiAccount();
+}
+
 function getSessionTotalTokens() {
   return state.sessionRuns.reduce((sum, run) => sum + (run.llmUsage?.totalTokens ?? 0), 0);
 }
@@ -1124,6 +1197,9 @@ function setDrawerTab(tab) {
   };
   for (const [key, pane] of Object.entries(panes)) {
     pane.classList.toggle('active', key === tab);
+  }
+  if (tab === 'settings' && !state.openAiAccount && !state.openAiAccountError) {
+    void refreshOpenAiAccount();
   }
   renderDrawer();
 }
@@ -1444,6 +1520,35 @@ function renderStatusPage() {
 }
 
 function renderSettingsPage() {
+  const account = state.openAiAccount;
+  const login = state.openAiLogin;
+  const accountHtml = state.openAiAccountError
+    ? `
+        <p class="account-error">${escapeHtml(state.openAiAccountError)}</p>
+        <div class="account-actions"><button class="ghost-btn" data-openai-refresh>Retry status</button></div>
+      `
+    : login && login.status === 'started'
+      ? `
+          <p>Login in progress (${escapeHtml(login.mode || 'browser')}).</p>
+          ${login.authorizationUrl ? `<p><a class="account-link" href="${escapeHtml(login.authorizationUrl)}" target="_blank" rel="noopener noreferrer">Open ChatGPT authorization</a></p>` : ''}
+          ${login.verificationUrl ? `<p>Verification URL: <a class="account-link" href="${escapeHtml(login.verificationUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(login.verificationUrl)}</a></p>` : ''}
+          ${login.userCode ? `<p class="device-code">${escapeHtml(login.userCode)}</p>` : ''}
+          <div class="account-actions"><button class="ghost-btn" data-openai-cancel="${escapeHtml(login.loginId)}">Cancel login</button></div>
+        `
+      : account?.connected
+        ? `
+            <p class="account-connected">Connected${account.email ? ` as ${escapeHtml(account.email)}` : ''}.</p>
+            <p>Plan: ${escapeHtml(account.planType || 'unknown')}</p>
+            <div class="account-actions"><button class="ghost-btn" data-openai-logout>Sign out</button></div>
+          `
+        : `
+            <p>ChatGPT subscription access is disconnected.</p>
+            <div class="account-actions">
+              <button class="primary-btn" data-openai-login="browser">Sign in with ChatGPT</button>
+              <button class="ghost-btn" data-openai-login="device-code">Use device code</button>
+            </div>
+          `;
+  setHtmlIfChanged(els.settingsAccountCard, accountHtml);
   setHtmlIfChanged(els.settingsUiCard, `
     <p>Chat run cap: ${CHAT_RUN_CAP}</p>
     <p>Telemetry event cap: ${TELEMETRY_EVENT_CAP}</p>
@@ -1534,6 +1639,31 @@ els.navDebug.addEventListener('click', () => {
 els.navSettings.addEventListener('click', () => {
   toggleDrawer(true);
   setDrawerTab('settings');
+});
+
+els.settingsAccountCard.addEventListener('click', (event) => {
+  const loginButton = event.target.closest('[data-openai-login]');
+  const cancelButton = event.target.closest('[data-openai-cancel]');
+  const refreshButton = event.target.closest('[data-openai-refresh]');
+  const logoutButton = event.target.closest('[data-openai-logout]');
+  if (loginButton) {
+    void startOpenAiLogin(loginButton.dataset.openaiLogin).catch((error) => {
+      state.openAiAccountError = error?.message || 'Unable to start OpenAI login.';
+      renderSettingsPage();
+    });
+  } else if (cancelButton) {
+    void cancelOpenAiLogin(cancelButton.dataset.openaiCancel).catch((error) => {
+      state.openAiAccountError = error?.message || 'Unable to cancel OpenAI login.';
+      renderSettingsPage();
+    });
+  } else if (refreshButton) {
+    void refreshOpenAiAccount();
+  } else if (logoutButton) {
+    void logoutOpenAi().catch((error) => {
+      state.openAiAccountError = error?.message || 'Unable to sign out of OpenAI.';
+      renderSettingsPage();
+    });
+  }
 });
 
 // Debug close
@@ -1717,6 +1847,7 @@ window.addEventListener('beforeunload', () => {
     clearInterval(state.providerTimer);
     state.providerTimer = null;
   }
+  stopOpenAiLoginPolling();
 });
 
 initAuth();

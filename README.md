@@ -99,7 +99,6 @@ cp .env.example .env
 | `OPENROUTER_REASONING_EXCLUDE` | `false` | Request that reasoning content be excluded from the response |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama (OpenAI-compatible) |
 | `LMSTUDIO_BASE_URL` | `http://localhost:1234` | Local LM Studio (OpenAI-compatible) |
-| `ALFRED_CODEX_AUTH_FILE` | `~/.alfred/codex-auth.json` | Optional Alfred Codex credential path; use `pnpm codex:login`, not `OPENAI_API_KEY` |
 | `ALFRED_MODEL_SMART` | `gpt-4o` | Main agent loop |
 | `ALFRED_MODEL_FAST` | `gpt-4o-mini` | Cheap/fast calls (classification, session extraction) |
 

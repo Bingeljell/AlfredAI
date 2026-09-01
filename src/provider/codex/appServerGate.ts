@@ -1,4 +1,3 @@
-import type { CodexJsonObject } from "./types.js";
 
 export const CODEX_APP_SERVER_GATE_TOOL = {
   type: "function" as const,
@@ -31,7 +30,7 @@ export interface GateToolValidation {
   value?: string;
 }
 
-export interface CapabilityGateThreadParams extends CodexJsonObject {
+export interface CapabilityGateThreadParams {
   ephemeral: true;
   model?: string | null;
   dynamicTools: [typeof CODEX_APP_SERVER_GATE_TOOL];
@@ -42,7 +41,7 @@ export interface CapabilityGateThreadParams extends CodexJsonObject {
   baseInstructions: string;
 }
 
-export interface CapabilityGateTurnParams extends CodexJsonObject {
+export interface CapabilityGateTurnParams {
   threadId: string;
   input: [{ type: "text"; text: string }];
   environments: [];

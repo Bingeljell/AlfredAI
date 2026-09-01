@@ -26,7 +26,9 @@ const state = {
   openAiAccount: null,
   openAiLogin: null,
   openAiAccountError: '',
-  openAiLoginPollTimer: null
+  openAiLoginPollTimer: null,
+  openAiCatalog: null,
+  openAiUsage: null
 };
 
 const els = {
@@ -846,8 +848,27 @@ async function refreshOpenAiAccount() {
     const payload = await api('/v1/accounts/openai');
     state.openAiAccount = payload.account || null;
     state.openAiAccountError = '';
+    if (state.openAiAccount?.connected) {
+      await refreshOpenAiSubscription();
+    }
   } catch (error) {
     state.openAiAccountError = error?.message || 'OpenAI account status unavailable.';
+  }
+  if (state.drawerOpen && state.drawerTab === 'settings') {
+    renderSettingsPage();
+  }
+}
+
+async function refreshOpenAiSubscription() {
+  try {
+    const [catalog, usage] = await Promise.all([
+      api('/v1/accounts/openai/models'),
+      api('/v1/accounts/openai/usage')
+    ]);
+    state.openAiCatalog = catalog;
+    state.openAiUsage = usage;
+  } catch (error) {
+    state.openAiAccountError = error?.message || 'OpenAI model or usage status unavailable.';
   }
   if (state.drawerOpen && state.drawerTab === 'settings') {
     renderSettingsPage();
@@ -1539,7 +1560,11 @@ function renderSettingsPage() {
         ? `
             <p class="account-connected">Connected${account.email ? ` as ${escapeHtml(account.email)}` : ''}.</p>
             <p>Plan: ${escapeHtml(account.planType || 'unknown')}</p>
-            <div class="account-actions"><button class="ghost-btn" data-openai-logout>Sign out</button></div>
+            <p>Live models: ${escapeHtml(String(state.openAiCatalog?.models?.length || 'loading'))}</p>
+            ${state.openAiUsage?.rateLimits?.primary ? `<p>Quota used: ${escapeHtml(String(state.openAiUsage.rateLimits.primary.usedPercent))}%${state.openAiUsage.rateLimits.primary.resetsAt ? ` · resets ${escapeHtml(formatDateTime(new Date(state.openAiUsage.rateLimits.primary.resetsAt * 1000).toISOString()))}` : ''}</p>` : ''}
+            ${state.openAiUsage?.rateLimits?.reachedType ? `<p class="account-error">Limit: ${escapeHtml(state.openAiUsage.rateLimits.reachedType)}</p>` : ''}
+            <div class="account-actions"><button class="ghost-btn" data-openai-refresh-subscription>Refresh catalog &amp; usage</button>
+              <button class="ghost-btn" data-openai-logout>Sign out</button></div>
           `
         : `
             <p>ChatGPT subscription access is disconnected.</p>
@@ -1646,6 +1671,7 @@ els.settingsAccountCard.addEventListener('click', (event) => {
   const cancelButton = event.target.closest('[data-openai-cancel]');
   const refreshButton = event.target.closest('[data-openai-refresh]');
   const logoutButton = event.target.closest('[data-openai-logout]');
+  const refreshSubscriptionButton = event.target.closest('[data-openai-refresh-subscription]');
   if (loginButton) {
     void startOpenAiLogin(loginButton.dataset.openaiLogin).catch((error) => {
       state.openAiAccountError = error?.message || 'Unable to start OpenAI login.';
@@ -1663,6 +1689,8 @@ els.settingsAccountCard.addEventListener('click', (event) => {
       state.openAiAccountError = error?.message || 'Unable to sign out of OpenAI.';
       renderSettingsPage();
     });
+  } else if (refreshSubscriptionButton) {
+    void refreshOpenAiSubscription();
   }
 });
 

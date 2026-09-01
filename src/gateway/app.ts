@@ -44,6 +44,7 @@ import {
   WebOutboundNotifier
 } from "../scheduler/notifier.js";
 import { CodexAccountService } from "../provider/codex/accountService.js";
+import { CodexSubscriptionService } from "../provider/codex/subscriptionService.js";
 
 const SessionPostSchema = z.object({
   action: z.enum(["create", "list"]).default("list"),
@@ -157,6 +158,7 @@ const searchManager = new SearchManager({
 const groupChatStore = new GroupChatStore(appConfig.workspaceDir);
 const sessionMutex = new SessionMutex();
 let codexAccountService = new CodexAccountService();
+let codexSubscriptionService = new CodexSubscriptionService(codexAccountService.appServerClient, () => codexAccountService.initialize());
 
 type AccountResponseStatus = 200 | 404 | 503;
 
@@ -368,6 +370,22 @@ app.post("/v1/accounts/openai/logout", async (c) => {
   }
 });
 
+app.get("/v1/accounts/openai/models", async (c) => {
+  try {
+    return accountJson(c, await codexSubscriptionService.readCatalog());
+  } catch {
+    return accountJson(c, { error: "openai_model_catalog_unavailable" }, 503);
+  }
+});
+
+app.get("/v1/accounts/openai/usage", async (c) => {
+  try {
+    return accountJson(c, await codexSubscriptionService.readUsage());
+  } catch {
+    return accountJson(c, { error: "openai_usage_unavailable" }, 503);
+  }
+});
+
 app.post("/v1/sessions", async (c) => {
   const json = await c.req.json();
   const payload = SessionPostSchema.parse(json);
@@ -526,6 +544,7 @@ app.onError((error, c) => {
 
 export function setCodexAccountServiceForTests(service: CodexAccountService): void {
   codexAccountService = service;
+  codexSubscriptionService = new CodexSubscriptionService(codexAccountService.appServerClient, () => codexAccountService.initialize());
 }
 
 export { app, sessionStore, runStore, chatService, searchManager, agentEventDispatcher, agentEventStore, schedulerEngine, codexAccountService };

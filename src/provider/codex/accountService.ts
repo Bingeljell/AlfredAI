@@ -48,7 +48,7 @@ export interface OpenAiLoginProgress {
   userCode?: string;
 }
 
-interface AccountClient {
+export interface AccountClient {
   initialize(params: { clientInfo: { name: string; version: string }; capabilities?: { experimentalApi?: boolean } }): Promise<Record<string, unknown>>;
   request<T>(method: string, params: unknown): Promise<T>;
   subscribeNotifications?(listener: (notification: AppServerNotification) => void): () => void;

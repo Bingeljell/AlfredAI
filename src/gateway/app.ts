@@ -560,7 +560,9 @@ app.onError((error, c) => {
 
 export function setCodexAccountServiceForTests(service: CodexAccountService): void {
   codexAccountService = service;
-  codexSubscriptionService = new CodexSubscriptionService(codexAccountService.appServerClient, () => codexAccountService.initialize());
+  if (codexAccountService.appServerClient) {
+    codexSubscriptionService = new CodexSubscriptionService(codexAccountService.appServerClient, () => codexAccountService.initialize());
+  }
 }
 
 export { app, sessionStore, runStore, chatService, searchManager, agentEventDispatcher, agentEventStore, schedulerEngine, codexAccountService };

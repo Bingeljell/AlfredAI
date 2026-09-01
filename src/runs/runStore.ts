@@ -201,6 +201,18 @@ export class RunStore {
     return runs.slice(0, Math.max(1, limit));
   }
 
+  async sumSessionTokens(sessionId: string): Promise<number> {
+    let total = 0;
+    const runIds = await this.storage.listRunIds();
+    for (const runId of runIds) {
+      const run = await this.storage.readRun(runId);
+      if (run?.sessionId === sessionId) {
+        total += run.llmUsage?.totalTokens ?? 0;
+      }
+    }
+    return total;
+  }
+
   async listRunEvents(run: RunRecord): Promise<RunEvent[]> {
     await this.flushEvents();
     const day = run.createdAt.slice(0, 10);

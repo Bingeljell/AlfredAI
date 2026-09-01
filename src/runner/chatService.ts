@@ -433,7 +433,7 @@ export class ChatService {
   }
 
   private localSessionTokens(sessionId: string): Promise<number> {
-    return this.options.runStore.listRuns(sessionId, 100).then((runs) => runs.reduce((total, run) => total + (run.llmUsage?.totalTokens ?? 0), 0));
+    return this.options.runStore.sumSessionTokens(sessionId);
   }
 
   private async controlResponse(session: SessionRecord, message: string): Promise<string | undefined> {

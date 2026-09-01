@@ -151,8 +151,12 @@ test("ChatService blocks reached subscription limits before starting a model tur
   const run = (await setup.runStore.listRuns(session.id))[0];
   assert.ok(run);
   await setup.runStore.addLlmUsage(run!.runId, { promptTokens: 20, completionTokens: 22, totalTokens: 42 }, 1);
+  await Promise.all(Array.from({ length: 101 }, async (_, index) => {
+    const extraRun = await setup.runStore.createRun(session.id, `historical run ${index}`, "completed");
+    await setup.runStore.addLlmUsage(extraRun.runId, { promptTokens: 0, completionTokens: 0, totalTokens: 1 }, 1);
+  }));
   const usageResponse = await setup.chat.handleTurn({ sessionId: session.id, message: "/usage" });
   assert.match(usageResponse.assistantText ?? "", /ChatGPT subscription usage/);
-  assert.match(usageResponse.assistantText ?? "", /Alfred local session token usage: 42 tokens/);
+  assert.match(usageResponse.assistantText ?? "", /Alfred local session token usage: 143 tokens/);
   assert.match(usageResponse.assistantText ?? "", /separate from subscription quota/);
 });

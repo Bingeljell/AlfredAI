@@ -339,3 +339,4 @@
 - **2026-09-01** > `src/provider/codex/appServerTurn.ts`, `src/runtime/codexAppServerRuntime.ts` > hardened App Server failure handling so crashed processes fail promptly and Alfred tool-call limits are reported as failures rather than cancellations
 - **2026-09-01** > `src/provider/codex/accountService.ts`, `tests/unit/codexAccountService.test.ts` > Preserve fast App Server login completion notifications and enrich them with the returned login mode and public instructions.
 - **2026-09-01** > `src/channels/telegram/adapter.ts`, `tests/unit/telegramAdapter.test.ts` > Keep shared ChatService control commands unmodified when Telegram channel labels are configured.
+- **2026-09-01** > `src/runs/runStore.ts`, `src/runner/chatService.ts`, `tests/unit/chatControls.test.ts` > Aggregate Alfred local token usage across every run in the session instead of an arbitrary 100-run window.

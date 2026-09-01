@@ -565,4 +565,4 @@ export function setCodexAccountServiceForTests(service: CodexAccountService): vo
   }
 }
 
-export { app, sessionStore, runStore, chatService, searchManager, agentEventDispatcher, agentEventStore, schedulerEngine, codexAccountService };
+export { app, sessionStore, runStore, chatService, searchManager, agentEventDispatcher, agentEventStore, schedulerEngine, codexAccountService, codexSubscriptionService };

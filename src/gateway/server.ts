@@ -4,10 +4,11 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from "n
 import path from "node:path";
 import { serve } from "@hono/node-server";
 import { appConfig } from "../config/env.js";
-import { app, sessionStore, runStore, chatService, searchManager, schedulerEngine } from "./app.js";
+import { app, sessionStore, runStore, chatService, searchManager, schedulerEngine, codexAccountService, codexSubscriptionService } from "./app.js";
 import { TelegramAdapter } from "../channels/telegram/adapter.js";
 import { PidLock } from "./pidLock.js";
 import { ALFRED_SERVER_PROCESS_TAG, managedProcessTag } from "./processIdentity.js";
+import { closeCodexProviderResources } from "./providerShutdown.js";
 
 process.title = ALFRED_SERVER_PROCESS_TAG;
 const serverPidLock = new PidLock({
@@ -91,6 +92,10 @@ async function shutdown(): Promise<void> {
           new Promise<void>((resolve) => setTimeout(resolve, 3_000))
         ]);
       }
+      await closeCodexProviderResources({
+        subscriptionService: codexSubscriptionService,
+        accountService: codexAccountService
+      });
     } finally {
       try {
         await serverPidLock.release();

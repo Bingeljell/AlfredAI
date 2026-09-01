@@ -45,6 +45,7 @@ import {
 } from "../scheduler/notifier.js";
 import { CodexAccountService } from "../provider/codex/accountService.js";
 import { CodexSubscriptionService } from "../provider/codex/subscriptionService.js";
+import { CodexAppServerRuntime } from "../runtime/codexAppServerRuntime.js";
 
 const SessionPostSchema = z.object({
   action: z.enum(["create", "list"]).default("list"),
@@ -247,6 +248,18 @@ const schedulerEngine = new SchedulerEngine({
 });
 agentEventDispatcher.setSchedulerHook(schedulerEngine);
 
+const agentRuntime = appConfig.llmProvider === "codex"
+  ? new CodexAppServerRuntime({
+      runStore, searchManager, workspaceDir: appConfig.workspaceDir, searchMaxResults: appConfig.searchMaxResults,
+      fastScrapeCount: appConfig.fastScrapeCount, enablePlaywright: appConfig.enablePlaywright, maxSteps: appConfig.runMaxSteps,
+      openAiApiKey: appConfig.openAiApiKey, browseConcurrency: appConfig.browseConcurrency,
+      pinchtabBaseUrl: appConfig.enablePinchtab ? appConfig.pinchtabBaseUrl : undefined,
+      agentMaxDurationMs: appConfig.agentMaxDurationMs, agentMaxToolCalls: appConfig.agentMaxToolCalls,
+      agentMaxParallelTools: appConfig.agentMaxParallelTools, scheduler: appConfig.schedulerEnabled ? schedulerEngine : undefined,
+      subscriptionService: codexSubscriptionService, defaultModel: appConfig.modelSmart
+    })
+  : undefined;
+
 const chatService = new ChatService({
   sessionMutex,
   sessionStore,
@@ -266,7 +279,8 @@ const chatService = new ChatService({
   agentMaxParallelTools: appConfig.agentMaxParallelTools,
   groupChatStore,
   taskTranscriptStore: schedulerTaskStore.transcriptStore,
-  scheduler: appConfig.schedulerEnabled ? schedulerEngine : undefined
+  scheduler: appConfig.schedulerEnabled ? schedulerEngine : undefined,
+  agentRuntime
 });
 
 scheduledWakeExecutor = async (task, cycleId, snapshot, observationDigest) => {

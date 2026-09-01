@@ -337,3 +337,4 @@
 - **2026-09-01** > `README.md`, `.env.example` > documented App Server-owned ChatGPT setup, capability-gate operations, quota separation, and credential ownership
 - **2026-09-01** > `docs/architecture/codex_subscription_provider.md` > replaced the obsolete private-provider specification with an explicit App Server migration pointer
 - **2026-09-01** > `src/provider/codex/appServerTurn.ts`, `src/runtime/codexAppServerRuntime.ts` > hardened App Server failure handling so crashed processes fail promptly and Alfred tool-call limits are reported as failures rather than cancellations
+- **2026-09-01** > `src/provider/codex/accountService.ts`, `tests/unit/codexAccountService.test.ts` > Preserve fast App Server login completion notifications and enrich them with the returned login mode and public instructions.

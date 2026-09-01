@@ -9,6 +9,7 @@ class FakeAccountClient {
   initializeCalls = 0;
   closeCalls = 0;
   requests: Array<{ method: string; params: unknown }> = [];
+  synchronousCompletion?: { success: boolean; error?: string };
 
   async initialize(): Promise<Record<string, unknown>> {
     this.initializeCalls += 1;
@@ -18,8 +19,18 @@ class FakeAccountClient {
   async request<T>(method: string, params: unknown): Promise<T> {
     this.requests.push({ method, params });
     if (method === "account/read") return { requiresOpenaiAuth: false, account: { type: "chatgpt", email: "owner@example.com", planType: "plus" } } as T;
-    if (method === "account/login/start" && (params as { type?: string })?.type === "chatgpt") return { type: "chatgpt", loginId: "login-1", authUrl: "https://auth.example/login" } as T;
-    if (method === "account/login/start") return { type: "chatgptDeviceCode", loginId: "login-1", verificationUrl: "https://auth.example/device", userCode: "ABCD-EFGH" } as T;
+    if (method === "account/login/start" && (params as { type?: string })?.type === "chatgpt") {
+      if (this.synchronousCompletion) {
+        this.emit({ method: "account/login/completed", params: { loginId: "login-1", ...this.synchronousCompletion } });
+      }
+      return { type: "chatgpt", loginId: "login-1", authUrl: "https://auth.example/login" } as T;
+    }
+    if (method === "account/login/start") {
+      if (this.synchronousCompletion) {
+        this.emit({ method: "account/login/completed", params: { loginId: "login-1", ...this.synchronousCompletion } });
+      }
+      return { type: "chatgptDeviceCode", loginId: "login-1", verificationUrl: "https://auth.example/device", userCode: "ABCD-EFGH" } as T;
+    }
     if (method === "account/login/cancel") return { status: "cancelled" } as T;
     return {} as T;
   }
@@ -78,6 +89,24 @@ test("account service waits for successful and failed login completion without e
   const failed = await failureWait;
   assert.deepEqual({ status: failed.status, error: failed.error }, { status: "failed", error: "denied" });
   assert.equal(JSON.stringify(failed).includes("accessToken"), false);
+});
+
+test("account service preserves a synchronous completion notification emitted before the login-start response", async () => {
+  const client = new FakeAccountClient();
+  client.synchronousCompletion = { success: true };
+  const service = new CodexAccountService(client);
+
+  const login = await service.startLogin("device-code");
+  assert.deepEqual(service.getLogin(login.loginId), {
+    loginId: "login-1",
+    mode: "device-code",
+    status: "completed",
+    verificationUrl: "https://auth.example/device",
+    userCode: "ABCD-EFGH",
+    authorizationUrl: undefined,
+    error: undefined
+  });
+  assert.equal((await service.waitForLogin(login.loginId)).status, "completed");
 });
 
 test("account service cancels timed-out and signal-cancelled logins and closes cleanly", async () => {

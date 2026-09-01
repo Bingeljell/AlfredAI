@@ -157,14 +157,25 @@ export class CodexAccountService {
       ? { type: "chatgpt", useHostedLoginSuccessPage: true, appBrand: "chatgpt" }
       : { type: "chatgptDeviceCode" });
     const start = mapLoginStart(mode, response);
-    this.publish({
+    const instructions = {
       loginId: start.loginId,
       mode,
-      status: "started",
       authorizationUrl: start.authorizationUrl,
       verificationUrl: start.verificationUrl,
       userCode: start.userCode
-    });
+    } satisfies Pick<OpenAiLoginProgress, "loginId" | "mode" | "authorizationUrl" | "verificationUrl" | "userCode">;
+    const existing = this.loginProgress.get(start.loginId);
+    if (existing && existing.status !== "started") {
+      // The App Server may deliver account/login/completed in the same stdout
+      // batch as the start response. Preserve that terminal state while adding
+      // the mode and public instructions that only the response contains.
+      this.loginProgress.set(start.loginId, { ...existing, ...instructions });
+    } else {
+      this.publish({
+        ...instructions,
+        status: "started"
+      });
+    }
     return start;
   }
 

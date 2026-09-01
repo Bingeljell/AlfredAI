@@ -75,6 +75,23 @@ export class SessionStore {
     return updated;
   }
 
+  async setPreferences(sessionId: string, preferences?: SessionRecord["preferences"]): Promise<SessionRecord | undefined> {
+    const sessions = await this.loadSessions();
+    const index = sessions.findIndex((session) => session.id === sessionId);
+    if (index === -1) return undefined;
+    const compactPreferences = preferences
+      ? Object.fromEntries(Object.entries(preferences).filter(([, value]) => typeof value === "string" && value.length > 0))
+      : undefined;
+    const updated: SessionRecord = {
+      ...sessions[index],
+      updatedAt: new Date().toISOString(),
+      preferences: compactPreferences && Object.keys(compactPreferences).length > 0 ? compactPreferences : undefined
+    };
+    sessions[index] = updated;
+    await writeJsonFile(this.filePath, sessions);
+    return updated;
+  }
+
   async resetWorkingMemory(sessionId: string): Promise<SessionRecord | undefined> {
     const sessions = await this.loadSessions();
     const index = sessions.findIndex((session) => session.id === sessionId);
@@ -85,6 +102,7 @@ export class SessionStore {
     const updated: SessionRecord = {
       ...sessions[index],
       updatedAt: new Date().toISOString(),
+      preferences: undefined,
       workingMemory: undefined
     };
     sessions[index] = updated;

@@ -1,4 +1,4 @@
-import type { PolicyMode, RunOutcome, SessionPromptContext } from "../types.js";
+import type { EffectiveModelSelection, PolicyMode, RunOutcome, SessionPromptContext } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import type { SchedulerTaskApi } from "../scheduler/api.js";
@@ -17,6 +17,7 @@ export interface AgentTurnRequest {
   provenance?: SchedulerProvenance;
   executionProfile?: TurnExecutionProfile;
   schedulerControl?: SchedulerTurnControl;
+  modelSelection?: EffectiveModelSelection;
 }
 
 export interface AgentRuntimeServices {

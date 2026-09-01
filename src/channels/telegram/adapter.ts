@@ -19,7 +19,10 @@ const HELP_TEXT = `
 Alfred commands:
 
 /help — show this message
-/status — current session ID, label, and start time
+/status — show this session and effective model settings
+/model — list or select a live ChatGPT model for this session
+/reasoning — list or select supported reasoning for this session
+/usage — show ChatGPT subscription quota separately from Alfred local tokens
 /label <text> — set a context hint for this chat (e.g. /label lead gen — MSPs USA)
 /label — clear the label
 /newsession — start a fresh session (clears Alfred's context for this chat)
@@ -176,11 +179,6 @@ export class TelegramAdapter implements ChannelAdapter {
       return;
     }
 
-    if (text.startsWith("/help")) {
-      await this.send(chatId, HELP_TEXT);
-      return;
-    }
-
     if (text.startsWith("/newsession")) {
       await this.handleNewSessionCommand(chatId);
       return;
@@ -188,11 +186,6 @@ export class TelegramAdapter implements ChannelAdapter {
 
     if (text.startsWith("/label")) {
       await this.handleLabelCommand(chatId, text);
-      return;
-    }
-
-    if (text.startsWith("/status")) {
-      await this.handleStatusCommand(chatId);
       return;
     }
 
@@ -296,6 +289,15 @@ export class TelegramAdapter implements ChannelAdapter {
         principalId,
         origin: "telegram"
       });
+
+      if (!result.runId) {
+        deliveryStarted = true;
+        await deliverOutbound(async () => {
+          cleanupProgress();
+          await this.sendResponse(chatId, result.assistantText ?? "Done.");
+        });
+        return;
+      }
 
       const runId = result.runId;
       const editProgress = async (statusText: string) => {

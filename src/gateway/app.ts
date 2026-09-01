@@ -280,7 +280,9 @@ const chatService = new ChatService({
   groupChatStore,
   taskTranscriptStore: schedulerTaskStore.transcriptStore,
   scheduler: appConfig.schedulerEnabled ? schedulerEngine : undefined,
-  agentRuntime
+  agentRuntime,
+  subscriptionService: appConfig.llmProvider === "codex" ? codexSubscriptionService : undefined,
+  globalModel: appConfig.modelSmart
 });
 
 scheduledWakeExecutor = async (task, cycleId, snapshot, observationDigest) => {

@@ -8,12 +8,19 @@ import { ALFRED_AGENT } from "./specialists.js";
 import type { AgentRuntime, AgentRuntimeServices, AgentTurnRequest } from "./agentRuntime.js";
 import { getPolicyMode } from "../config/env.js";
 import type { CodexModel, CodexSubscriptionService } from "../provider/codex/subscriptionService.js";
+import { reachedRateLimit } from "../runner/chatControls.js";
 import { CodexAppServerLlmProvider } from "../provider/codex/appServerLlmProvider.js";
 import { runSafeAppServerTurn, type AppServerClientFactory, type DynamicToolCallParams } from "../provider/codex/appServerTurn.js";
 
 function nowIso(): string { return new Date().toISOString(); }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function safeError(error: unknown): string { return (error instanceof Error ? error.message : "Codex App Server runtime failed").slice(0, 300); }
+
+function rateLimitMessage(reached: ReturnType<typeof reachedRateLimit>): string | undefined {
+  if (!reached) return undefined;
+  const reset = reached.resetAt ? ` Reset: ${new Date(reached.resetAt * 1_000).toISOString()}.` : "";
+  return `ChatGPT subscription limit reached for ${reached.bucket} (${reached.reachedType}).${reset} Use /usage for the current quota.`;
+}
 
 function sessionContextText(context: SessionPromptContext): string {
   const parts = [context.activeObjective && `Active objective: ${context.activeObjective}`, context.sessionSummary && `Session context: ${context.sessionSummary}`].filter(Boolean);
@@ -75,10 +82,18 @@ export class CodexAppServerRuntime implements AgentRuntime {
       return { status: "needs_approval", approvalToken: approval.token, assistantText: `Approval required (${approval.token}) before executing this request.` };
     }
 
+    try {
+      const reached = reachedRateLimit(await this.options.subscriptionService.readRateLimits());
+      const message = rateLimitMessage(reached);
+      if (message) return { status: "failed", assistantText: message };
+    } catch (error) {
+      return { status: "failed", assistantText: `Unable to verify ChatGPT subscription limits before the turn: ${safeError(error)}` };
+    }
+
     let selected: CodexModel | undefined;
     let fallbackFrom: string | undefined;
     try {
-      const requested = this.options.defaultModel;
+      const requested = request.modelSelection?.modelId ?? this.options.defaultModel;
       const models = await this.models();
       selected = models.find((model) => model.id === requested || model.model === requested) ?? models.find((model) => model.isDefault) ?? models[0];
       if (!selected) throw new Error("No visible models are available in the live Codex catalog");
@@ -112,7 +127,7 @@ export class CodexAppServerRuntime implements AgentRuntime {
     try {
       if (await runStore.isCancellationRequested(request.runId)) return { status: "cancelled" };
       const result = await runSafeAppServerTurn({
-        model: selected.id, effort: selected.defaultReasoningEffort || undefined, baseInstructions, input: request.message,
+        model: selected.id, effort: request.modelSelection?.reasoningEffort ?? (selected.defaultReasoningEffort || undefined), baseInstructions, input: request.message,
         history: historyItems(request.sessionContext), dynamicTools: dynamicSpecs(tools), timeoutMs: maxDurationMs, signal: controller.signal,
         clientFactory: this.options.clientFactory,
         onDynamicTool: async (call: DynamicToolCallParams) => {
@@ -133,10 +148,13 @@ export class CodexAppServerRuntime implements AgentRuntime {
         if (schedulerTurn && request.schedulerControl && !request.schedulerControl.action) request.schedulerControl.reschedule(new Date(Date.now() + 60_000).toISOString(), "The scheduled ChatGPT turn timed out before completion.");
         return { status: schedulerTurn ? "completed" : "failed", assistantText: "The ChatGPT turn timed out before completing.", artifactPaths: state.artifacts.length ? state.artifacts : undefined };
       }
-      if (result.status !== "completed") return { status: "failed", assistantText: `I encountered an error in the ChatGPT turn: ${result.error ?? "unknown App Server failure"}`, artifactPaths: state.artifacts.length ? state.artifacts : undefined };
+      if (result.status !== "completed") {
+        const reachedAfterTurn = await this.options.subscriptionService.readRateLimits(true).then((snapshot) => rateLimitMessage(reachedRateLimit(snapshot))).catch(() => undefined);
+        return { status: "failed", assistantText: reachedAfterTurn ?? `I encountered an error in the ChatGPT turn: ${result.error ?? "unknown App Server failure"}`, artifactPaths: state.artifacts.length ? state.artifacts : undefined };
+      }
       if (result.usage) await runStore.addLlmUsage(request.runId, result.usage, 1);
-      const notice = fallbackFrom ? `The configured model ${fallbackFrom} was unavailable; using ${selected.id} from the live catalog.\n\n` : "";
-      return { status: "completed", assistantText: `${notice}${result.content}`.trim(), artifactPaths: state.artifacts.length ? state.artifacts : undefined };
+      const notice = fallbackFrom ? `The configured model ${fallbackFrom} was unavailable; using ${selected.id} from the live catalog.` : "";
+      return { status: "completed", assistantText: `${notice ? `${notice}\n\n` : ""}${result.content}`.trim(), artifactPaths: state.artifacts.length ? state.artifacts : undefined };
     } finally {
       clearInterval(poll);
     }

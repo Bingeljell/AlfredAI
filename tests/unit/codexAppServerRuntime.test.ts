@@ -51,7 +51,7 @@ test("Codex App Server runtime injects Alfred context and dispatches dynamic too
     agentMaxParallelTools: 2,
     defaultModel: "gpt-live",
     policyMode: "trusted",
-    subscriptionService: { listModels: async () => [{ id: "gpt-live", model: "gpt-live", displayName: "Live", description: "", hidden: false, isDefault: true, defaultReasoningEffort: "medium", supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "" }], inputModalities: ["text"] }] } as never,
+    subscriptionService: { listModels: async () => [{ id: "gpt-live", model: "gpt-live", displayName: "Live", description: "", hidden: false, isDefault: true, defaultReasoningEffort: "medium", supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "" }], inputModalities: ["text"] }], readRateLimits: async () => ({ limitId: "codex", limitName: null, planType: null, primary: null, secondary: null, reachedType: null, credits: null }) } as never,
     clientFactory: (options) => {
       client = new FakeAppServerClient(options);
       return client;

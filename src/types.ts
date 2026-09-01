@@ -70,6 +70,16 @@ export interface ConversationWindowEntry {
   timestamp: string;
 }
 
+/** Explicit per-session controls; never fold these into summaries or metadata. */
+export interface SessionModelSelection {
+  modelId?: string;
+  reasoningEffort?: string;
+}
+
+export interface EffectiveModelSelection extends SessionModelSelection {
+  notice?: string;
+}
+
 export interface SessionWorkingMemory {
   activeObjective?: string;
   lastRunId?: string;
@@ -113,6 +123,7 @@ export interface SessionPromptContext {
   recentOutputs?: SessionOutputRecord[];
   unresolvedItems?: string[];
   conversationWindow?: ConversationWindowEntry[];
+  modelSelection?: EffectiveModelSelection;
 }
 
 export interface SessionRecord {
@@ -122,6 +133,7 @@ export interface SessionRecord {
   updatedAt: string;
   status: "active";
   metadata?: Record<string, unknown>;
+  preferences?: SessionModelSelection;
   workingMemory?: SessionWorkingMemory;
 }
 

@@ -37,6 +37,7 @@ export interface CodexRateLimitSnapshot {
   secondary: CodexRateLimitWindow | null;
   reachedType: string | null;
   credits: { balance: string | null; hasCredits: boolean; unlimited: boolean } | null;
+  buckets?: Record<string, CodexRateLimitSnapshot>;
 }
 
 export interface CodexUsageSummary {
@@ -112,7 +113,7 @@ function mapRateLimitWindow(value: unknown): CodexRateLimitWindow | null {
 function mapRateLimit(value: unknown): CodexRateLimitSnapshot {
   const body = isRecord(value) ? value : {};
   const creditsBody = isRecord(body.credits) ? body.credits : undefined;
-  return {
+  const snapshot: CodexRateLimitSnapshot = {
     limitId: typeof body.limitId === "string" ? body.limitId : null,
     limitName: typeof body.limitName === "string" ? body.limitName : null,
     planType: typeof body.planType === "string" ? body.planType : null,
@@ -125,6 +126,12 @@ function mapRateLimit(value: unknown): CodexRateLimitSnapshot {
       unlimited: asBoolean(creditsBody.unlimited)
     } : null
   };
+  const byLimitId = isRecord(body.rateLimitsByLimitId) ? body.rateLimitsByLimitId : undefined;
+  if (byLimitId) {
+    snapshot.buckets = Object.fromEntries(Object.entries(byLimitId)
+      .map(([id, bucket]) => [id, mapRateLimit(bucket)] as const));
+  }
+  return snapshot;
 }
 
 function mapUsage(value: unknown): CodexSubscriptionUsage["usage"] {
@@ -145,7 +152,28 @@ function mapUsage(value: unknown): CodexSubscriptionUsage["usage"] {
 }
 
 export class CodexSubscriptionService {
-  constructor(private readonly client: AccountClient, private readonly ensureInitialized: () => Promise<void>) {}
+  private readonly rateLimitCacheTtlMs: number;
+  private rateLimitCache?: { snapshot: CodexRateLimitSnapshot; expiresAt: number };
+  private unsubscribeNotifications?: () => void;
+
+  constructor(
+    private readonly client: AccountClient,
+    private readonly ensureInitialized: () => Promise<void>,
+    options: { rateLimitCacheTtlMs?: number } = {}
+  ) {
+    this.rateLimitCacheTtlMs = Math.max(1_000, options.rateLimitCacheTtlMs ?? 30_000);
+    this.unsubscribeNotifications = client.subscribeNotifications?.((notification) => {
+      if (notification.method !== "account/rateLimits/updated") return;
+      const params = isRecord(notification.params) ? notification.params : {};
+      if (params.rateLimits) {
+        const rateLimits = isRecord(params.rateLimits) ? params.rateLimits : {};
+        this.rateLimitCache = {
+          snapshot: mapRateLimit({ ...rateLimits, rateLimitsByLimitId: params.rateLimitsByLimitId }),
+          expiresAt: Date.now() + this.rateLimitCacheTtlMs
+        };
+      }
+    });
+  }
 
   async listModels(): Promise<CodexModel[]> {
     await this.ensureInitialized();
@@ -175,16 +203,30 @@ export class CodexSubscriptionService {
     return { models, capabilities };
   }
 
-  async readUsage(): Promise<CodexSubscriptionUsage> {
+  async readRateLimits(force = false): Promise<CodexRateLimitSnapshot> {
     await this.ensureInitialized();
-    const [limits, usage] = await Promise.all([
-      this.client.request<Record<string, unknown>>("account/rateLimits/read", undefined),
+    if (!force && this.rateLimitCache && this.rateLimitCache.expiresAt > Date.now()) return this.rateLimitCache.snapshot;
+    const limits = await this.client.request<Record<string, unknown>>("account/rateLimits/read", undefined);
+    const snapshot = mapRateLimit(limits?.rateLimits ? { ...limits.rateLimits, rateLimitsByLimitId: limits.rateLimitsByLimitId } : limits);
+    this.rateLimitCache = { snapshot, expiresAt: Date.now() + this.rateLimitCacheTtlMs };
+    return snapshot;
+  }
+
+  async readUsage(force = false): Promise<CodexSubscriptionUsage> {
+    await this.ensureInitialized();
+    const [rateLimits, usage] = await Promise.all([
+      this.readRateLimits(force),
       this.client.request<Record<string, unknown>>("account/usage/read", {})
     ]);
     return {
-      rateLimits: mapRateLimit(limits?.rateLimits),
+      rateLimits,
       usage: mapUsage(usage)
     };
+  }
+
+  async close(): Promise<void> {
+    this.unsubscribeNotifications?.();
+    this.unsubscribeNotifications = undefined;
   }
 
   async validateSelection(model: string, effort?: string): Promise<CodexModel> {

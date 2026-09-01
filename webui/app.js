@@ -1064,6 +1064,12 @@ async function sendTurn(message) {
 
     await Promise.all([refreshSessions(), refreshSessionRuns()]);
 
+    if (!payload.runId) {
+      if (payload.assistantText) injectCommandResponse(payload.assistantText);
+      setRunningUi(false);
+      return;
+    }
+
     if (payload.runId) {
       await loadRun(payload.runId);
     }
@@ -1086,15 +1092,6 @@ async function sendTurn(message) {
 
 // ── Web UI command handling ──────────────────────────────────────
 
-const WEB_HELP_TEXT = `**Alfred web commands**
-
-\`/help\` — show this message
-\`/status\` — current session info and token usage
-\`/newsession\` — start a fresh session (opens the new session modal)
-\`/label <text>\` — note: labels are a Telegram concept; use session names here instead
-
-Any other message is sent to Alfred as a task.`;
-
 function injectCommandResponse(text) {
   // Remove empty state placeholder if present
   const empty = els.chatHistory.querySelector('.empty-state');
@@ -1110,29 +1107,8 @@ function injectCommandResponse(text) {
   els.chatHistory.scrollTop = els.chatHistory.scrollHeight;
 }
 
-function handleWebCommand(message) {
+async function handleWebCommand(message) {
   const lower = message.toLowerCase();
-
-  if (lower === '/help' || lower.startsWith('/help ')) {
-    injectCommandResponse(WEB_HELP_TEXT);
-    return true;
-  }
-
-  if (lower === '/status') {
-    const session = state.sessions.find((s) => s.id === state.activeSessionId);
-    const channelInfo = state.channelSessionMap[state.activeSessionId];
-    const tokens = getSessionTotalTokens();
-    const lines = [
-      `**Session:** \`${state.activeSessionId ?? 'none'}\``,
-      session?.name ? `**Name:** ${session.name}` : null,
-      channelInfo ? `**Channel:** Telegram (${channelInfo.key})${channelInfo.label ? ` — ${channelInfo.label}` : ''}` : null,
-      `**Runs this session:** ${state.sessionRuns.length}`,
-      `**Tokens used:** ${formatTokenCount(tokens) || '0'}`,
-      state.llmStatus ? `**Model:** ${state.llmStatus.provider} — fast: ${state.llmStatus.modelFast}, smart: ${state.llmStatus.modelSmart}` : null,
-    ].filter(Boolean).join('\n');
-    injectCommandResponse(lines);
-    return true;
-  }
 
   if (lower === '/newsession' || lower.startsWith('/newsession ')) {
     els.modalBackdrop.classList.remove('hidden');
@@ -1159,7 +1135,7 @@ async function submitComposerTurn() {
   }
   els.message.value = '';
 
-  if (message.startsWith('/') && handleWebCommand(message)) {
+  if (message.startsWith('/') && await handleWebCommand(message)) {
     return;
   }
 

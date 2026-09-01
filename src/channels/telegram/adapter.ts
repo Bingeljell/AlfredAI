@@ -14,6 +14,12 @@ const HEARTBEAT_INTERVAL_MS = 15 * 60 * 1_000; // 15 min
 const INLINE_TEXT_MAX_CHARS = 3_800; // Telegram message limit is 4096
 const TELEGRAM_INGRESS_DEDUPE_TTL_MS = 10 * 60 * 1_000;
 const TELEGRAM_INGRESS_DEDUPE_MAX_ENTRIES = 1_000;
+const CHAT_SERVICE_CONTROL_COMMANDS = new Set(["/help", "/status", "/model", "/reasoning", "/usage"]);
+
+function isChatServiceControlCommand(text: string): boolean {
+  const command = text.trim().split(/\s+/, 1)[0]?.toLowerCase();
+  return command ? CHAT_SERVICE_CONTROL_COMMANDS.has(command) : false;
+}
 
 const HELP_TEXT = `
 Alfred commands:
@@ -275,7 +281,7 @@ export class TelegramAdapter implements ChannelAdapter {
       const record = await this.channelStore.get(this.channelKey(chatId));
 
       // Prepend channel label context so Alfred knows which mode it's in
-      const message = record?.label
+      const message = record?.label && !isChatServiceControlCommand(text)
         ? `[Channel context: ${record.label}]\n\n${text}`
         : text;
 

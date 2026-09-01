@@ -92,6 +92,10 @@ class JsonRpcProcess {
     this.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32001, message } })}\n`);
   }
 
+  notify(method: string, params: unknown): void {
+    this.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
+  }
+
   async close(): Promise<void> {
     for (const pending of this.pending.values()) clearTimeout(pending.timer);
     this.pending.clear();
@@ -240,6 +244,7 @@ async function runGate(): Promise<GateResult> {
       capabilities: { experimentalApi: true }
     });
     assertRpcSuccess(initialize, "initialize");
+    rpc.notify("initialized", {});
 
     const thread = assertRpcSuccess(await rpc.request("thread/start", buildCapabilityGateThreadParams(model)), "thread/start");
     assertSafeThreadConfig(thread);

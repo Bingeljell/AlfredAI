@@ -8,6 +8,7 @@
 - **2026-09-01** > `README.md`, `.env.example`, `docs/architecture/chatgpt_subscription_app_server.md`, `docs/operations/chatgpt_subscription.md` > document terminal/Web login lifecycle, session-scoped live model and reasoning controls, quota behavior, restart requirements, and the separation between subscription usage and Alfred local tokens.
 - **2026-09-01** > `src/provider/codex/{accountService,subscriptionService}.ts`, `src/runner/chatService.ts`, `src/runtime/codexAppServerRuntime.ts`, `tests/unit/{codexAccountService,codexSubscriptionService,codexAppServerRuntime,chatControls}.test.ts` > harden reconnect-aware account initialization, protocol-compatible model modality defaults, control-command provider failures, and effective reasoning forwarding.
 - **2026-09-01** > `src/gateway/app.ts`, `tests/integration/accountApi.test.ts` > keep test account-service replacement compatible with lightweight fakes when no App Server client is supplied.
+- **2026-09-01** > `scripts/codex-app-server-gate.ts`, `tests/unit/codexAppServerGate.test.ts` > make the executable capability gate follow the required initialize-response then initialized-notification handshake before starting a thread.
 
 - **2026-08-27** > `README.md`, `docs/changelog.md` > Refreshed the project overview, tool catalog, configuration reference, OpenRouter example, and browser guide for reasoning controls, Pinchtab-first extraction with Playwright fallback, canonical session context, provider telemetry, and deterministic action-claim grounding.
 

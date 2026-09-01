@@ -157,19 +157,21 @@ pnpm alfred auth logout openai
 Keep `pnpm codex:login`, `pnpm codex:status`, and `pnpm codex:logout` as
 compatibility aliases during migration.
 
-### Telegram — limited and owner-only
+The terminal command prints only the App Server authorization URL or device
+verification URL/code, waits for `account/login/completed`, and closes only
+after success, failure, timeout, or cancellation. It defaults to ten minutes;
+`--timeout-ms` changes that bound and Ctrl-C sends `account/login/cancel`.
 
-The first release should expose `/openai_status` and model selection, but keep
-login in the web UI or terminal.
+### Telegram — controls only
 
-A later single-operator Telegram login may use device code only. It must:
+Telegram does not perform account login. An allowlisted chat gets the same
+ChatService `/help`, `/status`, `/model`, `/reasoning`, and `/usage` controls as
+the Web UI; login remains in the terminal or Web UI so authorization details
+are not sent through chat.
 
-- work only in a private chat with an allowlisted owner;
-- never work in groups;
-- return only the official verification URL and short-lived user code;
-- never request passwords or expose tokens;
-- warn that completion changes the server-wide Alfred account;
-- support cancellation and expiry.
+Telegram currently exposes the channel-independent `/help`, `/status`,
+`/model`, `/reasoning`, and `/usage` controls. Login remains deliberately
+outside Telegram.
 
 ## Model selection and reasoning
 
@@ -179,18 +181,15 @@ Do not hardcode the App Server model catalogue as the authority. Use:
   reasoning efforts;
 - `modelProvider/capabilities/read` for model/provider capability bounds.
 
-Alfred retains logical tiers:
-
-```text
-fast     -> selected available model and effort
-default  -> selected available model and effort
-deep     -> selected available model and normally higher effort
-```
-
-Allow a global default plus per-session and per-turn overrides. Validate model
-and effort combinations before starting a turn. If a saved model disappears,
-show the catalog's current default and require or clearly report the fallback;
-do not silently select an unrelated model.
+`ALFRED_MODEL_SMART` is the configured global/default model for Codex turns.
+The current implementation provides per-session `/model` and `/reasoning`
+overrides. It does not provide a per-turn override syntax. Validate model and
+effort combinations against a fresh or short-lived `model/list` catalogue
+before each turn. If a saved model disappears, show the live default fallback
+explicitly; if its saved effort is invalid for the effective model, reset to
+that model's `defaultReasoningEffort` and say so. Numbered choices are only
+shortcuts for the list displayed by the current catalogue; they are never a
+universal semantic mapping.
 
 ## Subscription usage and limits
 
@@ -200,6 +199,12 @@ Use App Server as the authoritative account source:
   reset time, plan type, credits, and reached-limit classification;
 - `account/usage/read` for account token-activity summaries and daily buckets.
 
+Alfred keeps a redacted, short-lived rate-limit snapshot and applies
+`account/rateLimits/updated` notifications immediately. A reached
+`rateLimitReachedType` blocks a new Codex turn before `turn/start`; the user
+message names the bucket and reset time when supplied. `/usage` reports this
+subscription quota separately from Alfred's local per-run token totals.
+
 Continue recording Alfred's per-run token counts and timings locally. Keep the
 two concepts distinct:
 
@@ -208,6 +213,12 @@ two concepts distinct:
 
 Show warnings before exhaustion, including reset time. Never switch providers,
 models, or billing modes silently when a subscription limit is reached.
+
+Changing `ALFRED_LLM_PROVIDER`, `ALFRED_MODEL_SMART`, or other `.env` settings
+requires restarting Alfred. Existing sessions retain their explicit
+session-scoped picker choices across a normal server restart; `/model default`
+and `/reasoning default` clear those overrides, while `/newsession` starts with
+the configured global defaults.
 
 ## Safe gateway surface
 

@@ -117,6 +117,27 @@ pnpm alfred auth logout openai
 
 `pnpm codex:login`, `pnpm codex:status`, and `pnpm codex:logout` remain compatibility aliases. Alfred does not read or persist ChatGPT tokens; Codex owns credentials and refresh. The web UI exposes the same status, login, model catalog, and account quota under Settings → Models & Accounts. Account quota/reset data is separate from per-run Alfred usage. Codex turns use ephemeral App Server threads, inject only Alfred's durable session context, and execute external effects only through Alfred's dynamic tool registry and policy envelope. Built-in Codex shell, filesystem, patch, browser, network, and MCP capabilities are disabled/rejected by the runtime boundary.
 
+Terminal login prints the browser authorization URL or device-code verification URL and one-time code, then keeps the App Server process open until `account/login/completed`. Use `--timeout-ms <ms>` to change the ten-minute timeout; Ctrl-C sends `account/login/cancel` before the client closes. The Web UI opens browser login automatically, polls completion, and provides cancellation; use device code there for a remote host. Neither path prints access or refresh tokens.
+
+### Chat model controls
+
+In both Telegram and the Web UI, these commands are handled by `ChatService` and are not sent to a model or written to conversation history:
+
+```text
+/model                         list six live picker-visible models
+/model page 2                  show the next deterministic page
+/model N                       choose the numbered model for this session
+/model NAME                    choose an exact id/display name or unambiguous alias
+/model default                 clear the session model override
+/reasoning                     list efforts supported by the effective model
+/reasoning N|NAME              choose an effort for this session
+/reasoning default             use that model's default effort
+/usage                        show App Server subscription quota and local Alfred tokens separately
+/status                       show session, effective model/reasoning, and local token totals
+```
+
+The live App Server `model/list` response is authoritative. Numbering is only a shortcut for the currently displayed list, and ambiguous aliases are rejected. Model and reasoning overrides are session-scoped, persist across a normal Alfred restart, and start from the configured global defaults in a new session. A vanished model or unsupported saved effort is reported and falls back to the live/default catalog. Changing `.env` provider or model settings requires restarting Alfred.
+
 ### Server, auth & channels
 
 | Variable | Default | Purpose |

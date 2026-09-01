@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
@@ -42,6 +43,7 @@ import {
   TelegramOutboundNotifier,
   WebOutboundNotifier
 } from "../scheduler/notifier.js";
+import { CodexAccountService } from "../provider/codex/accountService.js";
 
 const SessionPostSchema = z.object({
   action: z.enum(["create", "list"]).default("list"),
@@ -154,6 +156,15 @@ const searchManager = new SearchManager({
 
 const groupChatStore = new GroupChatStore(appConfig.workspaceDir);
 const sessionMutex = new SessionMutex();
+let codexAccountService = new CodexAccountService();
+
+type AccountResponseStatus = 200 | 404 | 503;
+
+function accountJson(c: Context, body: unknown, status: AccountResponseStatus = 200) {
+  c.header("Cache-Control", "no-store");
+  c.header("Pragma", "no-cache");
+  return c.json(body, status);
+}
 
 // ── Agent event webhook (docs/architecture/agent_event_webhook_spec.md) ──────
 // Push notifications go to Telegram when both a bot token and an alert chat id
@@ -308,6 +319,53 @@ app.get("/v1/llm/status", (c) => {
       ? appConfig.openRouterReasoning ?? { mode: "model_default" }
       : null
   });
+});
+
+app.get("/v1/accounts/openai", async (c) => {
+  try {
+    return accountJson(c, { account: await codexAccountService.readAccount() });
+  } catch {
+    return accountJson(c, { error: "openai_account_unavailable" }, 503);
+  }
+});
+
+app.post("/v1/accounts/openai/login", async (c) => {
+  const payload = z.object({ mode: z.enum(["browser", "device-code"]).default("browser") }).parse(await c.req.json().catch(() => ({})));
+  try {
+    return accountJson(c, await codexAccountService.startLogin(payload.mode));
+  } catch {
+    return accountJson(c, { error: "openai_login_unavailable" }, 503);
+  }
+});
+
+app.post("/v1/accounts/openai/login/device", async (c) => {
+  try {
+    return accountJson(c, await codexAccountService.startLogin("device-code"));
+  } catch {
+    return accountJson(c, { error: "openai_login_unavailable" }, 503);
+  }
+});
+
+app.get("/v1/accounts/openai/login/:loginId", (c) => {
+  const login = codexAccountService.getLogin(c.req.param("loginId"));
+  return login ? accountJson(c, login) : accountJson(c, { error: "openai_login_not_found" }, 404);
+});
+
+app.delete("/v1/accounts/openai/login/:loginId", async (c) => {
+  try {
+    return accountJson(c, await codexAccountService.cancelLogin(c.req.param("loginId")));
+  } catch {
+    return accountJson(c, { error: "openai_login_cancel_failed" }, 503);
+  }
+});
+
+app.post("/v1/accounts/openai/logout", async (c) => {
+  try {
+    await codexAccountService.logout();
+    return accountJson(c, { ok: true });
+  } catch {
+    return accountJson(c, { error: "openai_logout_failed" }, 503);
+  }
 });
 
 app.post("/v1/sessions", async (c) => {
@@ -466,4 +524,8 @@ app.onError((error, c) => {
   return c.json({ error: "Internal server error" }, 500);
 });
 
-export { app, sessionStore, runStore, chatService, searchManager, agentEventDispatcher, agentEventStore, schedulerEngine };
+export function setCodexAccountServiceForTests(service: CodexAccountService): void {
+  codexAccountService = service;
+}
+
+export { app, sessionStore, runStore, chatService, searchManager, agentEventDispatcher, agentEventStore, schedulerEngine, codexAccountService };

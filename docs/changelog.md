@@ -4,6 +4,7 @@
 - **2026-09-01** > `src/provider/codex/accountService.ts`, `scripts/alfred-cli.ts`, `tests/unit/{codexAccountService,alfredCli}.test.ts` > keep terminal ChatGPT login sessions alive through completion, failure, timeout, or Ctrl-C cancellation, with actionable browser/device instructions and guaranteed App Server cleanup.
 - **2026-09-01** > `src/runner/chatService.ts`, `src/runner/chatControls.ts`, `src/memory/sessionStore.ts`, `src/types.ts`, `tests/unit/chatControls.test.ts` > add channel-independent, session-scoped live model/reasoning controls and `/usage`/`/status`/`/help` handling without creating runs or polluting conversation history.
 - **2026-09-01** > `src/provider/codex/subscriptionService.ts`, `src/runtime/codexAppServerRuntime.ts`, `tests/unit/codexSubscriptionService.test.ts` > maintain redacted short-lived App Server rate-limit snapshots, process authoritative updates, block reached quota before turns, and preserve reset details separately from Alfred local token accounting.
+- **2026-09-01** > `tests/setup/env.mjs`, `tests/integration/schedulerApi.test.ts` > isolate scheduler API integration tests from the developer `.env` by explicitly disabling the opt-in scheduler before dotenv loads.
 
 - **2026-08-27** > `README.md`, `docs/changelog.md` > Refreshed the project overview, tool catalog, configuration reference, OpenRouter example, and browser guide for reasoning controls, Pinchtab-first extraction with Playwright fallback, canonical session context, provider telemetry, and deterministic action-claim grounding.
 

@@ -314,3 +314,4 @@
 - **2026-08-24** > `src/runtime/agentLoop.ts`, `src/scheduler/{api,engine,watch}.ts`, `src/gateway/app.ts`, scheduler tests > bound autonomous wake turns to a reserved terminal-action budget and deliver fallback explanations through durable notifications instead of failing silently at the tool limit.
 
 - **2026-08-24** > `docs/features/autonomous_scheduler.md`, `docs/features/calendar-reminders-spec.md`, `docs/plan-autonomous-wake-and-reminders.md`, `docs/rfc-autonomous-wake-and-reminders.md`, `scripts/com.nikhil.alfred.plist`, `AGENTS.md` > commit previously-untracked autonomous scheduler design docs, the calendar+reminders spec, and the launchctl plist; add the no-co-authorship repo guideline.
+- **2026-09-01** > `docs/architecture/chatgpt_subscription_app_server.md` > document the approved ChatGPT subscription migration around the documented Codex App Server, with a mandatory capability gate and incremental implementation plan.

@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-09-01** > `src/provider/codex/appServerClient.ts`, `tests/unit/codexAppServerClient.test.ts` > comply with the App Server two-phase handshake and re-handshake after process reconnects, with exactly one `initialized` notification per connection.
+
 - **2026-08-27** > `README.md`, `docs/changelog.md` > Refreshed the project overview, tool catalog, configuration reference, OpenRouter example, and browser guide for reasoning controls, Pinchtab-first extraction with Playwright fallback, canonical session context, provider telemetry, and deterministic action-claim grounding.
 
 - **2026-08-27** > `docs/architecture/provider-and-grounding-reliability.md`, `docs/{spec,changelog}.md`, `docs/features/browser_action.md` > Documented the shipped Pinchtab-first browser boundary, supervised fallback behavior, OpenRouter reasoning validation and telemetry, current-run action-evidence guardrail, and the atomic interactive browser implementation.

@@ -75,6 +75,56 @@ test("App Server client correlates out-of-order RPC responses and forwards notif
   await notifiedClient.close();
 });
 
+test("App Server client acknowledges initialization exactly once before requests", async () => {
+  const fake = fakeClient((child, method) => {
+    if (method === "initialize") {
+      child.respond({ id: 1, result: { userAgent: "test" } });
+    }
+    if (method === "model/list") child.respond({ id: 2, result: { data: [] } });
+  });
+
+  await fake.client.initialize({ clientInfo: { name: "test", version: "1" } });
+  await fake.client.request("model/list", {});
+  await assert.rejects(
+    fake.client.initialize({ clientInfo: { name: "test", version: "1" } }),
+    /Already initialized/
+  );
+
+  const methods = fake.process.writes.map((line) => {
+    const message = JSON.parse(line) as { method?: string };
+    return message.method;
+  });
+  assert.deepEqual(methods, ["initialize", "initialized", "model/list"]);
+  await fake.client.close();
+});
+
+test("App Server client re-handshakes after a process reconnect", async () => {
+  const processes: FakeProcess[] = [];
+  const client = new CodexAppServerClient({
+    requestTimeoutMs: 100,
+    spawnImpl: () => {
+      const child = new FakeProcess();
+      processes.push(child);
+      child.stdin.on("data", (chunk) => {
+        const message = JSON.parse(String(chunk).trim()) as { id?: number; method?: string };
+        if (message.method === "initialize") child.respond({ id: message.id, result: {} });
+      });
+      return child as never;
+    }
+  });
+
+  await client.initialize({ clientInfo: { name: "test", version: "1" } });
+  processes[0]?.emitClose();
+  await assert.rejects(client.request("model/list", {}), /not initialized/);
+
+  await client.initialize({ clientInfo: { name: "test", version: "1" } });
+  assert.equal(processes.length, 2);
+  for (const process of processes) {
+    assert.deepEqual(process.writes.map((line) => (JSON.parse(line) as { method?: string }).method), ["initialize", "initialized"]);
+  }
+  await client.close();
+});
+
 test("App Server client routes dynamic server requests and rejects unhandled requests without throwing", async () => {
   const seen: AppServerServerRequest[] = [];
   const { client, process } = fakeClient((child, method) => {
@@ -91,7 +141,9 @@ test("App Server client routes dynamic server requests and rejects unhandled req
   clientWithHandler.process.respond({ id: "dynamic-1", method: "item/tool/call", params: { tool: "alfred" } });
   clientWithHandler.process.respond({ id: "builtin-1", method: "item/commandExecution/requestApproval", params: {} });
   await new Promise((resolve) => setTimeout(resolve, 5));
-  const responses = clientWithHandler.process.writes.slice(1).map((line) => JSON.parse(line) as Record<string, unknown>);
+  const responses = clientWithHandler.process.writes
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((message) => message.id !== undefined && message.method === undefined);
   assert.deepEqual(seen.map((request) => request.method), ["item/tool/call", "item/commandExecution/requestApproval"]);
   assert.equal(responses[0]?.result && (responses[0].result as Record<string, unknown>).success, true);
   assert.equal((responses[1]?.error as Record<string, unknown>).message, "policy denied");
@@ -99,13 +151,19 @@ test("App Server client routes dynamic server requests and rejects unhandled req
 });
 
 test("App Server client rejects pending requests on crash and supports abort", async () => {
-  const crashedClient = fakeClient();
+  const crashedClient = fakeClient((child, method) => {
+    if (method === "initialize") child.respond({ id: 1, result: {} });
+  });
+  await crashedClient.client.initialize({ clientInfo: { name: "test", version: "1" } });
   const pending = crashedClient.client.request("thread/start", {});
   crashedClient.process.emitClose();
   await assert.rejects(pending, /Codex App Server exited/);
 
   const abortController = new AbortController();
-  const aborted = fakeClient();
+  const aborted = fakeClient((child, method) => {
+    if (method === "initialize") child.respond({ id: 1, result: {} });
+  });
+  await aborted.client.initialize({ clientInfo: { name: "test", version: "1" } });
   const request = aborted.client.request("thread/start", {}, { signal: abortController.signal });
   abortController.abort();
   await assert.rejects(request, AppServerClientClosedError);

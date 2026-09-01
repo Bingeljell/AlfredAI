@@ -110,6 +110,7 @@ export class CodexAppServerClient {
   private nextRequestId = 1;
   private closed = false;
   private initialized = false;
+  private initializePromise?: Promise<Record<string, unknown>>;
   private readonly notificationSubscribers = new Set<(notification: AppServerNotification) => void>();
 
   constructor(options: AppServerClientOptions = {}) {
@@ -131,13 +132,38 @@ export class CodexAppServerClient {
   }
 
   async initialize(params: AppServerInitializeParams): Promise<Record<string, unknown>> {
-    this.ensureProcess();
-    const result = await this.request<Record<string, unknown>>("initialize", params);
-    this.initialized = true;
-    return result;
+    if (this.initialized) {
+      throw new AppServerRpcError("initialize", undefined, "Already initialized");
+    }
+    if (this.initializePromise) return this.initializePromise;
+
+    this.initializePromise = (async () => {
+      this.ensureProcess();
+      const result = await this.requestRaw<Record<string, unknown>>("initialize", params);
+      // The protocol handshake is two-phase: no request may be sent between
+      // the initialize response and this one notification.
+      this.writeNotification("initialized", {});
+      this.initialized = true;
+      return result;
+    })();
+    try {
+      return await this.initializePromise;
+    } finally {
+      if (!this.initialized) this.initializePromise = undefined;
+    }
   }
 
   async request<T>(method: string, params: unknown, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
+    if (method === "initialize") {
+      throw new AppServerClientClosedError("Use initialize() for the App Server handshake");
+    }
+    if (!this.initialized) {
+      throw new AppServerClientClosedError(`App Server is not initialized: ${method}`);
+    }
+    return this.requestRaw<T>(method, params, options);
+  }
+
+  private async requestRaw<T>(method: string, params: unknown, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
     this.ensureProcess();
     if (options.signal?.aborted) throw new AppServerClientClosedError(`App Server request aborted: ${method}`);
     const id = this.nextRequestId++;
@@ -177,6 +203,10 @@ export class CodexAppServerClient {
       }
     }
     return promise;
+  }
+
+  private writeNotification(method: string, params: unknown): void {
+    this.write({ jsonrpc: "2.0", method, params });
   }
 
   async interruptTurn(threadId: string, turnId: string, options: { timeoutMs?: number } = {}): Promise<void> {
@@ -219,10 +249,10 @@ export class CodexAppServerClient {
       // Alfred run events or RPC error messages.
       void chunk;
     });
-    child.once("error", (error) => this.handleCrash(asError(error, "Codex App Server process error")));
+    child.once("error", (error) => this.handleCrash(asError(error, "Codex App Server process error"), child));
     child.once("close", (code, signal) => {
       if (this.closed) return;
-      this.handleCrash(new Error(`Codex App Server exited (code=${String(code)}, signal=${String(signal)})`));
+      this.handleCrash(new Error(`Codex App Server exited (code=${String(code)}, signal=${String(signal)})`), child);
     });
   }
 
@@ -247,7 +277,7 @@ export class CodexAppServerClient {
     try {
       message = JSON.parse(line) as AppServerMessage;
     } catch {
-      this.handleCrash(new Error("Codex App Server emitted malformed JSON"));
+      this.handleCrash(new Error("Codex App Server emitted malformed JSON"), this.child);
       return;
     }
 
@@ -291,11 +321,12 @@ export class CodexAppServerClient {
     }
   }
 
-  private handleCrash(error: Error): void {
+  private handleCrash(error: Error, crashedChild?: AppServerProcess): void {
     if (this.closed) return;
-    this.closed = true;
+    if (crashedChild && this.child !== crashedChild) return;
     this.child = undefined;
     this.initialized = false;
+    this.initializePromise = undefined;
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
       this.removeAbortListener(pending);

@@ -52,6 +52,7 @@ export interface AccountClient {
   initialize(params: { clientInfo: { name: string; version: string }; capabilities?: { experimentalApi?: boolean } }): Promise<Record<string, unknown>>;
   request<T>(method: string, params: unknown): Promise<T>;
   subscribeNotifications?(listener: (notification: AppServerNotification) => void): () => void;
+  close?(): Promise<void>;
 }
 
 interface LoginSubscriber {
@@ -145,10 +146,9 @@ export class CodexAccountService {
 
   async startLogin(mode: OpenAiLoginMode): Promise<OpenAiLoginStart> {
     await this.initialize();
-    const response = await this.client.request<unknown>("account/login/start", {
-      type: mode === "browser" ? "chatgpt" : "chatgptDeviceCode",
-      appBrand: "chatgpt"
-    });
+    const response = await this.client.request<unknown>("account/login/start", mode === "browser"
+      ? { type: "chatgpt", useHostedLoginSuccessPage: true, appBrand: "chatgpt" }
+      : { type: "chatgptDeviceCode" });
     const start = mapLoginStart(mode, response);
     this.publish({
       loginId: start.loginId,
@@ -164,6 +164,69 @@ export class CodexAccountService {
   getLogin(loginId: string): OpenAiLoginProgress | undefined {
     const progress = this.loginProgress.get(loginId);
     return progress ? { ...progress } : undefined;
+  }
+
+  async waitForLogin(loginId: string, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<OpenAiLoginProgress> {
+    const current = this.loginProgress.get(loginId);
+    if (current && current.status !== "started") return { ...current };
+    const timeoutMs = Math.max(1_000, options.timeoutMs ?? 10 * 60_000);
+    return new Promise<OpenAiLoginProgress>((resolve) => {
+      let settled = false;
+      let cancellationReason: string | undefined;
+      let timer: NodeJS.Timeout | undefined;
+      let unsubscribe: (() => void) | undefined;
+      const finish = (progress: OpenAiLoginProgress): void => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        unsubscribe?.();
+        options.signal?.removeEventListener("abort", onAbort);
+        resolve({ ...progress });
+      };
+      const cancel = async (error: string): Promise<void> => {
+        cancellationReason = error;
+        try {
+          await this.cancelLogin(loginId);
+        } catch {
+          this.publish({
+            loginId,
+            mode: this.loginProgress.get(loginId)?.mode ?? "browser",
+            status: "failed",
+            error: "Unable to cancel the App Server login"
+          });
+        }
+        const progress = this.loginProgress.get(loginId) ?? {
+          loginId,
+          mode: "browser" as const,
+          status: "cancelled" as const
+        };
+        if (progress.status === "cancelled") {
+          finish({ ...progress, error: progress.error ?? error });
+        } else {
+          finish({ ...progress, status: "cancelled", error });
+        }
+      };
+      const onAbort = (): void => {
+        void cancel("Login cancelled by user");
+      };
+      unsubscribe = this.subscribeLogin((progress) => {
+        if (progress.loginId === loginId && progress.status !== "started") {
+          finish(progress.status === "cancelled" && cancellationReason
+            ? { ...progress, error: cancellationReason }
+            : progress);
+        }
+      });
+      timer = setTimeout(() => {
+        void cancel("Login timed out; the pending App Server login was cancelled");
+      }, timeoutMs);
+      timer.unref?.();
+      if (options.signal) {
+        if (options.signal.aborted) onAbort();
+        else options.signal.addEventListener("abort", onAbort, { once: true });
+      }
+      const afterSubscribe = this.loginProgress.get(loginId);
+      if (afterSubscribe && afterSubscribe.status !== "started") finish(afterSubscribe);
+    });
   }
 
   async cancelLogin(loginId: string): Promise<{ status: string }> {
@@ -185,8 +248,7 @@ export class CodexAccountService {
   async close(): Promise<void> {
     this.unsubscribeNotifications?.();
     this.unsubscribeNotifications = undefined;
-    const client = this.client as { close?: () => Promise<void> };
-    await client.close?.();
+    await this.client.close?.();
   }
 
   private handleNotification(notification: AppServerNotification): void {

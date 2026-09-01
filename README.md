@@ -9,7 +9,7 @@ Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reas
 ## What Alfred Does Today
 
 - **General-purpose ReAct agent** — research, writing, lead generation, ops, file work, shell commands
-- **Multi-provider LLM** — Gemini, Anthropic, OpenAI, Ollama, LM Studio, OpenRouter, and Codex subscription auth; OpenRouter deployments can explicitly tune supported models' reasoning effort or token budget
+- **Multi-provider LLM** — Gemini, Anthropic, OpenAI, Ollama, LM Studio, OpenRouter, and Codex subscription auth through the supervised Codex App Server; OpenRouter deployments can explicitly tune supported models' reasoning effort or token budget
 - **Pinchtab-first read-only browsing** — `web_fetch` and lead extraction prefer healthy Pinchtab, with supervised startup and lazy Playwright fallback
 - **Interactive browser control** — Alfred can drive a persistent Playwright session: navigate, click, type, fill forms, and take screenshots
 - **Remote agent orchestration** — monitors and dispatches tasks to coding agents (Claude, Codex, Pi, …) running in Herdr workspaces
@@ -87,7 +87,7 @@ cp .env.example .env
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ALFRED_LLM_PROVIDER` | `openai` | `openai` \| `anthropic` \| `gemini` \| `ollama` \| `lmstudio` \| `openrouter` \| `codex` |
+| `ALFRED_LLM_PROVIDER` | `openai` | `openai` \| `anthropic` \| `gemini` \| `ollama` \| `lmstudio` \| `openrouter` \| `codex` (Codex App Server) |
 | `OPENAI_API_KEY` | — | OpenAI |
 | `ANTHROPIC_API_KEY` | — | Anthropic |
 | `GEMINI_API_KEY` | — | Google Gemini (Google's naming convention) |
@@ -99,10 +99,23 @@ cp .env.example .env
 | `OPENROUTER_REASONING_EXCLUDE` | `false` | Request that reasoning content be excluded from the response |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama (OpenAI-compatible) |
 | `LMSTUDIO_BASE_URL` | `http://localhost:1234` | Local LM Studio (OpenAI-compatible) |
-| `ALFRED_MODEL_SMART` | `gpt-4o` | Main agent loop |
-| `ALFRED_MODEL_FAST` | `gpt-4o-mini` | Cheap/fast calls (classification, session extraction) |
+| `ALFRED_MODEL_SMART` | `gpt-4o` | Main agent loop; Codex validates it against the live catalog and reports any fallback |
+| `ALFRED_MODEL_FAST` | `gpt-4o-mini` | Cheap/fast calls for API-key providers |
 
-For **OpenRouter**, use model slugs exactly as OpenRouter lists them (e.g. `anthropic/claude-sonnet-4-20250514`, `openai/gpt-4o`). If reasoning is configured, Alfred asks OpenRouter to route only to endpoints that accept the requested parameters; unsupported model/provider combinations therefore fail clearly instead of silently ignoring the setting. Effort and token budget cannot both be set. With Ollama/LM Studio use the model id the local server reports (e.g. `gemma-4-31b-it-qat`). For **Codex**, run `pnpm codex:login` (or `pnpm codex:login -- --device`) and set compatible model IDs in both `ALFRED_MODEL_SMART` and `ALFRED_MODEL_FAST`. `pnpm probe:model` helps discover locally served models.
+For **OpenRouter**, use model slugs exactly as OpenRouter lists them (e.g. `anthropic/claude-sonnet-4-20250514`, `openai/gpt-4o`). If reasoning is configured, Alfred asks OpenRouter to route only to endpoints that accept the requested parameters; unsupported model/provider combinations therefore fail clearly instead of silently ignoring the setting. Effort and token budget cannot both be set. With Ollama/LM Studio use the model id the local server reports (e.g. `gemma-4-31b-it-qat`). `pnpm probe:model` helps discover locally served models.
+
+### ChatGPT subscription (Codex App Server)
+
+Set `ALFRED_LLM_PROVIDER=codex` and install the Codex CLI so `codex app-server --stdio` is available. Sign in through the App Server-owned account flow:
+
+```bash
+pnpm alfred auth login openai
+pnpm alfred auth login openai --device-code  # remote/headless host
+pnpm alfred auth status openai
+pnpm alfred auth logout openai
+```
+
+`pnpm codex:login`, `pnpm codex:status`, and `pnpm codex:logout` remain compatibility aliases. Alfred does not read or persist ChatGPT tokens; Codex owns credentials and refresh. The web UI exposes the same status, login, model catalog, and account quota under Settings → Models & Accounts. Account quota/reset data is separate from per-run Alfred usage. Codex turns use ephemeral App Server threads, inject only Alfred's durable session context, and execute external effects only through Alfred's dynamic tool registry and policy envelope. Built-in Codex shell, filesystem, patch, browser, network, and MCP capabilities are disabled/rejected by the runtime boundary.
 
 ### Server, auth & channels
 
@@ -189,7 +202,7 @@ curl -X POST 'http://localhost:9001/v1/scheduled-tasks/<task-id>/cancel?sessionI
 - Node.js 22+
 - `pnpm`
 - SearXNG instance (for search — self-host or use a public instance), or Bright Data / Brave keys as fallback
-- At least one LLM API key (Anthropic, Google Gemini, OpenAI, or OpenRouter), or a Codex subscription login
+- At least one LLM API key (Anthropic, Google Gemini, OpenAI, or OpenRouter), or a Codex CLI/App Server subscription login
 
 ### 2. Install
 
@@ -451,7 +464,7 @@ src/agentEvents/    — agent event webhook (schema, auth, dispatcher, Telegram 
 src/tools/          — all tool definitions (drop a *.tool.ts here to add a tool)
 src/tools/browser/  — Pinchtab-first read-only routing plus persistent Playwright interaction
 src/tools/search/   — search providers (SearXNG, Bright Data, Brave)
-src/provider/       — LLM adapters (Anthropic, Gemini, OpenAI, Ollama, LM Studio, OpenRouter, Codex)
+src/provider/       — LLM adapters plus Codex App Server account/runtime integration
 src/channels/       — Telegram + channel adapter interface
 src/runner/         — ChatService, conversation window management
 src/gateway/        — HTTP server, Web UI API, agent event endpoint
@@ -473,6 +486,7 @@ pnpm start              # run compiled build
 pnpm run dev:gateway    # run with auto-rebuild
 pnpm setup:browsers     # install Playwright Chromium (interactive control and read-only fallback)
 pnpm probe:model        # probe a local LLM server for its model list
+pnpm codex:app-server-gate # verify the installed Codex App Server capability boundary
 pnpm run test           # unit + integration + security
 pnpm run test:unit
 pnpm run test:integration

@@ -4,7 +4,7 @@ Alfred owns conversations; Telegram, web, and terminal are surfaces attached to
 them. Opening a conversation elsewhere must preserve its session ID, context,
 model preferences, history, artifacts, and active work. Detaching never cancels.
 
-## First release
+## Terminal surface
 
 - `pnpm alfred tui [--session ID] [--url URL]` connects to the existing gateway.
 - Pick an existing conversation (including Telegram), or explicitly create one.
@@ -23,7 +23,7 @@ model preferences, history, artifacts, and active work. Detaching never cancels.
   from the selected conversation. `/newsession` creates a new conversation in the
   terminal without resetting a conversation still open in Telegram.
 
-## Follow-up foundation
+## Continuity
 
 Bindings now live in the shared channel layer. `/attach-channel telegram:CHAT_ID`
 points an already-known Telegram chat at the selected conversation.

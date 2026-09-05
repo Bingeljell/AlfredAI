@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-09-06** > `README.md`, `docs/architecture/tui.md` > document streaming, retry/reconnect behavior, older-history access, explicit channel/account linking, and gateway restart requirements.
+
 - **2026-09-06** > `src/runs/{runStore,storage/*}.ts`, `tests/unit/runReplay.test.ts` > replay run lifecycle events across daily log boundaries, including runs that span midnight or encounter clock changes.
 
 - **2026-09-06** > `src/runs/runStore.ts`, `src/runner/chatService.ts`, `tests/unit/conversationHistory.test.ts` > preserve admission order through clock rollback and filter queued/scheduled work before selecting the canonical context window.

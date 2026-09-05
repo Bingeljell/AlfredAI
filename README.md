@@ -14,7 +14,7 @@ Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reas
 - **Interactive browser control** — Alfred can drive a persistent Playwright session: navigate, click, type, fill forms, and take screenshots
 - **Remote agent orchestration** — monitors and dispatches tasks to coding agents (Claude, Codex, Pi, …) running in Herdr workspaces
 - **Decoupled agent event webhook** — external agents/terminal wrappers push lifecycle events (`needs_approval`, `completed`, `failed`, `progress`) to Alfred, which routes them to Telegram
-- **Telegram + Web UI** — converse from your phone or browser; live, edit-in-place progress updates as he works
+- **Telegram + Web + TUI** — continue the same conversation from your phone, browser, or terminal; the gateway owns history and execution
 - **Tiered persistent memory** — context card, per-day session logs, group chat logs, and QMD semantic recall across sessions
 - **Self-extending** — Alfred can read his own codebase and write new tools mid-session
 - **Credential-safe by default** — tool output and run telemetry are scrubbed of API keys and high-entropy secrets before they enter LLM context or logs
@@ -43,14 +43,22 @@ a remote gateway. Local authentication uses `ALFRED_API_KEY` or the workspace's
 `api-key` file; remote connections require `ALFRED_API_KEY`.
 
 Enter sends, Ctrl-J inserts a newline, Ctrl-P opens conversations, Ctrl-T expands
-tool receipts, PgUp/PgDn scroll, Ctrl-X cancels active work, and Ctrl-Q detaches
+tool receipts, PgUp/PgDn scroll, Ctrl-L loads older history, Ctrl-X cancels active work, and Ctrl-Q detaches
 without stopping Alfred. `/newsession [name]` creates a separate conversation;
 `/model`, `/reasoning`, `/usage`, and `/status` use shared session controls.
 
-This first release streams state snapshots, completed tool receipts, artifact
-paths, and web/terminal notifications. Codex assistant text streams during the
-turn; other runtimes currently publish at completion. See the
-[brief and follow-up scope](docs/architecture/tui.md).
+Codex assistant text streams during the turn; other runtimes currently publish
+at completion. Reconnect uses a durable change cursor and resynchronizes from a
+snapshot when necessary. Queued turns acknowledge immediately, execute in order,
+and deduplicate retries. Alfred can retrieve older turns across all surfaces.
+
+`/attach-channel telegram:CHAT_ID` attaches a known Telegram chat to the selected
+conversation. `/link-telegram USER_ID` explicitly links an allowlisted account
+to the API owner for task access within shared conversations. Attachment alone
+does not link identities or redirect existing notifications.
+
+Restart the gateway after updating. See the [brief](docs/architecture/tui.md)
+for the continuity contract and remaining provider/restart limitations.
 
 ## Tool Catalog
 

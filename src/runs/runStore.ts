@@ -58,28 +58,33 @@ export class RunStore {
   }
 
   async createRun(sessionId: string, message: string, status: RunStatus, scheduler?: RunRecord["scheduler"], ingress?: RunRecord["ingress"]): Promise<RunRecord> {
-    const now = new Date().toISOString();
-    const run: RunRecord = {
-      runId: randomUUID(),
-      sessionId,
-      message,
-      status,
-      createdAt: now,
-      updatedAt: now,
-      llmUsage: {
-        promptTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
-        callCount: 0
-      },
-      toolCalls: []
-    };
-    if (scheduler) run.scheduler = scheduler;
-    const safeRun = redactValue(run) as RunRecord;
-    if (scheduler) safeRun.scheduler = scheduler;
-    if (ingress) safeRun.ingress = ingress;
-    await this.storage.writeRun(safeRun.runId, safeRun);
-    return safeRun;
+    return withFileLock(path.join(this.workspaceDir, "runs", sessionId, "admission.lock"), async () => {
+      const latest = (await this.listHistory(sessionId, { limit: 1 })).runs[0];
+      const previousTime = latest ? Date.parse(latest.createdAt) : 0;
+      // Stable ordering survives same-millisecond submissions and clock rollback.
+      const now = new Date(Math.max(Date.now(), Number.isFinite(previousTime) ? previousTime + 1 : 0)).toISOString();
+      const run: RunRecord = {
+        runId: randomUUID(),
+        sessionId,
+        message,
+        status,
+        createdAt: now,
+        updatedAt: now,
+        llmUsage: {
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          callCount: 0
+        },
+        toolCalls: []
+      };
+      if (scheduler) run.scheduler = scheduler;
+      const safeRun = redactValue(run) as RunRecord;
+      if (scheduler) safeRun.scheduler = scheduler;
+      if (ingress) safeRun.ingress = ingress;
+      await this.storage.writeRun(safeRun.runId, safeRun);
+      return safeRun;
+    });
   }
 
   async getRun(runId: string): Promise<RunRecord | undefined> {
@@ -226,8 +231,8 @@ export class RunStore {
   }
 
   /** Canonical conversation history; updates never reorder its pagination. */
-  async listHistory(sessionId: string, options: { before?: string; limit?: number } = {}): Promise<{ runs: RunRecord[]; nextCursor?: string }> {
-    const runs = await this.listRuns(sessionId, Number.MAX_SAFE_INTEGER);
+  async listHistory(sessionId: string, options: { before?: string; limit?: number; terminalOnly?: boolean } = {}): Promise<{ runs: RunRecord[]; nextCursor?: string }> {
+    const runs = (await this.listRuns(sessionId, Number.MAX_SAFE_INTEGER)).filter((run) => !options.terminalOnly || !run.scheduler && run.status !== "running" && run.status !== "queued");
     runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.runId.localeCompare(a.runId));
     const index = options.before ? runs.findIndex((run) => run.runId === options.before) : -1;
     if (options.before && index < 0) throw new Error("invalid_history_cursor");

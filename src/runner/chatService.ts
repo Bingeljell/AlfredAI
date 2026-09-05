@@ -271,7 +271,7 @@ export class ChatService {
 
   private async buildSessionContext(session: SessionRecord, modelSelection?: EffectiveModelSelection): Promise<SessionPromptContext | undefined> {
     const memory = session.workingMemory;
-    const history = await this.options.runStore.listHistory(session.id, { limit: 100 });
+    const history = await this.options.runStore.listHistory(session.id, { limit: 100, terminalOnly: true });
     const canonicalWindow = conversationWindow(history.runs);
     if (!memory && !modelSelection && !canonicalWindow.length) {
       return undefined;

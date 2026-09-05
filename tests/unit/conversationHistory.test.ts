@@ -35,3 +35,13 @@ test("history pagination is session-scoped and stable when old runs are updated"
   assert.equal(next.nextCursor, undefined);
   await assert.rejects(store.listHistory("session", { before: other.runId }), /invalid_history_cursor/);
 });
+
+test("run admission stays ordered through clock rollback and queued work does not evict context", async () => {
+  const workspace = await createTempWorkspace("history-order");
+  const store = new RunStore(workspace);
+  const first = await store.createRun("session", "finished", "completed");
+  await store.updateRun(first.runId, { createdAt: "2099-01-01T00:00:00.000Z" });
+  const second = await store.createRun("session", "queued", "queued");
+  assert.ok(second.createdAt > "2099-01-01T00:00:00.000Z");
+  assert.equal((await store.listHistory("session", { limit: 1, terminalOnly: true })).runs[0]?.runId, first.runId);
+});

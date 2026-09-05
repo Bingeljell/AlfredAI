@@ -26,10 +26,10 @@ export async function conversationStream(c: Context, sessions: SessionStore, run
       if (data !== previous) {
         await stream.writeSSE({ event: "snapshot", data });
         previous = data;
-      } else if (++ticks % 15 === 0) {
+      } else if (++ticks % 60 === 0) {
         await stream.writeSSE({ event: "heartbeat", data: "{}" });
       }
-      await stream.sleep(1_000);
+      await stream.sleep(250);
     }
   });
 }

@@ -12,9 +12,10 @@ model preferences, history, artifacts, and active work. Detaching never cancels.
   shared model commands, explicit cancellation, and automatic reconnect.
 - Authenticated conversation SSE sends authoritative snapshots. Reconnect replaces
   state by run ID; it never retries a submitted message automatically.
-- Snapshots refresh once per second and include the latest 100 runs, completed
+- Snapshots refresh every 250ms and include the latest 100 runs, completed
   tool receipts, artifact paths, and the latest 50 web/terminal notifications.
-  Assistant text appears at completion; token streaming is follow-up work.
+  Codex assistant text streams as redacted cumulative previews, including after
+  reconnect. Other provider runtimes currently publish their completed answer.
 - Terminal turns carry `tui` provenance. Notification destinations stay separate
   from the selected conversation. `/newsession` creates a new conversation in the
   terminal without resetting a conversation still open in Telegram.
@@ -23,9 +24,10 @@ model preferences, history, artifacts, and active work. Detaching never cancels.
 
 Generalize channel bindings and link principal identities before enabling
 cross-surface scheduler ownership. Add durable admission/idempotency and an event
-cursor for incremental replay; forward provider text deltas. Replace channel-only
+cursor for incremental replay. Replace channel-only
 logs with canonical conversation history, paginate it, and make shared JSON
-updates transactional. Define consistent reset semantics across existing surfaces.
+updates transactional. Shared JSON mutations are now serialized and file
+replacement is atomic. Define consistent reset semantics across existing surfaces.
 
 Today the model window is 10 turn pairs clipped to 1,200 characters per message;
 full run history remains separate. Queued submissions may wait for the preceding

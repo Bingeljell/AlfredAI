@@ -1273,6 +1273,7 @@ function renderChatHeader() {
 }
 
 function buildRunAssistantPreview(run) {
+  if (run.assistantPreview && !isTerminalStatus(run.status)) return run.assistantPreview;
   if (state.activeRunPayload?.run?.runId === run.runId && !isTerminalStatus(run.status)) {
     return latestProgressMessage(state.activeRunPayload);
   }

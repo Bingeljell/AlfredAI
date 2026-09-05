@@ -48,8 +48,9 @@ without stopping Alfred. `/newsession [name]` creates a separate conversation;
 `/model`, `/reasoning`, `/usage`, and `/status` use shared session controls.
 
 This first release streams state snapshots, completed tool receipts, artifact
-paths, and web/terminal notifications. Assistant text appears when the turn
-finishes. See the [brief and follow-up scope](docs/architecture/tui.md).
+paths, and web/terminal notifications. Codex assistant text streams during the
+turn; other runtimes currently publish at completion. See the
+[brief and follow-up scope](docs/architecture/tui.md).
 
 ## Tool Catalog
 

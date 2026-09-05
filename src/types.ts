@@ -203,6 +203,8 @@ export interface RunRecord {
   cancelRequestedAt?: string;
   cancelledAt?: string;
   assistantText?: string;
+  /** Redacted cumulative draft; final assistantText remains authoritative. */
+  assistantPreview?: string;
   artifactPaths?: string[];
   approvalToken?: string;
   llmUsage?: LlmUsageTotals;

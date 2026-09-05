@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AssistantTextStream } from "./assistantTextStream.js";
 import type { PolicyMode, RunOutcome, SessionPromptContext } from "../types.js";
 import type { ToolContext, ToolState } from "../tools/types.js";
 import { applyToolAllowlist, discoverTools, executeToolWithEnvelope, type ToolExecutionEnvelope } from "../tools/registry.js";
@@ -124,12 +125,18 @@ export class CodexAppServerRuntime implements AgentRuntime {
     let limitReached = false;
     const poll = setInterval(() => { void runStore.isCancellationRequested(request.runId).then((cancelled) => { if (cancelled) controller.abort("caller_cancellation"); }); }, 250);
     poll.unref?.();
+    const textStream = new AssistantTextStream((assistantPreview) => runStore.updateRun(request.runId, { assistantPreview }));
     try {
       if (await runStore.isCancellationRequested(request.runId)) return { status: "cancelled" };
       const result = await runSafeAppServerTurn({
         model: selected.id, effort: request.modelSelection?.reasoningEffort ?? (selected.defaultReasoningEffort || undefined), baseInstructions, input: request.message,
         history: historyItems(request.sessionContext), dynamicTools: dynamicSpecs(tools), timeoutMs: maxDurationMs, signal: controller.signal,
         clientFactory: this.options.clientFactory,
+        onNotification: (notification) => {
+          if (notification.method === "item/agentMessage/delta" && isRecord(notification.params) && typeof notification.params.delta === "string") {
+            textStream.append(notification.params.delta);
+          }
+        },
         onDynamicTool: async (call: DynamicToolCallParams) => {
           if (!call.callId || !call.threadId || !call.turnId || !call.tool || !isRecord(call.arguments) && typeof call.arguments !== "string") throw new Error("Malformed Alfred dynamic tool call");
           if (await runStore.isCancellationRequested(request.runId)) { controller.abort("caller_cancellation"); throw new Error("Alfred run cancellation requested"); }
@@ -157,6 +164,7 @@ export class CodexAppServerRuntime implements AgentRuntime {
       return { status: "completed", assistantText: `${notice ? `${notice}\n\n` : ""}${result.content}`.trim(), artifactPaths: state.artifacts.length ? state.artifacts : undefined };
     } finally {
       clearInterval(poll);
+      await textStream.close();
     }
   }
 }

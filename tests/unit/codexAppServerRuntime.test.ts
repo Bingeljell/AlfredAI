@@ -95,4 +95,5 @@ test("Codex App Server runtime injects Alfred context and dispatches dynamic too
   const persisted = await runStore.getRun(run.runId);
   assert.equal(persisted?.toolCalls.length, 1);
   assert.equal(persisted?.toolCalls[0]?.toolName, "file_exists");
+  assert.equal(persisted?.assistantPreview, "done");
 });

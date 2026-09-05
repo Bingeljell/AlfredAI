@@ -49,7 +49,9 @@ export function transcript(runs: RunRecord[], width: number, details: boolean): 
       lines.push(...wrap(`  ${tool.status === "ok" ? "+" : "!"} ${tool.toolName} · ${tool.durationMs}ms`, width));
       if (details) lines.push(...wrap(`    ${JSON.stringify(tool.inputRedacted)}\n    ${JSON.stringify(tool.outputRedacted)}`.slice(0, 4_000), width));
     }
+    if (run.assistantPreview && run.status !== "completed") lines.push(...wrap(run.assistantPreview, width));
     if (run.assistantText) lines.push(...wrap(run.assistantText, width));
+    else if (run.assistantPreview) { /* The cumulative preview already represents the live answer. */ }
     else if (run.status === "queued" || run.status === "running") lines.push("Working… You can detach; Alfred keeps running.");
     if (run.cancelRequestedAt && (run.status === "running" || run.status === "queued")) lines.push("Cancellation requested…");
     if (run.artifactPaths?.length) lines.push("", "ARTIFACTS", ...run.artifactPaths.flatMap((file) => wrap(`  ${file}`, width)));

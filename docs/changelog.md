@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-09-05** > `src/runs/{runStore,storage/*}.ts`, `src/gateway/conversationStream.ts`, `src/tui/client.ts`, `src/types.ts`, `tests/{unit/runReplay,integration/conversationStream}.test.ts` > persist bounded per-conversation change cursors, replay incremental run updates after reconnect, and fall back to an authoritative snapshot when the cursor predates retained changes.
+
 - **2026-09-05** > `src/channels/{channelSessionStore,identityStore}.ts`, `src/channels/telegram/*`, `src/scheduler/taskStore.ts`, `src/gateway/app.ts`, `src/tui/{app,client}.ts`, `tests/unit/surfaceIdentity.test.ts` > generalize channel bindings, prevent duplicate first-chat sessions, and add explicit reversible Telegram/API identity links for session-scoped task access without changing delivery destinations.
 
 - **2026-09-05** > `src/memory/conversationHistory.ts`, `src/runner/chatService.ts`, `src/runs/runStore.ts`, `src/gateway/*`, `src/tui/*`, `src/tools/definitions/conversationHistory.tool.ts`, `src/runtime/specialists.ts`, `src/types.ts`, `webui/app.js`, `tests/{unit/conversationHistory,integration/sessionStore}.test.ts` > derive inference context from canonical cross-surface run history within a 24,000-character budget, add history pagination/retrieval, and make new-conversation commands preserve the previous session.

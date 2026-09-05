@@ -8,10 +8,11 @@ export interface TurnResponse {
 }
 
 /** SSE framing is independent of network chunks (including split UTF-8). */
-export async function* readSnapshots(body: ReadableStream<Uint8Array>, signal: AbortSignal): AsyncGenerator<ConversationSnapshot, void> {
+export async function* readSnapshots(body: ReadableStream<Uint8Array>, signal: AbortSignal, initial?: ConversationSnapshot): AsyncGenerator<ConversationSnapshot, void> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let current = initial;
   const abort = () => { void reader.cancel().catch(() => {}); };
   signal.addEventListener("abort", abort, { once: true });
   try {
@@ -32,15 +33,31 @@ export async function* readSnapshots(body: ReadableStream<Uint8Array>, signal: A
         const frame = buffer.slice(0, end);
         buffer = buffer.slice(end + 2);
         let event = "message";
+        let cursor: number | undefined;
         const data: string[] = [];
         for (const line of frame.split("\n")) {
           if (line.startsWith("event:")) event = line.slice(6).trim();
+          if (/^id: *\d+$/.test(line)) cursor = Number(line.slice(3).trim());
           if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
         }
         if (event === "snapshot") {
           const snapshot = JSON.parse(data.join("\n")) as ConversationSnapshot;
           if (!snapshot.session?.id || !Array.isArray(snapshot.runs)) throw new Error("Invalid conversation snapshot");
-          yield snapshot;
+          current = { ...snapshot, ...(cursor === undefined ? {} : { cursor }) };
+          yield current;
+        } else if (event === "run") {
+          if (!current) throw new Error("Run update received without a conversation snapshot");
+          const { run } = JSON.parse(data.join("\n")) as { run: RunRecord };
+          if (!run?.runId || run.sessionId !== current.session.id) throw new Error("Invalid run update");
+          if (cursor !== undefined && cursor <= (current.cursor ?? -1)) continue;
+          current = { ...current, cursor, runs: [...new Map([...current.runs, run].map((item) => [item.runId, item])).values()] };
+          yield current;
+        } else if (event === "session") {
+          if (!current) throw new Error("Session update received without a conversation snapshot");
+          const metadata = JSON.parse(data.join("\n")) as Pick<ConversationSnapshot, "session" | "notifications">;
+          if (metadata.session?.id !== current.session.id || !Array.isArray(metadata.notifications)) throw new Error("Invalid session update");
+          current = { ...current, ...metadata, cursor };
+          yield current;
         }
       }
       if (buffer.length > 16 * 1024 * 1024) throw new Error("Conversation snapshot exceeds 16 MiB");
@@ -54,6 +71,7 @@ export async function* readSnapshots(body: ReadableStream<Uint8Array>, signal: A
 
 export class GatewayClient {
   private readonly pendingRequests = new Map<string, string>();
+  private readonly snapshots = new Map<string, ConversationSnapshot>();
   constructor(readonly url: string, private readonly apiKey: string, private readonly fetcher: typeof fetch = fetch) {}
 
   private headers(): Record<string, string> {
@@ -61,8 +79,10 @@ export class GatewayClient {
   }
 
   private async response(route: string, init: RequestInit): Promise<Response> {
+    const headers = new Headers(this.headers());
+    new Headers(init.headers).forEach((value, key) => headers.set(key, value));
     const response = await this.fetcher(`${this.url.replace(/\/$/, "")}${route}`, {
-      ...init, headers: this.headers(), redirect: "error"
+      ...init, headers, redirect: "error"
     });
     if (!response.ok) {
       await response.body?.cancel();
@@ -118,8 +138,14 @@ export class GatewayClient {
   }
 
   async *watch(sessionId: string, signal: AbortSignal): AsyncGenerator<ConversationSnapshot, void> {
-    const response = await this.response(`/v1/sessions/${encodeURIComponent(sessionId)}/stream`, { signal });
+    const initial = this.snapshots.get(sessionId);
+    const response = await this.response(`/v1/sessions/${encodeURIComponent(sessionId)}/stream`, {
+      signal, headers: initial?.cursor === undefined ? {} : { "Last-Event-ID": String(initial.cursor) }
+    });
     if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream")) throw new Error("Gateway does not support conversation streaming; restart it with the updated code.");
-    yield* readSnapshots(response.body, signal);
+    for await (const snapshot of readSnapshots(response.body, signal, initial)) {
+      this.snapshots.set(sessionId, snapshot);
+      yield snapshot;
+    }
   }
 }

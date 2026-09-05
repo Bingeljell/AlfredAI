@@ -5,7 +5,7 @@ import type { LlmUsage, RunEvent, RunRecord, RunStatus, ToolCallRecord } from ".
 import { redactValue } from "../utils/redact.js";
 import { RunEventChannel } from "./eventChannel.js";
 import { JsonFileRunStorage } from "./storage/jsonFileRunStorage.js";
-import type { RunStorage } from "./storage/types.js";
+import type { RunStorage, RunChanges } from "./storage/types.js";
 
 const LIFECYCLE_EVENT_TYPES = new Set(["TurnStarted", "TurnProgress", "TurnComplete", "TurnAborted"]);
 
@@ -84,6 +84,10 @@ export class RunStore {
 
   async getRun(runId: string): Promise<RunRecord | undefined> {
     return this.storage.readRun(runId);
+  }
+
+  async changesSince(sessionId: string, cursor: number): Promise<RunChanges> {
+    return this.storage.readChanges?.(sessionId, cursor) ?? { cursor: 0, reset: true, changes: [] };
   }
 
   async findRequest(sessionId: string, principalId: string, requestId: string): Promise<RunRecord | undefined> {

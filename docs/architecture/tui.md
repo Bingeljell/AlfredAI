@@ -12,9 +12,10 @@ model preferences, history, artifacts, and active work. Detaching never cancels.
   shared model commands, explicit cancellation, and automatic reconnect.
 - Ctrl-L loads older history. The `conversation_history` tool retrieves earlier
   work for Alfred from the same canonical session records, regardless of surface.
-- Authenticated conversation SSE sends authoritative snapshots. Reconnect replaces
-  state by run ID; it never retries a submitted message automatically.
-- Snapshots refresh every 250ms and include the latest 100 runs, completed
+- Authenticated conversation SSE bootstraps with a snapshot, then sends incremental
+  run changes using durable cursors. Reconnect replays retained changes; older
+  cursors recover through a fresh snapshot. No automatic message resubmission.
+- Changes are checked every 250ms. Initial snapshots include the latest 100 runs, completed
   tool receipts, artifact paths, and the latest 50 web/terminal notifications.
   Codex assistant text streams as redacted cumulative previews, including after
   reconnect. Other provider runtimes currently publish their completed answer.
@@ -32,8 +33,8 @@ Links can be removed with `DELETE /v1/identities/telegram/:userId`.
 Existing task owners and notification destinations are preserved.
 
 Queued turns now acknowledge durable request IDs
-immediately and build their context at execution time. Add an event cursor for
-incremental replay. Runs now provide canonical paginated conversation history;
+immediately and build their context at execution time. A durable cursor supports
+incremental replay of the latest 512 changes. Runs provide paginated conversation history;
 channel logs remain delivery/audit records. Shared JSON mutations are serialized
 and file replacement is atomic. New-conversation commands preserve prior context.
 

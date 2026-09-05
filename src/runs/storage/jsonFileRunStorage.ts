@@ -1,8 +1,8 @@
 import { appendFile, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { RunEvent, RunRecord } from "../../types.js";
-import { ensureDir, readJsonFile, writeJsonFile } from "../../utils/fs.js";
-import type { RunStorage } from "./types.js";
+import { ensureDir, readJsonFile, writeJsonFile, updateJsonFile } from "../../utils/fs.js";
+import type { RunStorage, RunChanges } from "./types.js";
 
 export class JsonFileRunStorage implements RunStorage {
   constructor(private readonly workspaceDir: string) {}
@@ -21,6 +21,21 @@ export class JsonFileRunStorage implements RunStorage {
 
   async writeRun(runId: string, run: RunRecord): Promise<void> {
     await writeJsonFile(this.runStatePath(runId), run);
+    await updateJsonFile<{ cursor: number; changes: RunChanges["changes"] }, void>(
+      path.join(this.workspaceDir, "runs", run.sessionId, "changes.json"), { cursor: 0, changes: [] }, (journal) => {
+        journal.changes.push({ id: ++journal.cursor, runId });
+        journal.changes = journal.changes.slice(-512);
+      }
+    );
+  }
+
+  async readChanges(sessionId: string, after: number): Promise<RunChanges> {
+    const journal = await readJsonFile<{ cursor: number; changes: RunChanges["changes"] }>(path.join(this.workspaceDir, "runs", sessionId, "changes.json"), { cursor: 0, changes: [] });
+    return {
+      cursor: journal.cursor,
+      reset: after > journal.cursor || after < (journal.changes[0]?.id ?? 1) - 1,
+      changes: journal.changes.filter((event) => event.id > after)
+    };
   }
 
   async readRun(runId: string): Promise<RunRecord | undefined> {

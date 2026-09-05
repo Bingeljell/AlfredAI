@@ -188,6 +188,7 @@ export interface RunEvent {
 }
 
 export interface ConversationSnapshot {
+  cursor?: number;
   session: SessionRecord;
   runs: RunRecord[];
   notifications: Array<{ deliveryId: string; text: string; timestamp: string }>;

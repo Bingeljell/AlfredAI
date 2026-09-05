@@ -39,3 +39,14 @@ test("client reconnect sends its cursor and replaces cumulative run state withou
   }
   assert.equal(headers[1]?.get("last-event-id"), "1");
 });
+
+test("lifecycle replay retains events across midnight and clock changes", async () => {
+  const workspace = await createTempWorkspace("run-replay-midnight");
+  const store = new RunStore(workspace);
+  const run = await store.createRun("session", "overnight", "running");
+  await store.appendEvent({ runId: run.runId, sessionId: run.sessionId, phase: "session", eventType: "TurnStarted", payload: {}, timestamp: "2026-09-05T23:59:59.000Z" });
+  await store.appendEvent({ runId: run.runId, sessionId: run.sessionId, phase: "final", eventType: "TurnComplete", payload: {}, timestamp: "2026-09-06T00:00:01.000Z" });
+  const replay = await store.replayLifecycle(run.runId);
+  assert.equal(replay.lifecycleEvents.length, 2);
+  assert.equal(replay.terminalEventType, "TurnComplete");
+});

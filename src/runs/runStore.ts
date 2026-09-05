@@ -255,8 +255,8 @@ export class RunStore {
 
   async listRunEvents(run: RunRecord): Promise<RunEvent[]> {
     await this.flushEvents();
-    const day = run.createdAt.slice(0, 10);
-    const events = await this.storage.readSessionDayEvents(run.sessionId, day);
+    const days = await this.storage.listSessionEventDays?.(run.sessionId) ?? [run.createdAt.slice(0, 10)];
+    const events = (await Promise.all(days.map((day) => this.storage.readSessionDayEvents(run.sessionId, day)))).flat();
     return events.filter((event) => event.runId === run.runId);
   }
 

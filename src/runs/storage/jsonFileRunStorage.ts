@@ -69,4 +69,9 @@ export class JsonFileRunStorage implements RunStorage {
       return [];
     }
   }
+
+  async listSessionEventDays(sessionId: string): Promise<string[]> {
+    const files = await readdir(path.join(this.workspaceDir, "runs", sessionId)).catch(() => [] as string[]);
+    return files.filter((file) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(file)).map((file) => file.slice(0, -6)).sort();
+  }
 }

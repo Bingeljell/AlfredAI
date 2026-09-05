@@ -12,5 +12,6 @@ export interface RunStorage {
   listRunIds(): Promise<string[]>;
   appendEvent(event: RunEvent): Promise<void>;
   readSessionDayEvents(sessionId: string, day: string): Promise<RunEvent[]>;
+  listSessionEventDays?(sessionId: string): Promise<string[]>;
   readChanges?(sessionId: string, after: number): Promise<RunChanges>;
 }

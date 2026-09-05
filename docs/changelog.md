@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-09-06** > `src/runs/{runStore,storage/*}.ts`, `tests/unit/runReplay.test.ts` > replay run lifecycle events across daily log boundaries, including runs that span midnight or encounter clock changes.
+
 - **2026-09-06** > `src/runs/runStore.ts`, `src/runner/chatService.ts`, `tests/unit/conversationHistory.test.ts` > preserve admission order through clock rollback and filter queued/scheduled work before selecting the canonical context window.
 
 - **2026-09-05** > `src/runs/{runStore,storage/*}.ts`, `src/gateway/conversationStream.ts`, `src/tui/client.ts`, `src/types.ts`, `tests/{unit/runReplay,integration/conversationStream}.test.ts` > persist bounded per-conversation change cursors, replay incremental run updates after reconnect, and fall back to an authoritative snapshot when the cursor predates retained changes.

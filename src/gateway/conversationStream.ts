@@ -19,7 +19,7 @@ export async function conversationStream(c: Context, sessions: SessionStore, run
       if (!session) break;
       const snapshot: ConversationSnapshot = {
         session,
-        runs: await runs.listRuns(sessionId, 100),
+        runs: (await runs.listHistory(sessionId, { limit: 100 })).runs,
         notifications: await activity?.readForSession(sessionId, "api") ?? []
       };
       const data = JSON.stringify(snapshot);

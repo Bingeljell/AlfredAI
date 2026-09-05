@@ -10,6 +10,8 @@ model preferences, history, artifacts, and active work. Detaching never cancels.
 - Pick an existing conversation (including Telegram), or explicitly create one.
 - Keyboard-driven transcript, multiline composer, tool details, artifacts,
   shared model commands, explicit cancellation, and automatic reconnect.
+- Ctrl-L loads older history. The `conversation_history` tool retrieves earlier
+  work for Alfred from the same canonical session records, regardless of surface.
 - Authenticated conversation SSE sends authoritative snapshots. Reconnect replaces
   state by run ID; it never retries a submitted message automatically.
 - Snapshots refresh every 250ms and include the latest 100 runs, completed
@@ -24,14 +26,13 @@ model preferences, history, artifacts, and active work. Detaching never cancels.
 
 Generalize channel bindings and link principal identities before enabling
 cross-surface scheduler ownership. Queued turns now acknowledge durable request IDs
-immediately and build their context at execution time. Add an event
-cursor for incremental replay. Replace channel-only
-logs with canonical conversation history, paginate it, and make shared JSON
-updates transactional. Shared JSON mutations are now serialized and file
-replacement is atomic. Define consistent reset semantics across existing surfaces.
+immediately and build their context at execution time. Add an event cursor for
+incremental replay. Runs now provide canonical paginated conversation history;
+channel logs remain delivery/audit records. Shared JSON mutations are serialized
+and file replacement is atomic. New-conversation commands preserve prior context.
 
-Today the model window is 10 turn pairs clipped to 1,200 characters per message;
-full run history remains separate. Server restarts mark interrupted ordinary runs
+The model window is reconstructed from persisted turns within 24,000 characters;
+older content is available through history retrieval. Server restarts mark interrupted ordinary runs
 failed. Snapshot streaming observes state; it does not resume interrupted execution.
 
 ## Acceptance

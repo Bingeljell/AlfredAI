@@ -1,4 +1,4 @@
-import type { ConversationSnapshot, RunStatus, SessionRecord } from "../types.js";
+import type { ConversationSnapshot, RunStatus, RunRecord, SessionRecord } from "../types.js";
 import { randomUUID } from "node:crypto";
 
 export interface TurnResponse {
@@ -85,6 +85,10 @@ export class GatewayClient {
     return (await this.json<{ session: SessionRecord }>("/v1/sessions", {
       method: "POST", body: JSON.stringify({ action: "create", name }), signal
     })).session;
+  }
+
+  async history(sessionId: string, before?: string, signal?: AbortSignal): Promise<{ runs: RunRecord[]; nextCursor?: string }> {
+    return this.json(`/v1/sessions/${encodeURIComponent(sessionId)}/history?limit=50${before ? `&before=${encodeURIComponent(before)}` : ""}`, { signal });
   }
 
   async submit(sessionId: string, message: string, signal: AbortSignal): Promise<TurnResponse> {

@@ -93,7 +93,7 @@ export interface SessionWorkingMemory {
   recentOutputs?: SessionOutputRecord[];
   unresolvedItems?: string[];
   lastSpecialist?: string;
-  /** Sliding window of last 15 turns (30 entries) for in-session continuity */
+  /** Compatibility cache; inference reconstructs a bounded window from canonical run history. */
   conversationWindow?: ConversationWindowEntry[];
 }
 

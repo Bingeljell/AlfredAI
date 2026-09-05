@@ -125,7 +125,9 @@ test("chat service injects session context on follow-up turns and supports /news
   assert.equal(reset.status, "completed");
 
   const afterReset = await sessionStore.getSession(session.id);
-  assert.equal(afterReset?.workingMemory, undefined);
+  assert.ok(afterReset?.workingMemory?.conversationWindow?.length);
+  assert.notEqual(reset.sessionId, session.id);
+  assert.equal((await sessionStore.getSession(reset.sessionId!))?.workingMemory, undefined);
 });
 
 test("chat service serializes concurrent turns for the same session", async () => {

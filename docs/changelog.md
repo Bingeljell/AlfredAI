@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-09-05** > `src/memory/conversationHistory.ts`, `src/runner/chatService.ts`, `src/runs/runStore.ts`, `src/gateway/*`, `src/tui/*`, `src/tools/definitions/conversationHistory.tool.ts`, `src/runtime/specialists.ts`, `src/types.ts`, `webui/app.js`, `tests/{unit/conversationHistory,integration/sessionStore}.test.ts` > derive inference context from canonical cross-surface run history within a 24,000-character budget, add history pagination/retrieval, and make new-conversation commands preserve the previous session.
+
 - **2026-09-05** > `src/runner/chatService.ts`, `src/runs/runStore.ts`, `src/types.ts`, `src/gateway/app.ts`, `src/channels/telegram/adapter.ts`, `src/tui/client.ts`, `tests/{integration/turnAdmission,unit/tui}.test.ts` > persist and acknowledge queued turns before execution, build context after preceding turns finish, and deduplicate retried terminal/Telegram submissions using durable request IDs.
 
 - **2026-09-05** > `src/runtime/{assistantTextStream,codexAppServerRuntime}.ts`, `src/types.ts`, `src/tui/screen.ts`, `src/gateway/conversationStream.ts`, `tests/unit/{assistantTextStream,codexAppServerRuntime}.test.ts` > stream redacted cumulative Codex text into persisted run previews and the TUI, retain partial output through cancellation/reconnect, and hold incomplete words to prevent split-token credential leaks.

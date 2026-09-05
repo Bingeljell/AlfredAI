@@ -143,6 +143,7 @@ Do not read src/runtime/specialists.ts — your full system prompt is already in
 ${agentsContent ? `════════════════════════════════════════\nCODEBASE CONVENTIONS (AGENTS.md)\n════════════════════════════════════════\n${agentsContent}` : ""}
 `.trim(),
   toolAllowlist: [
+    "conversation_history",
     // Memory & knowledge
     "rag_memory_query",
     "log_session",

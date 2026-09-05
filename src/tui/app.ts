@@ -4,7 +4,7 @@ import type { SessionRecord, RunRecord, ConversationSnapshot } from "../types.js
 import { GatewayClient } from "./client.js";
 import { Composer, clip, graphemes, transcript, wrap } from "./screen.js";
 
-const HELP = "Ctrl-P conversations · Ctrl-N new · Ctrl-T tools · Ctrl-X cancel · Ctrl-Q detach\nEnter send · Ctrl-J newline · PgUp/PgDn scroll · Esc follow latest\n/model, /reasoning, /usage, /status use Alfred's shared controls. /newsession [name] creates a separate conversation. Artifacts show their server paths.";
+const HELP = "Ctrl-P conversations · Ctrl-N new · Ctrl-T tools · Ctrl-X cancel · Ctrl-Q detach\nEnter send · Ctrl-J newline · PgUp/PgDn scroll · Ctrl-L older history · Esc follow latest\n/model, /reasoning, /usage, /status use Alfred's shared controls. /newsession [name] creates a separate conversation. Artifacts show their server paths.";
 
 /** UI state is disposable. The gateway alone owns conversations and execution. */
 export async function runTerminal(client: GatewayClient, sessionId?: string): Promise<void> {
@@ -116,7 +116,7 @@ export async function runTerminal(client: GatewayClient, sessionId?: string): Pr
         for await (const snapshot of client.watch(session.id, controller.signal)) {
           if (controller.signal.aborted) return;
           selected = snapshot.session;
-          runs = snapshot.runs;
+          runs = [...new Map([...runs, ...snapshot.runs].map((run) => [run.runId, run])).values()];
           notifications = snapshot.notifications ?? [];
           connection = `Connected · latest ${runs.length} runs`;
           backoff = 1_000;
@@ -242,6 +242,15 @@ export async function runTerminal(client: GatewayClient, sessionId?: string): Pr
       render(); return;
     }
     if (key.ctrl && key.name === "x") await cancel();
+    else if (key.ctrl && key.name === "l" && selected) {
+      const sessionId = selected.id;
+      const oldest = [...runs].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.runId.localeCompare(b.runId))[0];
+      const history = await client.history(sessionId, oldest?.runId, lifetime.signal);
+      if (selected?.id === sessionId) {
+        runs = [...new Map([...history.runs, ...runs].map((run) => [run.runId, run])).values()];
+        notice = history.runs.length ? `Loaded ${history.runs.length} older turns. PgUp to read.` : "Beginning of conversation.";
+      }
+    }
     else if (key.ctrl && key.name === "t") details = !details;
     else if (key.ctrl && key.name === "c") { composer.clear(); notice = "Draft cleared. Ctrl-Q detaches; Ctrl-X cancels the active run."; }
     else if (key.name === "pageup") scroll += Math.max(1, (output.rows || 24) - 10);

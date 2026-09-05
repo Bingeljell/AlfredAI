@@ -1057,6 +1057,7 @@ async function sendTurn(message) {
       })
     });
 
+    if (payload.sessionId) state.activeSessionId = payload.sessionId;
     if (payload.runId) {
       state.activeRunId = payload.runId;
       els.runIdInput.value = payload.runId;

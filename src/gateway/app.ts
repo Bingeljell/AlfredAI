@@ -440,6 +440,13 @@ app.post("/v1/chat/turn", async (c) => {
 
 app.get("/v1/sessions/:sessionId/stream", (c) => conversationStream(c, sessionStore, runStore, webActivity));
 
+app.get("/v1/sessions/:sessionId/history", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  if (!await sessionStore.getSession(sessionId)) return c.json({ error: "Session not found" }, 404);
+  const limit = z.coerce.number().int().min(1).max(100).parse(c.req.query("limit") ?? 50);
+  return c.json(await runStore.listHistory(sessionId, { limit, before: c.req.query("before") }));
+});
+
 app.get("/v1/scheduled-tasks", async (c) => {
   if (!appConfig.schedulerEnabled) return c.json({ error: "scheduler_disabled" }, 503);
   const sessionId = c.req.query("sessionId");

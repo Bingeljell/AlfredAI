@@ -11,6 +11,7 @@ import type {
   SessionWorkingMemory
 } from "../types.js";
 import { redactValue } from "../utils/redact.js";
+import { conversationWindow } from "../memory/conversationHistory.js";
 import type { GroupChatStore } from "../memory/groupChatStore.js";
 import type { runReActLoop } from "../runtime/runReActLoop.js";
 import { AlfredAgentRuntime, type AgentRuntime } from "../runtime/agentRuntime.js";
@@ -270,7 +271,9 @@ export class ChatService {
 
   private async buildSessionContext(session: SessionRecord, modelSelection?: EffectiveModelSelection): Promise<SessionPromptContext | undefined> {
     const memory = session.workingMemory;
-    if (!memory && !modelSelection) {
+    const history = await this.options.runStore.listHistory(session.id, { limit: 100 });
+    const canonicalWindow = conversationWindow(history.runs);
+    if (!memory && !modelSelection && !canonicalWindow.length) {
       return undefined;
     }
 
@@ -300,7 +303,7 @@ export class ChatService {
       recentTurns: memory?.recentTurns?.slice(-6),
       recentOutputs: memory?.recentOutputs?.slice(-4),
       unresolvedItems: memory?.unresolvedItems?.slice(-6),
-      conversationWindow: memory?.conversationWindow,
+      conversationWindow: canonicalWindow.length ? canonicalWindow : memory?.conversationWindow,
       modelSelection
     };
 
@@ -391,30 +394,12 @@ export class ChatService {
     await this.options.sessionStore.updateWorkingMemory(sessionId, memoryPatch);
   }
 
-  private async handleNewSessionCommand(sessionId: string): Promise<{
-    runId: string;
-    status: RunStatus;
-    assistantText?: string;
-  }> {
-    await this.options.sessionStore.resetWorkingMemory(sessionId);
-    const run = await this.options.runStore.createRun(sessionId, "/newsession", "completed");
-    const assistantText = "Started a fresh session context. Prior run history is still stored, but Alfred will treat the next turn as a new conversation.";
-    await this.options.runStore.appendEvent({
-      runId: run.runId,
-      sessionId,
-      phase: "route",
-      eventType: "session_reset",
-      payload: {},
-      timestamp: new Date().toISOString()
-    });
-    await this.options.runStore.updateRun(run.runId, {
-      status: "completed",
-      assistantText
-    });
+  private async handleNewSessionCommand(sessionId: string): Promise<RunOutcome & { runId: string; sessionId: string }> {
+    const previous = await this.options.sessionStore.getSession(sessionId);
+    const session = await this.options.sessionStore.createSession(previous?.name);
     return {
-      runId: run.runId,
-      status: "completed",
-      assistantText
+      runId: "", sessionId: session.id, status: "completed",
+      assistantText: "Started a new conversation. The previous conversation and its context remain available on every surface."
     };
   }
 
@@ -662,7 +647,7 @@ export class ChatService {
     }
   }
 
-  async handleTurn(input: ChatTurnInput): Promise<RunOutcome & { runId: string }> {
+  async handleTurn(input: ChatTurnInput): Promise<RunOutcome & { runId: string; sessionId?: string }> {
     if ((!input.requestJob && !input.requestId) || parseControlCommand(input.message)) {
       return this.sessionMutex.run(input.sessionId, () => this.executeTurn(input));
     }
@@ -695,9 +680,9 @@ export class ChatService {
   }
 
   /** Called only while holding the execution mutex; context sees completed predecessors. */
-  private async executeTurn(input: ChatTurnInput, admitted?: RunRecord): Promise<RunOutcome & { runId: string }> {
+  private async executeTurn(input: ChatTurnInput, admitted?: RunRecord): Promise<RunOutcome & { runId: string; sessionId?: string }> {
     let run = admitted;
-    const persist = async (outcome: RunOutcome): Promise<RunOutcome & { runId: string }> => {
+    const persist = async (outcome: RunOutcome): Promise<RunOutcome & { runId: string; sessionId?: string }> => {
       if (!run) return { ...outcome, runId: "" };
       await this.options.runStore.updateRun(run.runId, {
         status: outcome.status, assistantText: outcome.assistantText, artifactPaths: outcome.artifactPaths,

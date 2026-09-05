@@ -221,6 +221,17 @@ export class RunStore {
     return runs.slice(0, Math.max(1, limit));
   }
 
+  /** Canonical conversation history; updates never reorder its pagination. */
+  async listHistory(sessionId: string, options: { before?: string; limit?: number } = {}): Promise<{ runs: RunRecord[]; nextCursor?: string }> {
+    const runs = await this.listRuns(sessionId, Number.MAX_SAFE_INTEGER);
+    runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.runId.localeCompare(a.runId));
+    const index = options.before ? runs.findIndex((run) => run.runId === options.before) : -1;
+    if (options.before && index < 0) throw new Error("invalid_history_cursor");
+    const limit = Math.max(1, Math.min(100, options.limit ?? 50));
+    const page = runs.slice(index + 1, index + 1 + limit);
+    return { runs: page, nextCursor: index + 1 + limit < runs.length ? page.at(-1)?.runId : undefined };
+  }
+
   async sumSessionTokens(sessionId: string): Promise<number> {
     let total = 0;
     const runIds = await this.storage.listRunIds();

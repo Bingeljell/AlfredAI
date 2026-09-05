@@ -4,7 +4,7 @@ import { CodexAccountService, type OpenAiLoginMode, type OpenAiLoginProgress, ty
 const DEFAULT_LOGIN_TIMEOUT_MS = 10 * 60_000;
 
 function usage(): never {
-  throw new Error("Usage: pnpm alfred auth login openai [--device-code] [--timeout-ms <ms>] | pnpm alfred auth status openai | pnpm alfred auth logout openai");
+  throw new Error("Usage: pnpm alfred tui [--session ID] [--url URL] | pnpm alfred auth login openai [--device-code] [--timeout-ms <ms>] | pnpm alfred auth status openai | pnpm alfred auth logout openai");
 }
 
 type CliAccountService = Pick<CodexAccountService, "startLogin" | "waitForLogin" | "readAccount" | "logout" | "close">;
@@ -47,6 +47,7 @@ function printLoginResult(progress: OpenAiLoginProgress, write: (message: string
 }
 
 export async function runCli(args: string[], options: AlfredCliOptions = {}): Promise<number> {
+  if (args[0] === "tui") return (await import("../src/tui/index.js")).runTui(args.slice(1));
   if (args[0] !== "auth" || !["login", "status", "logout"].includes(args[1] ?? "") || args[2] !== "openai") usage();
 
   const service = options.service ?? new CodexAccountService();

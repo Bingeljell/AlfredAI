@@ -1,10 +1,10 @@
 import TelegramBot from "node-telegram-bot-api";
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { NotificationDestination } from "./types.js";
 import { redactValue } from "../utils/redact.js";
 
-export type SchedulerOrigin = "web" | "telegram" | "scheduler";
+export type SchedulerOrigin = "web" | "tui" | "telegram" | "scheduler";
 
 export interface SchedulerProvenance {
   principalId: string;
@@ -70,7 +70,7 @@ export class WebOutboundNotifier implements OutboundNotifier {
   constructor(private readonly sink: WebActivitySink) {}
 
   async send(notification: OutboundNotification): Promise<OutboundNotificationResult> {
-    if (!notification.destination.channelKey.startsWith("web:")) throw new Error("unsupported_notification_destination");
+    if (!/^(web|tui):/.test(notification.destination.channelKey)) throw new Error("unsupported_notification_destination");
     await this.sink.append({
       principalId: notification.destination.principalId,
       channelKey: notification.destination.channelKey,
@@ -90,7 +90,24 @@ export class FileWebActivitySink implements WebActivitySink {
 
   async append(item: { principalId: string; channelKey: string; text: string; deliveryId: string }): Promise<void> {
     await mkdir(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
-    await appendFile(this.filePath, `${JSON.stringify(redactValue({ ...item, timestamp: new Date().toISOString() }))}\n`, { encoding: "utf8", mode: 0o600 });
+    // Routing identifiers are server-owned identities, not credential-bearing
+    // prose. Entropy-redacting a channel UUID makes its notification unreadable.
+    await appendFile(this.filePath, `${JSON.stringify({ ...item, text: redactValue(item.text), timestamp: new Date().toISOString() })}\n`, { encoding: "utf8", mode: 0o600 });
+  }
+
+  async readForSession(sessionId: string, principalId: string): Promise<Array<{ deliveryId: string; text: string; timestamp: string }>> {
+    const raw = await readFile(this.filePath, "utf8").catch(() => "");
+    const items: Array<{ deliveryId: string; text: string; timestamp: string }> = [];
+    for (const line of raw.split("\n")) {
+      try {
+        const item = JSON.parse(line);
+        if (item.principalId === principalId && [ `web:${sessionId}`, `tui:${sessionId}` ].includes(item.channelKey)
+          && typeof item.deliveryId === "string" && typeof item.text === "string" && typeof item.timestamp === "string") {
+          items.push({ deliveryId: item.deliveryId, text: item.text, timestamp: item.timestamp });
+        }
+      } catch { /* A concurrent append may leave an incomplete final line. */ }
+    }
+    return [...new Map(items.map((item) => [item.deliveryId, item])).values()].slice(-50);
   }
 }
 
@@ -105,7 +122,7 @@ export class RoutingOutboundNotifier implements OutboundNotifier {
       if (!this.telegram) throw new Error("telegram_notification_unavailable");
       return this.telegram.send(notification);
     }
-    if (notification.destination.channelKey.startsWith("web:")) return this.web.send(notification);
+    if (/^(web|tui):/.test(notification.destination.channelKey)) return this.web.send(notification);
     throw new Error("unsupported_notification_destination");
   }
 }

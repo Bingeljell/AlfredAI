@@ -4,7 +4,7 @@
 
 There is no Batman without Alfred.
 
-Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reasons, acts, remembers, and can extend his own capabilities. Talk to him via Telegram or the web UI. Give him a task; he figures out how to do it.
+Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reasons, acts, remembers, and can extend his own capabilities. Talk to him via Telegram, the web UI, or the terminal. Give him a task; he figures out how to do it.
 
 ## What Alfred Does Today
 
@@ -33,6 +33,23 @@ Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reas
 - OpenRouter reasoning is configurable per deployment, reasoning-token usage is tracked, Alfred forwards a stable session ID, and bounded upstream routing metadata is recorded for diagnosis.
 - Pinchtab is now the preferred backend for read-only browsing. Playwright is created only as an enabled fallback; Pinchtab startup failures are visible and supervised.
 - Final replies are checked against the current run's successful tool ledger. An unsupported action claim is withheld and repaired once; a repeated claim becomes an explicit correction.
+
+## Terminal
+
+With the updated gateway running, launch `pnpm alfred tui`. Select an existing
+conversation—including a Telegram conversation—to continue with the same context.
+Use `pnpm alfred tui --session ID` to attach directly, or `--url https://HOST` for
+a remote gateway. Local authentication uses `ALFRED_API_KEY` or the workspace's
+`api-key` file; remote connections require `ALFRED_API_KEY`.
+
+Enter sends, Ctrl-J inserts a newline, Ctrl-P opens conversations, Ctrl-T expands
+tool receipts, PgUp/PgDn scroll, Ctrl-X cancels active work, and Ctrl-Q detaches
+without stopping Alfred. `/newsession [name]` creates a separate conversation;
+`/model`, `/reasoning`, `/usage`, and `/status` use shared session controls.
+
+This first release streams state snapshots, completed tool receipts, artifact
+paths, and web/terminal notifications. Assistant text appears when the turn
+finishes. See the [brief and follow-up scope](docs/architecture/tui.md).
 
 ## Tool Catalog
 

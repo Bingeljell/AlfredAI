@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { conversationStream } from "./conversationStream.js";
 import type { Context } from "hono";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { timingSafeEqual } from "node:crypto";
@@ -57,6 +58,7 @@ const SessionPostSchema = z.object({
 const ChatTurnSchema = z.object({
   sessionId: z.string().min(1),
   message: z.string().min(1),
+  surface: z.enum(["web", "tui"]).default("web"),
   requestJob: z.boolean().optional()
 });
 
@@ -185,8 +187,9 @@ const agentEventDispatcher = new AgentEventDispatcher({
 
 const schedulerTaskStore = new SchedulerTaskStore({ workspaceDir: appConfig.workspaceDir });
 const schedulerDeliveryStore = new SchedulerDeliveryStore({ workspaceDir: appConfig.workspaceDir });
+const webActivity = new FileWebActivitySink(appConfig.workspaceDir);
 const schedulerNotifier = new RoutingOutboundNotifier(
-  new WebOutboundNotifier(new FileWebActivitySink(appConfig.workspaceDir)),
+  new WebOutboundNotifier(webActivity),
   appConfig.telegramBotToken
     ? new TelegramOutboundNotifier(appConfig.telegramBotToken, {
         async isAllowed(destination) {
@@ -428,11 +431,13 @@ app.post("/v1/chat/turn", async (c) => {
   const response = await chatService.handleTurn({
     ...payload,
     principalId: "api",
-    origin: "web",
-    channelKey: `web:${payload.sessionId}`
+    origin: payload.surface,
+    channelKey: `${payload.surface}:${payload.sessionId}`
   });
   return c.json(response);
 });
+
+app.get("/v1/sessions/:sessionId/stream", (c) => conversationStream(c, sessionStore, runStore, webActivity));
 
 app.get("/v1/scheduled-tasks", async (c) => {
   if (!appConfig.schedulerEnabled) return c.json({ error: "scheduler_disabled" }, 503);

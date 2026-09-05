@@ -5,7 +5,7 @@ import type { ChatService } from "../../runner/chatService.js";
 import type { SessionStore } from "../../memory/sessionStore.js";
 import type { RunStore } from "../../runs/runStore.js";
 import type { ChannelAdapter } from "../types.js";
-import { ChannelSessionStore } from "./channelSessionStore.js";
+import { ChannelSessionStore } from "../channelSessionStore.js";
 
 const POLL_INTERVAL_MS = 3_000;
 const POLL_TIMEOUT_MS = 600_000; // 10 min max
@@ -144,18 +144,11 @@ export class TelegramAdapter implements ChannelAdapter {
 
   private async getOrCreateSessionId(chatId: number): Promise<string> {
     const key = this.channelKey(chatId);
-    const existing = await this.channelStore.get(key);
-    if (existing) {
-      return existing.sessionId;
-    }
-
-    const session = await this.sessionStore.createSession(`Telegram chat ${chatId}`);
-    await this.channelStore.set(key, {
-      sessionId: session.id,
-      label: null,
-      createdAt: new Date().toISOString()
+    const record = await this.channelStore.getOrCreate(key, async () => {
+      const session = await this.sessionStore.createSession(`Telegram chat ${chatId}`);
+      return { sessionId: session.id, label: null, createdAt: new Date().toISOString() };
     });
-    return session.id;
+    return record.sessionId;
   }
 
   // ─── message dispatch ──────────────────────────────────────────────────────

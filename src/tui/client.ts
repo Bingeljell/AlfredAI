@@ -91,6 +91,14 @@ export class GatewayClient {
     return this.json(`/v1/sessions/${encodeURIComponent(sessionId)}/history?limit=50${before ? `&before=${encodeURIComponent(before)}` : ""}`, { signal });
   }
 
+  async attachChannel(sessionId: string, channelKey: string, signal: AbortSignal): Promise<void> {
+    await this.json("/v1/channels/attach", { method: "POST", body: JSON.stringify({ sessionId, channelKey }), signal });
+  }
+
+  async linkTelegram(userId: string, signal: AbortSignal): Promise<void> {
+    await this.json("/v1/identities/link-telegram", { method: "POST", body: JSON.stringify({ userId }), signal });
+  }
+
   async submit(sessionId: string, message: string, signal: AbortSignal): Promise<TurnResponse> {
     // A manual retry of the same uncertain submission reuses its durable key.
     const key = JSON.stringify([sessionId, message]);

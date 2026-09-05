@@ -14,7 +14,8 @@ import { SearchManager } from "../tools/search/searchManager.js";
 import { PinchtabPool } from "../tools/browser/pinchtabPool.js";
 import { InMemoryQueue } from "../workers/inMemoryQueue.js";
 import { ChatService, SessionMutex } from "../runner/chatService.js";
-import { ChannelSessionStore } from "../channels/telegram/channelSessionStore.js";
+import { ChannelSessionStore } from "../channels/channelSessionStore.js";
+import { IdentityStore } from "../channels/identityStore.js";
 import { GroupChatStore } from "../memory/groupChatStore.js";
 import { AgentEventSchema } from "../agentEvents/schema.js";
 import { authorizeAgentEvent } from "../agentEvents/auth.js";
@@ -186,7 +187,8 @@ const agentEventDispatcher = new AgentEventDispatcher({
   store: agentEventStore
 });
 
-const schedulerTaskStore = new SchedulerTaskStore({ workspaceDir: appConfig.workspaceDir });
+const identities = new IdentityStore(appConfig.workspaceDir);
+const schedulerTaskStore = new SchedulerTaskStore({ workspaceDir: appConfig.workspaceDir, principalAliases: (id) => identities.aliases(id) });
 const schedulerDeliveryStore = new SchedulerDeliveryStore({ workspaceDir: appConfig.workspaceDir });
 const webActivity = new FileWebActivitySink(appConfig.workspaceDir);
 const schedulerNotifier = new RoutingOutboundNotifier(
@@ -517,6 +519,29 @@ app.get("/v1/channels", async (c) => {
   const store = new ChannelSessionStore(appConfig.workspaceDir);
   const channelSessions = await store.getAll();
   return c.json({ channelSessions });
+});
+
+app.post("/v1/channels/attach", async (c) => {
+  const payload = z.object({ channelKey: z.string().regex(/^(telegram:-?\d+|(?:web|tui):[a-zA-Z0-9_-]+)$/), sessionId: z.string().uuid() }).strict().parse(await c.req.json());
+  if (!await sessionStore.getSession(payload.sessionId)) return c.json({ error: "Session not found" }, 404);
+  const store = new ChannelSessionStore(appConfig.workspaceDir);
+  const existing = await store.get(payload.channelKey);
+  // Telegram bindings must have been observed by the authorized adapter first.
+  if (payload.channelKey.startsWith("telegram:") && !existing) return c.json({ error: "Unknown Telegram channel" }, 404);
+  await store.set(payload.channelKey, { sessionId: payload.sessionId, label: existing?.label ?? null, createdAt: new Date().toISOString() });
+  return c.json({ channelKey: payload.channelKey, sessionId: payload.sessionId });
+});
+
+app.post("/v1/identities/link-telegram", async (c) => {
+  const { userId } = z.object({ userId: z.string().regex(/^\d+$/) }).strict().parse(await c.req.json());
+  if (!appConfig.telegramAllowedUserIds.includes(Number(userId))) return c.json({ error: "Telegram user is not allowlisted" }, 403);
+  await identities.linkTelegram(userId);
+  return c.json({ linked: true, principalIds: await identities.aliases("api") });
+});
+
+app.delete("/v1/identities/telegram/:userId", async (c) => {
+  await identities.unlinkTelegram(z.string().regex(/^\d+$/).parse(c.req.param("userId")));
+  return c.json({ unlinked: true });
 });
 
 // ── Agent event webhook ─ POST /api/events/agent ─────────────────────────────

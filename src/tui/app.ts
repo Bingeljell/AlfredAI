@@ -175,6 +175,17 @@ export async function runTerminal(client: GatewayClient, sessionId?: string): Pr
     if (message === "/tools") { composer.clear(); details = !details; render(); return; }
     if (message === "/cancel") { composer.clear(); await cancel(); return; }
     if (message === "/help") { composer.clear(); controlOutput = HELP; notice = "Terminal help"; scroll = 0; render(); return; }
+    if (message.startsWith("/attach-channel ")) {
+      const channelKey = message.slice(16).trim();
+      await client.attachChannel(selected.id, channelKey, lifetime.signal);
+      composer.clear(); notice = `${channelKey} now uses this conversation. Existing notification destinations are unchanged.`;
+      render(); return;
+    }
+    if (message.startsWith("/link-telegram ")) {
+      await client.linkTelegram(message.slice(15).trim(), lifetime.signal);
+      composer.clear(); notice = "Telegram identity linked to the API owner for task access within shared conversations.";
+      render(); return;
+    }
     if (/^\/newsession(?:\s|$)/.test(message)) {
       const created = await client.create(message.slice(11).trim() || "Terminal conversation", lifetime.signal);
       composer.clear();

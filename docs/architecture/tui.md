@@ -24,8 +24,14 @@ model preferences, history, artifacts, and active work. Detaching never cancels.
 
 ## Follow-up foundation
 
-Generalize channel bindings and link principal identities before enabling
-cross-surface scheduler ownership. Queued turns now acknowledge durable request IDs
+Bindings now live in the shared channel layer. `/attach-channel telegram:CHAT_ID`
+points an already-known Telegram chat at the selected conversation.
+`/link-telegram USER_ID` explicitly links an allowlisted Telegram account to the
+API owner for task access within the same session; attaching alone does not.
+Links can be removed with `DELETE /v1/identities/telegram/:userId`.
+Existing task owners and notification destinations are preserved.
+
+Queued turns now acknowledge durable request IDs
 immediately and build their context at execution time. Add an event cursor for
 incremental replay. Runs now provide canonical paginated conversation history;
 channel logs remain delivery/audit records. Shared JSON mutations are serialized

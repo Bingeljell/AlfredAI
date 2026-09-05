@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-09-05** > `src/utils/fs.ts`, `src/memory/sessionStore.ts`, `src/channels/telegram/channelSessionStore.ts`, `src/runs/runStore.ts`, `tests/unit/storeConcurrency.test.ts` > atomically replace JSON files and serialize shared-index/run mutations so concurrent surfaces, tool results, and cancellation preserve each other's state; reject mutations of corrupt indexes.
+
 - **2026-09-05** > `src/tui/*`, `scripts/alfred-cli.ts`, `src/gateway/{app,conversationStream}.ts`, `src/types.ts`, `src/scheduler/notifier.ts`, `tests/{unit/tui,integration/conversationStream,integration/tuiGatewayApi,integration/sessionStore}.test.ts`, `docs/architecture/tui.md`, `README.md` > add a terminal surface that attaches to existing conversations through authenticated snapshot streaming, preserves shared context and gateway execution on detach, and displays scoped notifications; test cross-surface continuity, reconnects, provenance, input handling, and cancellation visibility.
 
 - **2026-09-01** > `src/provider/codex/appServerClient.ts`, `tests/unit/codexAppServerClient.test.ts` > comply with the App Server two-phase handshake and re-handshake after process reconnects, with exactly one `initialized` notification per connection.

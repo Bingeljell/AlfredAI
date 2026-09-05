@@ -1,3 +1,5 @@
+import path from "node:path";
+import { withFileLock } from "../utils/fs.js";
 import { randomUUID } from "node:crypto";
 import type { LlmUsage, RunEvent, RunRecord, RunStatus, ToolCallRecord } from "../types.js";
 import { redactValue } from "../utils/redact.js";
@@ -93,18 +95,20 @@ export class RunStore {
   }
 
   async updateRun(runId: string, patch: Partial<RunRecord>): Promise<RunRecord> {
-    const current = await this.getRun(runId);
-    if (!current) {
-      throw new Error(`Run not found: ${runId}`);
-    }
-    const updated = redactValue({
-      ...current,
-      ...redactValue(patch) as Partial<RunRecord>,
-      updatedAt: new Date().toISOString()
-    }) as RunRecord;
-    if (patch.scheduler) updated.scheduler = patch.scheduler;
-    await this.storage.writeRun(runId, updated);
-    return updated;
+    return withFileLock(path.join(this.workspaceDir, "runs/state", `${runId}.json`), async () => {
+      const current = await this.getRun(runId);
+      if (!current) {
+        throw new Error(`Run not found: ${runId}`);
+      }
+      const updated = redactValue({
+        ...current,
+        ...redactValue(patch) as Partial<RunRecord>,
+        updatedAt: new Date().toISOString()
+      }) as RunRecord;
+      if (patch.scheduler) updated.scheduler = patch.scheduler;
+      await this.storage.writeRun(runId, updated);
+      return updated;
+    });
   }
 
   async requestCancellation(runId: string): Promise<RunRecord> {
@@ -128,29 +132,33 @@ export class RunStore {
   }
 
   async addToolCall(runId: string, call: ToolCallRecord): Promise<void> {
-    const current = await this.getRun(runId);
-    if (!current) {
-      throw new Error(`Run not found: ${runId}`);
-    }
-    const updated = redactValue({
-      ...current,
-      toolCalls: [...current.toolCalls, redactValue(call) as ToolCallRecord],
-      updatedAt: new Date().toISOString()
-    }) as RunRecord;
-    await this.storage.writeRun(runId, updated);
+    return withFileLock(path.join(this.workspaceDir, "runs/state", `${runId}.json`), async () => {
+      const current = await this.getRun(runId);
+      if (!current) {
+        throw new Error(`Run not found: ${runId}`);
+      }
+      const updated = redactValue({
+        ...current,
+        toolCalls: [...current.toolCalls, redactValue(call) as ToolCallRecord],
+        updatedAt: new Date().toISOString()
+      }) as RunRecord;
+      await this.storage.writeRun(runId, updated);
+    });
   }
 
   async addLlmUsage(runId: string, usage: LlmUsage, callCountDelta = 1): Promise<void> {
-    const current = await this.getRun(runId);
-    if (!current) {
-      throw new Error(`Run not found: ${runId}`);
-    }
-    const updated = redactValue({
-      ...current,
-      llmUsage: this.mergeLlmUsage(current.llmUsage, usage, callCountDelta),
-      updatedAt: new Date().toISOString()
-    }) as RunRecord;
-    await this.storage.writeRun(runId, updated);
+    return withFileLock(path.join(this.workspaceDir, "runs/state", `${runId}.json`), async () => {
+      const current = await this.getRun(runId);
+      if (!current) {
+        throw new Error(`Run not found: ${runId}`);
+      }
+      const updated = redactValue({
+        ...current,
+        llmUsage: this.mergeLlmUsage(current.llmUsage, usage, callCountDelta),
+        updatedAt: new Date().toISOString()
+      }) as RunRecord;
+      await this.storage.writeRun(runId, updated);
+    });
   }
 
   private async appendEventDirect(event: RunEvent): Promise<void> {

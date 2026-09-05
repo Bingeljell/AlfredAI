@@ -23,15 +23,15 @@ model preferences, history, artifacts, and active work. Detaching never cancels.
 ## Follow-up foundation
 
 Generalize channel bindings and link principal identities before enabling
-cross-surface scheduler ownership. Add durable admission/idempotency and an event
+cross-surface scheduler ownership. Queued turns now acknowledge durable request IDs
+immediately and build their context at execution time. Add an event
 cursor for incremental replay. Replace channel-only
 logs with canonical conversation history, paginate it, and make shared JSON
 updates transactional. Shared JSON mutations are now serialized and file
 replacement is atomic. Define consistent reset semantics across existing surfaces.
 
 Today the model window is 10 turn pairs clipped to 1,200 characters per message;
-full run history remains separate. Queued submissions may wait for the preceding
-turn before acknowledgement. Server restarts mark interrupted ordinary runs
+full run history remains separate. Server restarts mark interrupted ordinary runs
 failed. Snapshot streaming observes state; it does not resume interrupted execution.
 
 ## Acceptance

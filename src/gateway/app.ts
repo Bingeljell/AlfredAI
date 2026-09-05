@@ -59,6 +59,7 @@ const ChatTurnSchema = z.object({
   sessionId: z.string().min(1),
   message: z.string().min(1),
   surface: z.enum(["web", "tui"]).default("web"),
+  requestId: z.string().uuid().optional(),
   requestJob: z.boolean().optional()
 });
 
@@ -553,6 +554,7 @@ app.get("/ui", serveStatic({ path: "./webui/index.html" }));
 app.get("/", (c) => c.redirect("/ui"));
 
 app.onError((error, c) => {
+  if (error.message === "request_id_conflict") return c.json({ error: "request_id_conflict" }, 409);
   if (error instanceof z.ZodError) {
     return c.json(
       { error: "Invalid request", details: error.issues.map((issue) => ({ path: issue.path, message: issue.message })) },

@@ -196,7 +196,7 @@ export class TelegramAdapter implements ChannelAdapter {
     }
 
     // Normal message — run Alfred
-    await this.handleRun(chatId, text, String(userId));
+    await this.handleRun(chatId, text, String(userId), `telegram:${chatId}:${msg.message_id}`);
   }
 
   // ─── commands ─────────────────────────────────────────────────────────────
@@ -251,7 +251,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
   // ─── run execution ─────────────────────────────────────────────────────────
 
-  private async handleRun(chatId: number, text: string, principalId: string): Promise<void> {
+  private async handleRun(chatId: number, text: string, principalId: string, requestId?: string): Promise<void> {
     // Reserve the final-response slot before any await. This preserves ingress
     // order even when a later run completes/polls before an earlier one has
     // finished its Telegram API calls.
@@ -293,6 +293,7 @@ export class TelegramAdapter implements ChannelAdapter {
         requestJob: true,
         channelKey: this.channelKey(chatId),
         principalId,
+        requestId,
         origin: "telegram"
       });
 

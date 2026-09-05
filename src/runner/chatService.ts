@@ -2,6 +2,7 @@ import type {
   ConversationWindowEntry,
   RunOutcome,
   RunStatus,
+  RunRecord,
   SessionOutputRecord,
   SessionPromptContext,
   EffectiveModelSelection,
@@ -9,6 +10,7 @@ import type {
   SessionTurnSnippet,
   SessionWorkingMemory
 } from "../types.js";
+import { redactValue } from "../utils/redact.js";
 import type { GroupChatStore } from "../memory/groupChatStore.js";
 import type { runReActLoop } from "../runtime/runReActLoop.js";
 import { AlfredAgentRuntime, type AgentRuntime } from "../runtime/agentRuntime.js";
@@ -46,6 +48,7 @@ interface ChatTurnInput {
   channelKey?: string;
   principalId?: string;
   origin?: SchedulerOrigin;
+  requestId?: string;
 }
 
 interface ChatServiceOptions {
@@ -132,6 +135,7 @@ export class SessionMutex {
 }
 
 export class ChatService {
+  private readonly admissionMutex = new SessionMutex();
   private readonly threadRuntimeManager: ThreadRuntimeManager;
   private readonly subscribedThreadSessions = new Set<string>();
   private readonly scheduledTurnPromises = new Map<string, Promise<RunOutcome>>();
@@ -532,37 +536,6 @@ export class ChatService {
     return { selection: resolved.selection };
   }
 
-  private async executeQueuedTurn(
-    runId: string,
-    sessionId: string,
-    message: string,
-    sessionContext: SessionPromptContext | undefined,
-    provenance: SchedulerProvenance,
-    channelKey?: string
-  ): Promise<void> {
-    try {
-      const outcome = await this.executeRun(runId, sessionId, message, sessionContext, provenance);
-      await this.persistRunOutcome(sessionId, runId, message, outcome);
-      if (channelKey && this.options.groupChatStore) {
-        await this.options.groupChatStore.appendTurn(
-          channelKey, runId, sessionId,
-          message, outcome.assistantText ?? "",
-          outcome.artifactPaths ?? []
-        );
-      }
-    } catch (error) {
-      const failureOutcome: RunOutcome = {
-        status: "failed",
-        assistantText: error instanceof Error ? error.message : "Queued run failed"
-      };
-      await this.options.runStore.updateRun(runId, {
-        status: "failed",
-        assistantText: failureOutcome.assistantText
-      });
-      await this.persistRunOutcome(sessionId, runId, message, failureOutcome);
-    }
-  }
-
   private async executeRun(
     runId: string,
     sessionId: string,
@@ -689,119 +662,75 @@ export class ChatService {
     }
   }
 
-  async handleTurn(input: ChatTurnInput): Promise<{
-    runId: string;
-    status: RunStatus;
-    assistantText?: string;
-    artifactPaths?: string[];
-    approvalToken?: string;
-  }> {
-    const release = await this.sessionMutex.acquire(input.sessionId);
-    let releaseAfterReturn = true;
+  async handleTurn(input: ChatTurnInput): Promise<RunOutcome & { runId: string }> {
+    if ((!input.requestJob && !input.requestId) || parseControlCommand(input.message)) {
+      return this.sessionMutex.run(input.sessionId, () => this.executeTurn(input));
+    }
+    // Admission is short and separate from execution. Persist before acknowledging.
+    return this.admissionMutex.run(input.sessionId, async () => {
+      if (!await this.options.sessionStore.getSession(input.sessionId)) throw new Error(`Session ${input.sessionId} does not exist`);
+      const ingress = this.provenance(input);
+      if (input.requestId) {
+        const existing = await this.options.runStore.findRequest(input.sessionId, ingress.principalId, input.requestId);
+        if (existing) {
+          if (existing.message !== redactValue(input.message)) throw new Error("request_id_conflict");
+          return { runId: existing.runId, status: existing.status, assistantText: existing.assistantText };
+        }
+      }
+      const run = await this.options.runStore.createRun(input.sessionId, input.message, "queued", undefined, { ...ingress, requestId: input.requestId });
+      // acquire() registers its place synchronously, preserving ingress order.
+      void this.sessionMutex.run(input.sessionId, () => this.executeTurn(input, run)).catch((error: unknown) => {
+        console.error(`[chat] admitted run ${run.runId} failed to persist:`, error);
+      });
+      return { runId: run.runId, status: "queued" };
+    });
+  }
 
+  private provenance(input: ChatTurnInput): SchedulerProvenance {
+    return {
+      principalId: input.principalId ?? input.sessionId,
+      channelKey: input.channelKey,
+      origin: input.origin ?? (input.channelKey?.startsWith("telegram:") ? "telegram" : input.channelKey?.startsWith("tui:") ? "tui" : "web")
+    };
+  }
+
+  /** Called only while holding the execution mutex; context sees completed predecessors. */
+  private async executeTurn(input: ChatTurnInput, admitted?: RunRecord): Promise<RunOutcome & { runId: string }> {
+    let run = admitted;
+    const persist = async (outcome: RunOutcome): Promise<RunOutcome & { runId: string }> => {
+      if (!run) return { ...outcome, runId: "" };
+      await this.options.runStore.updateRun(run.runId, {
+        status: outcome.status, assistantText: outcome.assistantText, artifactPaths: outcome.artifactPaths,
+        approvalToken: outcome.approvalToken
+      });
+      await this.persistRunOutcome(input.sessionId, run.runId, input.message, outcome);
+      if (input.channelKey && this.options.groupChatStore) {
+        await this.options.groupChatStore.appendTurn(input.channelKey, run.runId, input.sessionId, input.message, outcome.assistantText ?? "", outcome.artifactPaths ?? []);
+      }
+      return { ...outcome, runId: run.runId };
+    };
     try {
       const session = await this.options.sessionStore.getSession(input.sessionId);
-      if (!session) {
-        throw new Error(`Session ${input.sessionId} does not exist`);
-      }
-
-      if (input.message.trim() === "/newsession") {
-        return await this.handleNewSessionCommand(input.sessionId);
-      }
-
-      let control: string | undefined;
-      try {
-        control = await this.controlResponse(session, input.message);
-      } catch (error) {
-        if (parseControlCommand(input.message)) {
-          return {
-            runId: "",
-            status: "failed",
-            assistantText: `Alfred could not complete that control command: ${error instanceof Error ? error.message : "provider unavailable"}`
-          };
-        }
-        throw error;
-      }
-      if (control !== undefined) {
-        return { runId: "", status: "completed", assistantText: control };
-      }
-
-      let prepared: { selection?: EffectiveModelSelection; blocked?: string };
-      try {
-        prepared = await this.prepareCodexTurn(session);
-      } catch (error) {
-        return {
-          runId: "",
-          status: "failed",
-          assistantText: `Unable to validate ChatGPT model and subscription state before starting the turn: ${error instanceof Error ? error.message : "provider unavailable"}`
-        };
-      }
-      if (prepared.blocked) return { runId: "", status: "failed", assistantText: prepared.blocked };
-
+      if (!session) throw new Error(`Session ${input.sessionId} does not exist`);
+      if (input.message.trim() === "/newsession") return this.handleNewSessionCommand(input.sessionId);
+      const control = await this.controlResponse(session, input.message);
+      if (control !== undefined) return { runId: "", status: "completed", assistantText: control };
+      const prepared = await this.prepareCodexTurn(session);
+      if (prepared.blocked) return persist({ status: "failed", assistantText: prepared.blocked });
       await this.options.sessionStore.touchSession(input.sessionId);
-      const provenance: SchedulerProvenance = {
-        principalId: input.principalId ?? input.sessionId,
-        channelKey: input.channelKey,
-        origin: input.origin ?? (input.channelKey?.startsWith("telegram:") ? "telegram" : "web")
-      };
-      const run = await this.options.runStore.createRun(input.sessionId, input.message, input.requestJob ? "queued" : "running");
-
+      const provenance = this.provenance(input);
+      run ??= await this.options.runStore.createRun(input.sessionId, input.message, "running", undefined, provenance);
       await this.options.runStore.appendEvent({
-        runId: run.runId,
-        sessionId: input.sessionId,
-        phase: "route",
-        eventType: input.requestJob ? "queued" : "inline",
-        payload: { requestJob: Boolean(input.requestJob) },
-        timestamp: new Date().toISOString()
+        runId: run.runId, sessionId: input.sessionId, phase: "route", eventType: admitted ? "queued" : "inline",
+        payload: { requestJob: Boolean(admitted) }, timestamp: new Date().toISOString()
       });
-
-      if (input.requestJob) {
-        // Build inference context from completed turns only. The current turn
-        // is passed to the agent separately and must not be duplicated in its
-        // summaries or recent-turn snippets.
-        const queuedSessionContext = await this.buildSessionContext(session, prepared.selection);
-        await this.persistQueuedRunStart(input.sessionId, run.runId, input.message);
-        releaseAfterReturn = false;
-        void this.executeQueuedTurn(
-          run.runId,
-          input.sessionId,
-          input.message,
-          queuedSessionContext,
-          provenance,
-          input.channelKey
-        ).then(release, release);
-
-        return {
-          runId: run.runId,
-          status: "queued"
-        };
-      }
-
-      // Snapshot completed history before recording the in-flight user turn.
-      // This keeps the current request out of its own context block.
       const sessionContext = await this.buildSessionContext(session, prepared.selection);
       await this.persistQueuedRunStart(input.sessionId, run.runId, input.message);
       const outcome = await this.executeRun(run.runId, input.sessionId, input.message, sessionContext, provenance);
-      await this.persistRunOutcome(input.sessionId, run.runId, input.message, outcome);
-      if (input.channelKey && this.options.groupChatStore) {
-        await this.options.groupChatStore.appendTurn(
-          input.channelKey, run.runId, input.sessionId,
-          input.message, outcome.assistantText ?? "",
-          outcome.artifactPaths ?? []
-        );
-      }
-
-      return {
-        runId: run.runId,
-        status: outcome.status,
-        assistantText: outcome.assistantText,
-        artifactPaths: outcome.artifactPaths,
-        approvalToken: outcome.approvalToken
-      };
-    } finally {
-      if (releaseAfterReturn) {
-        release();
-      }
+      return await persist(outcome);
+    } catch (error) {
+      if (!run && !parseControlCommand(input.message)) throw error;
+      return persist({ status: "failed", assistantText: `Alfred could not complete this turn: ${error instanceof Error ? error.message : "provider unavailable"}` });
     }
   }
 

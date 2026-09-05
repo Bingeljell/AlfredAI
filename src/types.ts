@@ -209,6 +209,12 @@ export interface RunRecord {
   approvalToken?: string;
   llmUsage?: LlmUsageTotals;
   toolCalls: ToolCallRecord[];
+  ingress?: {
+    requestId?: string;
+    principalId: string;
+    channelKey?: string;
+    origin: "web" | "tui" | "telegram" | "scheduler";
+  };
   scheduler?: {
     taskId: string;
     cycleId: string;

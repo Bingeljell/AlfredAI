@@ -40,7 +40,11 @@ test("terminal submits to the same session with TUI provenance and never retries
   }) as typeof fetch);
   await assert.rejects(client.submit("telegram-session", "Continue", new AbortController().signal), /socket lost/);
   assert.equal(requests.length, 1);
-  assert.deepEqual(JSON.parse(String(requests[0]!.init.body)), { sessionId: "telegram-session", message: "Continue", requestJob: true, surface: "tui" });
+  const { requestId, ...payload } = JSON.parse(String(requests[0]!.init.body));
+  assert.match(requestId, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(payload, { sessionId: "telegram-session", message: "Continue", requestJob: true, surface: "tui" });
+  await assert.rejects(client.submit("telegram-session", "Continue", new AbortController().signal));
+  assert.equal(JSON.parse(String(requests[1]!.init.body)).requestId, requestId);
   assert.equal(new Headers(requests[0]!.init.headers).get("x-api-key"), "test-key");
   assert.equal(requests[0]!.init.redirect, "error");
 });

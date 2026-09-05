@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-09-05** > `src/runner/chatService.ts`, `src/runs/runStore.ts`, `src/types.ts`, `src/gateway/app.ts`, `src/channels/telegram/adapter.ts`, `src/tui/client.ts`, `tests/{integration/turnAdmission,unit/tui}.test.ts` > persist and acknowledge queued turns before execution, build context after preceding turns finish, and deduplicate retried terminal/Telegram submissions using durable request IDs.
+
 - **2026-09-05** > `src/runtime/{assistantTextStream,codexAppServerRuntime}.ts`, `src/types.ts`, `src/tui/screen.ts`, `src/gateway/conversationStream.ts`, `tests/unit/{assistantTextStream,codexAppServerRuntime}.test.ts` > stream redacted cumulative Codex text into persisted run previews and the TUI, retain partial output through cancellation/reconnect, and hold incomplete words to prevent split-token credential leaks.
 
 - **2026-09-05** > `src/utils/fs.ts`, `src/memory/sessionStore.ts`, `src/channels/telegram/channelSessionStore.ts`, `src/runs/runStore.ts`, `tests/unit/storeConcurrency.test.ts` > atomically replace JSON files and serialize shared-index/run mutations so concurrent surfaces, tool results, and cancellation preserve each other's state; reject mutations of corrupt indexes.

@@ -57,7 +57,7 @@ export class RunStore {
     };
   }
 
-  async createRun(sessionId: string, message: string, status: RunStatus, scheduler?: RunRecord["scheduler"]): Promise<RunRecord> {
+  async createRun(sessionId: string, message: string, status: RunStatus, scheduler?: RunRecord["scheduler"], ingress?: RunRecord["ingress"]): Promise<RunRecord> {
     const now = new Date().toISOString();
     const run: RunRecord = {
       runId: randomUUID(),
@@ -77,12 +77,21 @@ export class RunStore {
     if (scheduler) run.scheduler = scheduler;
     const safeRun = redactValue(run) as RunRecord;
     if (scheduler) safeRun.scheduler = scheduler;
+    if (ingress) safeRun.ingress = ingress;
     await this.storage.writeRun(safeRun.runId, safeRun);
     return safeRun;
   }
 
   async getRun(runId: string): Promise<RunRecord | undefined> {
     return this.storage.readRun(runId);
+  }
+
+  async findRequest(sessionId: string, principalId: string, requestId: string): Promise<RunRecord | undefined> {
+    for (const id of await this.storage.listRunIds()) {
+      const run = await this.storage.readRun(id);
+      if (run?.sessionId === sessionId && run.ingress?.principalId === principalId && run.ingress.requestId === requestId) return run;
+    }
+    return undefined;
   }
 
   async findRunBySchedulerCycle(taskId: string, cycleId: string): Promise<RunRecord | undefined> {
@@ -106,6 +115,7 @@ export class RunStore {
         updatedAt: new Date().toISOString()
       }) as RunRecord;
       if (patch.scheduler) updated.scheduler = patch.scheduler;
+      if (current.ingress) updated.ingress = current.ingress;
       await this.storage.writeRun(runId, updated);
       return updated;
     });
@@ -142,6 +152,7 @@ export class RunStore {
         toolCalls: [...current.toolCalls, redactValue(call) as ToolCallRecord],
         updatedAt: new Date().toISOString()
       }) as RunRecord;
+      if (current.ingress) updated.ingress = current.ingress;
       await this.storage.writeRun(runId, updated);
     });
   }
@@ -157,6 +168,7 @@ export class RunStore {
         llmUsage: this.mergeLlmUsage(current.llmUsage, usage, callCountDelta),
         updatedAt: new Date().toISOString()
       }) as RunRecord;
+      if (current.ingress) updated.ingress = current.ingress;
       await this.storage.writeRun(runId, updated);
     });
   }

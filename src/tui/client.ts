@@ -1,4 +1,5 @@
 import type { ConversationSnapshot, RunStatus, SessionRecord } from "../types.js";
+import { randomUUID } from "node:crypto";
 
 export interface TurnResponse {
   runId: string;
@@ -52,6 +53,7 @@ export async function* readSnapshots(body: ReadableStream<Uint8Array>, signal: A
 }
 
 export class GatewayClient {
+  private readonly pendingRequests = new Map<string, string>();
   constructor(readonly url: string, private readonly apiKey: string, private readonly fetcher: typeof fetch = fetch) {}
 
   private headers(): Record<string, string> {
@@ -86,12 +88,17 @@ export class GatewayClient {
   }
 
   async submit(sessionId: string, message: string, signal: AbortSignal): Promise<TurnResponse> {
-    // Admission currently waits on the session mutex. Never retry this POST:
-    // a disconnected response does not imply the server rejected the message.
+    // A manual retry of the same uncertain submission reuses its durable key.
+    const key = JSON.stringify([sessionId, message]);
+    const requestId = this.pendingRequests.get(key) ?? randomUUID();
+    this.pendingRequests.set(key, requestId);
     const response = await this.response("/v1/chat/turn", {
-      method: "POST", body: JSON.stringify({ sessionId, message, requestJob: true, surface: "tui" }), signal
+      method: "POST", body: JSON.stringify({ sessionId, message, requestJob: true, surface: "tui", requestId }),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)])
     });
-    return response.json() as Promise<TurnResponse>;
+    const result = await response.json() as TurnResponse;
+    this.pendingRequests.delete(key);
+    return result;
   }
 
   async cancel(runId: string, signal?: AbortSignal): Promise<string> {

@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-09-16** > `src/config/homeMigration.ts`, `scripts/alfred-cli.ts`, `tests/unit/homeMigration.test.ts`, `docs/operations/alfred-home-migration.md`, `README.md`, `docs/changelog.md` > add a preview-first, non-destructive source-install migration that copies configuration, identity, workspace, and logs through a private staging directory into an external `ALFRED_HOME`, refuses overwrites/repository targets, and leaves the legacy source intact for rollback.
+
 - **2026-09-16** > `src/config/{env.ts,paths.ts}`, `src/runtime/{specialists.ts,agentLoop.ts,codexAppServerRuntime.ts}`, `src/tui/index.ts`, `.env.example`, `README.md`, `tests/unit/paths.test.ts`, `docs/changelog.md` > introduce explicit package, private-home, workspace, and tool-project path resolution with an opt-in `ALFRED_HOME` compatibility phase, keeping existing source installs unchanged while allowing isolated instances and cwd-independent package resources.
 
 - **2026-09-16** > `src/runtime/{specialists.ts,operatingInstructions.ts}`, `tests/security/publicationBoundary.test.ts`, `README.md`, `docs/architecture/npm-distribution-and-privacy.md`, `docs/changelog.md` > preserve generic memory, temporal, efficiency, output, and self-development guidance in a packaged operating contract while keeping `AGENTS.md` contributor-only; define an explicit, upgrade-safe user-space extension path so npm-installed Alfred instances can build tools without modifying package files.

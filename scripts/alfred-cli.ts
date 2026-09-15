@@ -7,12 +7,13 @@ import { migrateAlfredHome } from "../src/config/homeMigration.js";
 import { diagnoseAlfred } from "../src/config/doctor.js";
 import { resolveAlfredPaths } from "../src/config/paths.js";
 import { initializeAlfredHome, SETUP_PROVIDERS, type SetupProvider } from "../src/config/setup.js";
+import { MacServiceManager } from "../src/config/service.js";
 import { ExtensionManager } from "../src/extensions/manager.js";
 
 const DEFAULT_LOGIN_TIMEOUT_MS = 10 * 60_000;
 
 function usage(): never {
-  throw new Error("Usage: alfred setup [--name NAME] [--provider PROVIDER] [--model MODEL] [--home PATH] | alfred doctor [--home PATH] [--json] | alfred tools <list|create|test|enable|disable> | alfred start | alfred tui [--session ID] [--url URL] | alfred migrate home [--to PATH] [--source-workspace PATH] [--apply] | alfred auth login openai [--device-code] [--timeout-ms <ms>] | alfred auth status openai | alfred auth logout openai");
+  throw new Error("Usage: alfred setup [--name NAME] [--provider PROVIDER] [--model MODEL] [--home PATH] | alfred doctor [--home PATH] [--json] | alfred service <install|status|restart|uninstall> | alfred tools <list|create|test|enable|disable> | alfred start | alfred tui [--session ID] [--url URL] | alfred migrate home [--to PATH] [--source-workspace PATH] [--apply] | alfred auth login openai [--device-code] [--timeout-ms <ms>] | alfred auth status openai | alfred auth logout openai");
 }
 
 type CliAccountService = Pick<CodexAccountService, "startLogin" | "waitForLogin" | "readAccount" | "logout" | "close">;
@@ -23,6 +24,7 @@ export interface AlfredCliOptions {
   timeoutMs?: number;
   signalSource?: NodeJS.Process;
   prompt?: (question: string) => Promise<string>;
+  serviceManager?: Pick<MacServiceManager, "install" | "status" | "restart" | "uninstall">;
 }
 
 async function runSetup(args: string[], options: AlfredCliOptions): Promise<number> {
@@ -128,6 +130,21 @@ async function runTools(args: string[], write: (message: string) => void): Promi
   throw new Error(`Unknown tools action: ${action}`);
 }
 
+async function runService(args: string[], options: AlfredCliOptions): Promise<number> {
+  const action = args[0];
+  if (!action || args.length !== 1 || !["install", "status", "restart", "uninstall"].includes(action)) {
+    throw new Error("Usage: alfred service <install|status|restart|uninstall>");
+  }
+  const manager = options.serviceManager ?? new MacServiceManager({
+    paths: resolveAlfredPaths(),
+    entryPath: process.argv[1]!,
+    execArguments: process.execArgv
+  });
+  const result = await manager[action as "install" | "status" | "restart" | "uninstall"]();
+  (options.write ?? ((message: string) => console.log(message)))(JSON.stringify(result, null, 2));
+  return result.action === "status" && (!result.installed || !result.running) ? 1 : 0;
+}
+
 function parseTimeout(args: string[]): number {
   const index = args.indexOf("--timeout-ms");
   if (index < 0) return DEFAULT_LOGIN_TIMEOUT_MS;
@@ -189,11 +206,12 @@ function printLoginResult(progress: OpenAiLoginProgress, write: (message: string
 
 export async function runCli(args: string[], options: AlfredCliOptions = {}): Promise<number> {
   if (args[0] === "--help" || args[0] === "-h" || args[0] === "help") {
-    (options.write ?? ((message: string) => console.log(message)))("Usage: alfred setup | alfred doctor | alfred tools <list|create|test|enable|disable> | alfred start | alfred tui | alfred migrate home | alfred auth <login|status|logout> openai");
+    (options.write ?? ((message: string) => console.log(message)))("Usage: alfred setup | alfred doctor | alfred service <install|status|restart|uninstall> | alfred tools <list|create|test|enable|disable> | alfred start | alfred tui | alfred migrate home | alfred auth <login|status|logout> openai");
     return 0;
   }
   if (args[0] === "setup") return runSetup(args.slice(1), options);
   if (args[0] === "doctor") return runDoctor(args.slice(1), options.write ?? ((message: string) => console.log(message)));
+  if (args[0] === "service") return runService(args.slice(1), options);
   if (args[0] === "tools") return runTools(args.slice(1), options.write ?? ((message: string) => console.log(message)));
   if (args[0] === "start") {
     await import("../src/gateway/server.js");

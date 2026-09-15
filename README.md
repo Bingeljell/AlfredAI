@@ -28,6 +28,10 @@ Npm-installed Alfred instances expand through digest-approved user-space
 extensions rather than editing the replaceable package. See the
 [extension trust model and commands](docs/operations/extensions.md).
 
+On macOS, `alfred service install` creates and starts a neutral per-user
+LaunchAgent. Use `alfred service status`, `alfred service restart`, and
+`alfred service uninstall` to manage it; uninstalling preserves `ALFRED_HOME`.
+
 ## What Alfred Does Today
 
 - **General-purpose ReAct agent** — research, writing, lead generation, ops, file work, shell commands
@@ -468,71 +472,20 @@ This unifies the former redact/scrubber pair into one implementation so LLM cont
 
 ## Run as a background service (macOS launchctl)
 
-To have Alfred start automatically on login and stay running, set it up as a LaunchAgent.
-
-### 1. Find your paths
-
-```bash
-which pnpm          # e.g. /Users/yourname/.nvm/versions/node/v22.x.x/bin/pnpm
-pwd                 # run from the repo root — e.g. /Users/yourname/Projects/AlfredAI
-echo $HOME          # e.g. /Users/yourname
-```
-
-### 2. Create the plist
-
-Copy the template and fill in your paths:
+To start Alfred automatically on login and keep it running, install the
+generated per-user LaunchAgent after setup:
 
 ```bash
-cp scripts/com.alfred.plist.template ~/Library/LaunchAgents/com.alfred.plist
+alfred service install
+alfred service status
+alfred service restart
+alfred service uninstall
 ```
 
-Edit `~/Library/LaunchAgents/com.alfred.plist` and replace the four placeholders:
-
-| Placeholder | Replace with |
-|---|---|
-| `PNPM_PATH` | output of `which pnpm` |
-| `PROJECT_DIR` | absolute path to repo root |
-| `HOME_DIR` | your home directory (`$HOME`) |
-| `NODE_BIN_DIR` | the `bin/` directory containing pnpm (parent of `PNPM_PATH`) |
-
-Example for a user `yourname` with nvm node v22:
-
-```xml
-<string>/Users/yourname/.nvm/versions/node/v22.19.0/bin/pnpm</string>
-...
-<string>/Users/yourname/Projects/AlfredAI</string>
-...
-<string>/Users/yourname</string>
-<string>/Users/yourname/.nvm/versions/node/v22.19.0/bin:/usr/local/bin:/usr/bin:/bin</string>
-```
-
-### 3. Load the service
-
-```bash
-launchctl load ~/Library/LaunchAgents/com.alfred.plist
-```
-
-Alfred will start immediately and restart automatically if it crashes.
-
-### 4. Manage Alfred
-
-```bash
-# Stop
-launchctl stop com.alfred
-
-# Start
-launchctl start com.alfred
-
-# Restart (after code changes or config updates)
-launchctl stop com.alfred && launchctl start com.alfred
-
-# Unload completely (disable autostart)
-launchctl unload ~/Library/LaunchAgents/com.alfred.plist
-
-# Watch logs
-tail -f logs/alfred.log
-tail -f logs/alfred-error.log
-```
+The command validates and writes `~/Library/LaunchAgents/com.alfred.agent.plist`,
+uses modern `launchctl` user-domain operations, and stores output under
+`ALFRED_HOME/logs`. Uninstalling the service does not delete configuration,
+identity, conversations, extensions, or other files in `ALFRED_HOME`.
 
 ---
 

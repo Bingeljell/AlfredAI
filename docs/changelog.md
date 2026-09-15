@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-09-15** > `src/tui/client.ts`, `tests/unit/tui.test.ts` > keep empty API test fixtures out of the terminal conversation picker while preserving API sessions with real activity; clean the existing empty local records separately.
+
 - **2026-09-15** > `webui/{index.html,app.js,styles.css}`, `tests/{setup/env.mjs,unit/webUiScheduler.test.ts}` > add the Scheduled Tasks web panel on top of the shared-conversation release, preserve account cleanup, and isolate test sessions from the live workspace.
 
 - **2026-09-06** > `README.md`, `docs/architecture/tui.md` > document streaming, retry/reconnect behavior, older-history access, explicit channel/account linking, and gateway restart requirements.

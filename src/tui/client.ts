@@ -7,6 +7,28 @@ export interface TurnResponse {
   assistantText?: string;
 }
 
+function hasSessionActivity(session: SessionRecord): boolean {
+  const memory = session.workingMemory;
+  if (!memory) return false;
+  const nonEmpty = (value: unknown): boolean => Array.isArray(value) ? value.length > 0 : Boolean(value);
+  return nonEmpty(memory.recentTurns)
+    || nonEmpty(memory.conversationWindow)
+    || nonEmpty(memory.recentOutputs)
+    || nonEmpty(memory.lastRunId)
+    || nonEmpty(memory.lastCompletedRunId)
+    || nonEmpty(memory.activeObjective)
+    || nonEmpty(memory.lastOutcomeSummary)
+    || nonEmpty(memory.activeThreadSummary)
+    || nonEmpty(memory.sessionSummary)
+    || nonEmpty(memory.lastArtifacts)
+    || nonEmpty(memory.unresolvedItems);
+}
+
+/** Hide empty integration-test fixtures without hiding API conversations that contain work. */
+export function shouldShowSession(session: SessionRecord): boolean {
+  return session.name !== "API Session" || hasSessionActivity(session);
+}
+
 /** SSE framing is independent of network chunks (including split UTF-8). */
 export async function* readSnapshots(body: ReadableStream<Uint8Array>, signal: AbortSignal, initial?: ConversationSnapshot): AsyncGenerator<ConversationSnapshot, void> {
   const reader = body.getReader();
@@ -98,7 +120,7 @@ export class GatewayClient {
   }
 
   async sessions(signal?: AbortSignal): Promise<SessionRecord[]> {
-    return (await this.json<{ sessions: SessionRecord[] }>("/v1/sessions?limit=100", { signal })).sessions;
+    return (await this.json<{ sessions: SessionRecord[] }>("/v1/sessions?limit=100", { signal })).sessions.filter(shouldShowSession);
   }
 
   async create(name: string, signal?: AbortSignal): Promise<SessionRecord> {

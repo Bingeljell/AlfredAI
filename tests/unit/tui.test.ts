@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { GatewayClient, readSnapshots } from "../../src/tui/client.js";
+import { GatewayClient, readSnapshots, shouldShowSession } from "../../src/tui/client.js";
 import { Composer, cellWidth, graphemes, plain, transcript, wrap } from "../../src/tui/screen.js";
 import { parseTuiArgs } from "../../src/tui/index.js";
 import type { ConversationSnapshot, RunRecord } from "../../src/types.js";
@@ -9,6 +9,13 @@ const snapshot: ConversationSnapshot = {
   session: { id: "telegram-session", name: "Research 東京", createdAt: "2026-09-05T12:00:00Z", updatedAt: "2026-09-05T12:00:00Z", status: "active" },
   runs: [], notifications: []
 };
+
+test("terminal picker hides empty API fixtures but preserves real API conversations", () => {
+  const base = { id: "api", name: "API Session", createdAt: "2026-09-15T00:00:00Z", updatedAt: "2026-09-15T00:00:00Z", status: "active" as const };
+  assert.equal(shouldShowSession(base), false);
+  assert.equal(shouldShowSession({ ...base, workingMemory: { lastRunId: "run-1" } }), true);
+  assert.equal(shouldShowSession({ ...base, name: "Terminal conversation" }), true);
+});
 
 test("SSE decoding survives split UTF-8, CRLF, heartbeats, and multiple snapshots", async () => {
   const bytes = new TextEncoder().encode(`event: heartbeat\r\ndata: {}\r\n\r\nevent: snapshot\r\ndata: ${JSON.stringify(snapshot)}\r\n\r\nevent: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`);

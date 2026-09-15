@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-09-15** > `docs/architecture/npm-distribution-and-privacy.md`, `docs/changelog.md` > define the npm product/source-development split, private `ALFRED_HOME` boundary, onboarding and service lifecycle, upgrade/release gates, README restructure, and a public-repository privacy audit with concrete pre-publication blockers.
+
 - **2026-09-15** > `src/tui/client.ts`, `tests/unit/tui.test.ts` > keep empty API test fixtures out of the terminal conversation picker while preserving API sessions with real activity; clean the existing empty local records separately.
 
 - **2026-09-15** > `webui/{index.html,app.js,styles.css}`, `tests/{setup/env.mjs,unit/webUiScheduler.test.ts}` > add the Scheduled Tasks web panel on top of the shared-conversation release, preserve account cleanup, and isolate test sessions from the live workspace.

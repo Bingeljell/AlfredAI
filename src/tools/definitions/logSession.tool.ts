@@ -19,7 +19,7 @@ export const toolDefinition: ToolDefinition<typeof LogSessionInputSchema> = {
     "Save a summary of the current session to Alfred's long-term knowledge base. Call at the end of any substantive session — completed tasks, key decisions, findings, or context that would be useful in future sessions. The summary is indexed by QMD and becomes searchable via rag_memory_query.",
   inputSchema: LogSessionInputSchema,
   inputHint:
-    "Write a rich markdown summary: what was discussed/built, key decisions, outcomes, and anything Nikhil should remember. Include a title. Optionally set date (YYYY-MM-DD) to override today's date.",
+    "Write a rich markdown summary: what was discussed/built, key decisions, outcomes, and anything the user should remember. Include a title. Optionally set date (YYYY-MM-DD) to override today's date.",
   async execute(input, context) {
     const date = input.date ?? new Date().toISOString().slice(0, 10);
     const title = input.title ?? `Session — ${date}`;

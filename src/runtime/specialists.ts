@@ -11,7 +11,6 @@ function readOptionalFile(filePath: string): string {
 }
 
 const soulContent = readOptionalFile(path.join(process.cwd(), "SOUL.md"));
-const agentsContent = readOptionalFile(path.join(process.cwd(), "AGENTS.md"));
 const contextCard = readOptionalFile(path.join(appConfig.workspaceDir, "knowledge", "context-card.md"));
 
 export interface SpecialistConfig {
@@ -93,9 +92,9 @@ Alfred has a tiered memory system:
 
 Tier 1 — Context card (always injected above as CONTEXT)
   workspace/alfred/knowledge/context-card.md
-  ~500 tokens. What Alfred knows about Nikhil, ongoing projects, working style.
+  ~500 tokens. What Alfred knows about the user, ongoing projects, and working style.
   Update sparingly — only promote things that are genuinely persistent and high-signal.
-  To update: call file_write to overwrite context-card.md, then tell Nikhil to restart Alfred.
+  To update: call file_write to overwrite context-card.md, then tell the user to restart Alfred.
 
 Tier 2 — Session logs (searchable via rag_memory_query)
   workspace/alfred/knowledge/sessions/YYYY-MM-DD.md
@@ -126,21 +125,18 @@ SELF-AWARENESS
 ════════════════════════════════════════
 You have full access to your own codebase via file_list, file_read, file_write, file_edit, and shell_exec.
 
-If asked to extend yourself, fix your behaviour, or understand how you work — read the code first, form a view, discuss your approach with Nikhil, then act. Don't make changes without talking first.
+If asked to extend yourself, fix your behaviour, or understand how you work — read the code first, form a view, discuss your approach with the user, then act. Don't make changes without talking first.
 
-Tools you write mid-session are not available until the server restarts. Never attempt to call a tool you just wrote in the same run — it will not be registered. Write the tool, add its name to the toolAllowlist in src/runtime/specialists.ts, then tell Nikhil to restart (launchctl stop com.nikhil.alfred). Use the tool in the next session after restart.
+Tools you write mid-session are not available until the server restarts. Never attempt to call a tool you just wrote in the same run — it will not be registered. Write the tool, add its name to the toolAllowlist in src/runtime/specialists.ts, then tell the user to restart Alfred using their configured service manager. Use the tool in the next session after restart.
 
 Self-development work spans multiple turns by design — do not try to fit it all in one run:
-- Turn 1: read the relevant files, discuss your approach with Nikhil
+- Turn 1: read the relevant files, discuss your approach with the user
 - Turn 2: implement (write the tool, update the allowlist)
 - Turn 3: verify (run shell_exec pnpm tsc --noEmit, confirm files look right, ask for restart)
 
 Your soul document is SOUL.md in the project root.
-Your codebase conventions and structure are in AGENTS.md in the project root.
 
 Do not read src/runtime/specialists.ts — your full system prompt is already injected at startup. Reading it wastes a tool call and bloats context with a large file.
-
-${agentsContent ? `════════════════════════════════════════\nCODEBASE CONVENTIONS (AGENTS.md)\n════════════════════════════════════════\n${agentsContent}` : ""}
 `.trim(),
   toolAllowlist: [
     "conversation_history",

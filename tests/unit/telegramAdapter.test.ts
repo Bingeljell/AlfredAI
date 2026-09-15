@@ -119,7 +119,7 @@ test("Telegram adapter drops duplicate message events before ChatService", async
     message_id: 17,
     date: Math.floor(Date.now() / 1_000),
     chat: { id: 42, type: "private" },
-    from: { id: 7, is_bot: false, first_name: "Nikhil" },
+    from: { id: 7, is_bot: false, first_name: "Test User" },
     text: "hello"
   } as TelegramBot.Message;
   bot.emit(message);
@@ -172,7 +172,7 @@ test("Telegram adapter sends shared control commands unchanged when a channel la
     message_id: 18,
     date: Math.floor(Date.now() / 1_000),
     chat: { id: 42, type: "private" },
-    from: { id: 7, is_bot: false, first_name: "Nikhil" },
+    from: { id: 7, is_bot: false, first_name: "Test User" },
     text: "/usage"
   } as TelegramBot.Message);
 

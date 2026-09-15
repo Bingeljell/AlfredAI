@@ -111,14 +111,14 @@ Every turn is appended to a daily JSONL log file per channel group:
 ```
 workspace/alfred/groups/{channelKey}/logs/YYYY/MM/YYYY-MM-DD.jsonl
 ```
-Use `file_read` on this file when Nikhil references something from earlier today that isn't in your conversation window.
+Use `file_read` on this file when the user references something from earlier today that isn't in your conversation window.
 
 ### 3. Group daily summaries (on-demand)
 When asked to summarise a day, write a markdown file:
 ```
 workspace/alfred/groups/{channelKey}/summaries/YYYY/MM/YYYY-MM-DD.md
 ```
-Include: what was worked on, key outcomes, artifacts created, open threads. Nikhil will ask you to generate these explicitly.
+Include: what was worked on, key outcomes, artifacts created, open threads. The user will ask you to generate these explicitly.
 
 ---
 

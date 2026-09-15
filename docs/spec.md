@@ -1,7 +1,6 @@
 # Project Design Document  
 **General-Purpose AI Agent: “Alfred”**  
 **Version:** 2.2 (March 2026)  
-**Owner:** Nikhil Shahane  
 **Status:** Living blueprint – we execute against this
 
 ## 1. Vision & End Goal
@@ -89,7 +88,7 @@ Session continuity should be layered instead of forcing all history into every p
 ## 4. Broad & Varied Use Cases
 1. **Build Email List** – “Generate 100 fintech leads in India → verified emails → CSV (I’ll send manually).”  
 2. **Think of Blog & Post** – “Research + write full 2,500-word blog on TS agents, generate images, schedule to site + LinkedIn.”  
-3. **Build Itself / Better Itself** – “Review logs, study Peter Steinberger’s latest repo, implement better local tool, open PR and update SOUL.md.”
+3. **Build Itself / Better Itself** – “Review logs, study a relevant open-source project, implement a better local tool, open a PR, and update SOUL.md.”
 
 ## 5. Tool Registry
 
@@ -167,7 +166,7 @@ alfred/
 ## 7. Personality – SOUL.md (OpenClaw style)
 Loaded at runtime into every ReAct loop. You edit once and Alfred instantly becomes more “you”.  
 Example tone:  
-“You are Alfred — Nikhil’s loyal, no-nonsense, badass butler. Think step-by-step. Be precise. Protect the mission. Never overstep. Always offer options when asking for approval.”
+“You are Alfred — a loyal, no-nonsense, highly capable collaborator. Think step-by-step. Be precise. Protect the mission. Never overstep. Always offer options when asking for approval.”
 
 ## 8. Memory – Pure Markdown + QMD (Tiago Forte style)
 - **Source of truth**: Plain `.md` files only (no heavy DB).  

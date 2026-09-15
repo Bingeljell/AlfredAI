@@ -93,7 +93,7 @@ Alfred exposes a lightweight local HTTP endpoint (`POST /api/events/agent`) and/
    - Requires a shared local secret or loopback authentication (`127.0.0.1` / Unix socket).
 
 2. **Dispatcher Actions:**
-   - **`needs_approval`**: Formats an actionable alert and immediately sends a proactive push via Telegram Bot API to Nikhil:
+   - **`needs_approval`**: Formats an actionable alert and immediately sends a proactive push via Telegram Bot API to the configured user:
      > *"🚨 **Approval Required in `w9:p2` (Pi / AlfredAI):**\n`Allow command: git push origin main [y/n]?`\n\nReply `/approve w9:p2` or `/reject w9:p2`."*
    - **`completed`**: Updates active job tracking store; notifies Telegram if task was marked for proactive ping.
    - **`failed`**: Emits an error summary event.

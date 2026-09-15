@@ -24,7 +24,7 @@ Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reas
 ## Important notes as of 27th August 2026
 
 - **Personality** - Alfred's personality is meant to be a first principle's thinker, but not one who will overthink.
-- **Ownership** - There's no onboarding right now, so you'll have to edit `SOUL.md` yourself and switch out the name, else Alfred's going to think he's working for me
+- **Ownership** - There's no onboarding wizard yet, so source-install users should review the generic `SOUL.md` template before running Alfred.
 - **Features** - Alfred is substantially built out (browser control, agent events, persistent memory, remote agent orchestration), but he's still evolving — new capabilities land regularly and behaviour may shift between releases.
 
 ### Recent reliability fixes
@@ -525,7 +525,7 @@ src/utils/          — redaction (credential scrubbing), path safety
 webui/              — Web UI
 workspace/alfred/scheduler/ — persisted scheduler tasks, deliveries, and cycle logs
 SOUL.md             — Alfred's identity and values
-AGENTS.md           — codebase conventions (also injected into Alfred's system prompt)
+AGENTS.md           — developer-only codebase conventions; never injected at runtime
 docs/               — architecture docs, spec, changelog, feature specs
 ```
 

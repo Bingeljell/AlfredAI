@@ -11,6 +11,7 @@ import type { SchedulerTaskApi } from "../scheduler/api.js";
 import type { SchedulerProvenance } from "../scheduler/notifier.js";
 import type { SchedulerTurnControl } from "../scheduler/api.js";
 import type { TurnExecutionProfile } from "./executionProfile.js";
+import { appConfig } from "../config/env.js";
 import {
   buildGroundingFallback,
   buildGroundingRepairInstruction,
@@ -224,7 +225,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<RunOutcom
   } = options;
 
   const deadlineAtMs = Date.now() + maxDurationMs;
-  const projectRoot = process.cwd();
+  const projectRoot = appConfig.toolProjectRoot;
 
   // Mutable agent state (shared across all tool executions in this run)
   const state: ToolState = {

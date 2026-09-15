@@ -11,7 +11,7 @@ function readOptionalFile(filePath: string): string {
   }
 }
 
-const soulContent = readOptionalFile(path.join(process.cwd(), "SOUL.md"));
+const soulContent = readOptionalFile(path.join(appConfig.packageRoot, "SOUL.md"));
 const contextCard = readOptionalFile(path.join(appConfig.workspaceDir, "knowledge", "context-card.md"));
 
 export interface SpecialistConfig {

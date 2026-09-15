@@ -234,6 +234,8 @@ curl -X POST 'http://localhost:9001/v1/scheduled-tasks/<task-id>/cancel?sessionI
 | Variable | Default | Purpose |
 |---|---|---|
 | `ALFRED_WORKSPACE_DIR` | `./workspace/alfred` | Where Alfred stores sessions, runs, knowledge, groups, browser screenshots, and agent-event logs |
+| `ALFRED_HOME` | unset during compatibility phase | Opt into private state rooted at this directory; when set, the default workspace becomes `ALFRED_HOME/workspace` |
+| `ALFRED_PROJECT_ROOT` | current launch directory | Directory deliberately exposed to Alfred's project-oriented file and shell tools |
 | `ALFRED_CONCURRENCY` | `2` | Concurrent runs |
 | `ALFRED_RUN_MAX_STEPS` | `6` | Steps per run |
 | `ALFRED_AGENT_MAX_DURATION_MS` | `600000` | Hard deadline per run |

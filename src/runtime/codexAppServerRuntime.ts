@@ -7,7 +7,7 @@ import { scrubToolOutput } from "../tools/outputScrubber.js";
 import { evaluateApprovalNeed } from "./approvalPolicy.js";
 import { ALFRED_AGENT } from "./specialists.js";
 import type { AgentRuntime, AgentRuntimeServices, AgentTurnRequest } from "./agentRuntime.js";
-import { getPolicyMode } from "../config/env.js";
+import { appConfig, getPolicyMode } from "../config/env.js";
 import type { CodexModel, CodexSubscriptionService } from "../provider/codex/subscriptionService.js";
 import { reachedRateLimit } from "../runner/chatControls.js";
 import { CodexAppServerLlmProvider } from "../provider/codex/appServerLlmProvider.js";
@@ -108,7 +108,7 @@ export class CodexAppServerRuntime implements AgentRuntime {
     const state: ToolState = { artifacts: [], fetchedPages: [], researchSourceCards: [] };
     const context: ToolContext = {
       runId: request.runId, sessionId: request.sessionId, message: request.message, deadlineAtMs: Date.now() + maxDurationMs,
-      policyMode, projectRoot: process.cwd(), runStore, searchManager: this.options.searchManager, workspaceDir: this.options.workspaceDir,
+      policyMode, projectRoot: appConfig.toolProjectRoot, runStore, searchManager: this.options.searchManager, workspaceDir: this.options.workspaceDir,
       defaults: { searchMaxResults: this.options.searchMaxResults, browseConcurrency: this.options.browseConcurrency }, state,
       browser: { pinchtabBaseUrl: this.options.pinchtabBaseUrl, enablePlaywright: this.options.enablePlaywright },
       isCancellationRequested: () => runStore.isCancellationRequested(request.runId), addArtifact: (path) => state.artifacts.push(path),

@@ -27,6 +27,7 @@ const EnvSchema = z.object({
   ALFRED_HOME: z.string().optional(),
   ALFRED_PROJECT_ROOT: z.string().optional(),
   ALFRED_PACKAGE_MODE: z.enum(["true", "false"]).optional(),
+  ALFRED_ENABLE_EXTENSIONS: z.enum(["true", "false"]).default("false"),
   // ─── LLM provider ─────────────────────────────────────────────────────────
   ALFRED_LLM_PROVIDER: z.enum(["openai", "anthropic", "gemini", "ollama", "lmstudio", "openrouter", "codex"]).default("openai"),
   ALFRED_MODEL_FAST: z.string().default("gpt-4o-mini"),   // cheap/fast: classification, session extractor
@@ -143,6 +144,7 @@ export const appConfig = {
   runDir: paths.runDir,
   backupsDir: paths.backupsDir,
   extensionsDir: paths.extensionsDir,
+  enableExtensions: parsed.ALFRED_ENABLE_EXTENSIONS === "true",
   toolProjectRoot: paths.toolProjectRoot,
   env: parsed.ALFRED_ENV,
   port: parsed.PORT,

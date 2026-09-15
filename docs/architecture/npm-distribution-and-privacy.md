@@ -188,15 +188,19 @@ installed package. Add a versioned extension system under
 - `alfred tools create`, `install`, `test`, `enable`, `disable`, and `list`
   commands;
 - an explicit review and activation step before executable code is loaded;
-- isolated build/test output and bounded execution permissions;
+- isolated build/test output, digest-bound activation, and an explicit warning
+  that the initial trusted-JavaScript format shares Alfred's host permissions;
 - registry errors that disable one extension without preventing Alfred from
   starting;
 - upgrade compatibility checks and a user-controlled migration path.
 
 Do not silently execute arbitrary JavaScript merely because it exists in a
-user directory. Alfred may author and test an extension, but activation must
-remain an explicit trust decision. This preserves self-expansion for npm users
-while keeping core product changes in the source-development workflow.
+user directory. Alfred may author and syntax-test an extension without running
+it, but activation of the exact code digest must remain an explicit trust
+decision. Capability declarations are review metadata until process-level
+enforcement exists and must never be presented as a sandbox. This preserves
+self-expansion for npm users while keeping core product changes in the
+source-development workflow.
 
 ## CLI and onboarding
 

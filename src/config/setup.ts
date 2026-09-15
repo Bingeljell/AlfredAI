@@ -97,6 +97,7 @@ export async function initializeAlfredHome(options: SetupOptions): Promise<Setup
     `ALFRED_MODEL_SMART=${quoteEnv(model)}`,
     `ALFRED_MODEL_FAST=${quoteEnv(model)}`,
     "ALFRED_SCHEDULER_ENABLED=false",
+    "ALFRED_ENABLE_EXTENSIONS=true",
     "",
     "# Add only the credential required by the selected API-key provider.",
     "OPENAI_API_KEY=",

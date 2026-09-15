@@ -24,6 +24,10 @@ rerun. API keys are never requested through visible terminal input; setup tells
 you which key to add to the mode-`0600` configuration file, or directs Codex
 users through `alfred auth login openai`.
 
+Npm-installed Alfred instances expand through digest-approved user-space
+extensions rather than editing the replaceable package. See the
+[extension trust model and commands](docs/operations/extensions.md).
+
 ## What Alfred Does Today
 
 - **General-purpose ReAct agent** — research, writing, lead generation, ops, file work, shell commands

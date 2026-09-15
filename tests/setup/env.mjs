@@ -1,3 +1,7 @@
+import { mkdtempSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 // Test hermeticity — loaded via `node --import` before any test module.
 //
 // The developer's real .env often contains an auto-generated ALFRED_API_KEY.
@@ -12,6 +16,11 @@ process.env.ALFRED_API_KEY = "";
 // Keep gateway integration tests deterministic even when a developer's .env
 // enables the opt-in scheduler. dotenv will not overwrite this explicit value.
 process.env.ALFRED_SCHEDULER_ENABLED = "false";
+
+// Keep gateway integration tests hermetic. In particular, the sessions API test
+// creates an "API Session" fixture; never let that fixture mutate the operator's
+// live workspace/alfred/sessions/sessions.json and create phantom Web UI tabs.
+process.env.ALFRED_WORKSPACE_DIR = mkdtempSync(path.join(os.tmpdir(), "alfred-integration-"));
 
 // Same reasoning for the agent-event webhook: give tests a deterministic shared
 // secret so the /api/events/agent auth path is exercised (loopback-only mode is

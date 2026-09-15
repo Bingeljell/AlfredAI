@@ -27,6 +27,7 @@
         <button class="new-session-btn" id="new-session-btn">+ New session</button>
         <div class="sidebar-nav">
           <button class="snav-item" id="nav-debug">Debug</button>
+          <button class="snav-item" id="nav-scheduled-tasks">Tasks</button>
           <button class="snav-item" id="nav-settings">Settings</button>
         </div>
       </div>
@@ -68,6 +69,7 @@
           <button class="dtab active" data-tab="inspector">Live</button>
           <button class="dtab" data-tab="telemetry">Telemetry</button>
           <button class="dtab" data-tab="status">Status</button>
+          <button class="dtab" data-tab="scheduler">Tasks</button>
           <button class="dtab" data-tab="settings">Config</button>
         </div>
         <button class="ghost-btn" id="debug-close-btn">✕</button>
@@ -136,6 +138,18 @@
             <div class="dinspect-label">Channels</div>
             <div id="status-channel-card" class="dstatus-body"></div>
           </div>
+        </div>
+
+        <div class="dpane" id="dpane-scheduler">
+          <div class="dinspect-header">
+            <div>
+              <div class="dinspect-label">Automation</div>
+              <div class="scheduler-summary" id="scheduler-summary">Loading scheduled tasks…</div>
+            </div>
+            <button class="ghost-btn" id="refresh-scheduled-tasks">Refresh</button>
+          </div>
+          <div class="scheduler-status-grid" id="scheduler-status-grid"></div>
+          <div class="scheduled-task-list" id="scheduled-task-list"></div>
         </div>
 
         <div class="dpane" id="dpane-settings">

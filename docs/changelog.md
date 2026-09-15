@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-09-15** > `webui/{index.html,app.js,styles.css}`, `tests/{setup/env.mjs,unit/webUiScheduler.test.ts}` > add the Scheduled Tasks web panel on top of the shared-conversation release, preserve account cleanup, and isolate test sessions from the live workspace.
+
 - **2026-09-06** > `README.md`, `docs/architecture/tui.md` > document streaming, retry/reconnect behavior, older-history access, explicit channel/account linking, and gateway restart requirements.
 
 - **2026-09-06** > `src/runs/{runStore,storage/*}.ts`, `tests/unit/runReplay.test.ts` > replay run lifecycle events across daily log boundaries, including runs that span midnight or encounter clock changes.

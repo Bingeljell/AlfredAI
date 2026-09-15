@@ -2,6 +2,7 @@ const CHAT_RUN_CAP = 24;
 const TELEMETRY_EVENT_CAP = 400;
 const RAW_VIEW_CAP = 120_000;
 const POLL_INTERVAL_MS = 4_000;
+const SCHEDULED_TASK_REFRESH_MS = 5_000;
 const PROVIDER_REFRESH_MS = 60_000;
 const CHAT_THINKING_LINE_COUNT = 16;
 const CHAT_THINKING_THROTTLE_MS = 1_500;
@@ -15,11 +16,16 @@ const state = {
   providerStatus: null,
   llmStatus: null,
   channelSessionMap: {},
+  scheduledTasks: [],
+  schedulerStatus: null,
+  schedulerError: null,
   drawerOpen: false,
   drawerTab: 'inspector',
   telemetryMode: 'formatted',
   runPollTimer: null,
   providerTimer: null,
+  schedulerTimer: null,
+  schedulerCountdownTimer: null,
   isSending: false,
   telemetryFilter: '',
   thinkingCache: new Map(),
@@ -36,6 +42,7 @@ const els = {
   sessionList: document.getElementById('session-list'),
   newSessionBtn: document.getElementById('new-session-btn'),
   navDebug: document.getElementById('nav-debug'),
+  navScheduledTasks: document.getElementById('nav-scheduled-tasks'),
   navSettings: document.getElementById('nav-settings'),
   activeSessionName: document.getElementById('active-session-name'),
   channelBadge: document.getElementById('channel-badge'),
@@ -54,6 +61,7 @@ const els = {
   dpaneInspector: document.getElementById('dpane-inspector'),
   dpaneTelemetry: document.getElementById('dpane-telemetry'),
   dpaneStatus: document.getElementById('dpane-status'),
+  dpaneScheduler: document.getElementById('dpane-scheduler'),
   dpaneSettings: document.getElementById('dpane-settings'),
   settingsAccountCard: document.getElementById('settings-account-card'),
   inspectorRunStatus: document.getElementById('inspector-run-status'),
@@ -78,6 +86,10 @@ const els = {
   statusProviderCard: document.getElementById('status-provider-card'),
   statusSessionCard: document.getElementById('status-session-card'),
   statusChannelCard: document.getElementById('status-channel-card'),
+  schedulerSummary: document.getElementById('scheduler-summary'),
+  schedulerStatusGrid: document.getElementById('scheduler-status-grid'),
+  scheduledTaskList: document.getElementById('scheduled-task-list'),
+  refreshScheduledTasks: document.getElementById('refresh-scheduled-tasks'),
   settingsUiCard: document.getElementById('settings-ui-card'),
   modalBackdrop: document.getElementById('modal-backdrop'),
   sessionName: document.getElementById('session-name'),
@@ -210,6 +222,41 @@ function formatElapsedMs(value) {
   return `${minutes}m ${seconds}s`;
 }
 
+function formatCountdown(iso) {
+  if (!iso) return 'No next run scheduled';
+  const dueAt = new Date(iso).getTime();
+  if (!Number.isFinite(dueAt)) return 'Invalid schedule';
+  const delta = dueAt - Date.now();
+  if (Math.abs(delta) < 1_000) return 'Due now';
+  if (delta > 0) return `in ${formatElapsedMs(delta)}`;
+  return `${formatElapsedMs(Math.abs(delta))} overdue`;
+}
+
+function scheduledTaskKindLabel(kind) {
+  switch (kind) {
+    case 'wake_turn': return 'Wake';
+    case 'event_subscription': return 'Event';
+    case 'watch': return 'Watch';
+    case 'reminder': return 'Reminder';
+    default: return kind || 'Task';
+  }
+}
+
+function scheduledTaskDetail(task) {
+  if (task.kind === 'reminder') return task.reminderText || 'Reminder notification';
+  if (task.kind === 'wake_turn') return task.instruction || 'Bounded Alfred wake';
+  if (task.kind === 'watch') {
+    const watch = task.watch || {};
+    if (watch.type === 'herdr_agent') return `Herdr ${watch.workspaceId}/${watch.paneId}`;
+    if (watch.type === 'run_status') return `Run ${shortId(watch.runId)}`;
+    if (watch.type === 'file_exists') return watch.relativePath || 'File watch';
+  }
+  if (task.kind === 'event_subscription') {
+    return `${(task.eventMatch?.eventTypes || []).join(', ') || 'Agent event'} subscription`;
+  }
+  return 'Scheduled task';
+}
+
 function formatTokenUsage(value) {
   const usage = value || {};
   const total = Number(usage.totalTokens || 0);
@@ -243,6 +290,27 @@ function metricCard(label, value) {
 
 function emptyState(text) {
   return `<div class="empty-state">${escapeHtml(text)}</div>`;
+}
+
+function hasSessionActivity(session) {
+  const memory = session?.workingMemory;
+  if (!memory) return false;
+  const nonEmpty = (value) => Array.isArray(value) ? value.length > 0 : Boolean(value);
+  return nonEmpty(memory.recentTurns)
+    || nonEmpty(memory.conversationWindow)
+    || nonEmpty(memory.recentOutputs)
+    || nonEmpty(memory.lastRunId)
+    || nonEmpty(memory.lastCompletedRunId)
+    || nonEmpty(memory.activeObjective)
+    || nonEmpty(memory.lastOutcomeSummary)
+    || nonEmpty(memory.activeThreadSummary)
+    || nonEmpty(memory.sessionSummary)
+    || nonEmpty(memory.lastArtifacts)
+    || nonEmpty(memory.unresolvedItems);
+}
+
+function shouldShowSession(session) {
+  return session?.name !== 'API Session' || hasSessionActivity(session);
 }
 
 function getLastEvent(payload, predicate = () => true) {
@@ -802,7 +870,7 @@ async function refreshProviderStatus() {
 
 async function refreshSessions() {
   const payload = await api('/v1/sessions?limit=30');
-  state.sessions = payload.sessions || [];
+  state.sessions = (payload.sessions || []).filter(shouldShowSession);
   if (!state.activeSessionId && state.sessions.length > 0) {
     state.activeSessionId = state.sessions[0].id;
   }
@@ -822,6 +890,27 @@ async function refreshChannelSessions() {
     state.channelSessionMap = map;
   } catch {
     // channel sessions optional - fail silently
+  }
+}
+
+async function refreshScheduledTasks() {
+  state.schedulerError = null;
+  try {
+    const status = await api('/v1/scheduler/status');
+    state.schedulerStatus = status || { enabled: false, running: false };
+    if (!state.activeSessionId || state.schedulerStatus.enabled === false) {
+      state.scheduledTasks = [];
+    } else {
+      const sessionId = encodeURIComponent(state.activeSessionId);
+      const payload = await api(`/v1/scheduled-tasks?sessionId=${sessionId}`);
+      state.scheduledTasks = Array.isArray(payload?.tasks) ? payload.tasks : [];
+    }
+  } catch (error) {
+    state.schedulerError = error instanceof Error ? error.message : 'Unable to load scheduled tasks';
+    state.scheduledTasks = [];
+  }
+  if (state.drawerOpen && state.drawerTab === 'scheduler') {
+    renderSchedulerPage();
   }
 }
 
@@ -1015,6 +1104,7 @@ async function selectSession(sessionId) {
   state.activeRunPayload = null;
   stopRunPolling();
   await refreshSessionRuns({ sessionId });
+  await refreshScheduledTasks();
   if (state.activeRunId) {
     await loadRun(state.activeRunId);
     if (!isTerminalStatus(state.activeRunPayload?.run?.status)) {
@@ -1175,6 +1265,19 @@ function startProviderRefreshLoop() {
   }, PROVIDER_REFRESH_MS);
 }
 
+function startScheduledTaskRefreshLoop() {
+  if (state.schedulerTimer) {
+    clearInterval(state.schedulerTimer);
+  }
+  state.schedulerTimer = setInterval(() => {
+    void refreshScheduledTasks();
+  }, SCHEDULED_TASK_REFRESH_MS);
+  if (state.schedulerCountdownTimer) {
+    clearInterval(state.schedulerCountdownTimer);
+  }
+  state.schedulerCountdownTimer = setInterval(refreshScheduledCountdowns, 1_000);
+}
+
 // ── Drawer controls ──────────────────────────────────────────────
 
 function toggleDrawer(open) {
@@ -1191,6 +1294,7 @@ function setDrawerTab(tab) {
     inspector: els.dpaneInspector,
     telemetry: els.dpaneTelemetry,
     status: els.dpaneStatus,
+    scheduler: els.dpaneScheduler,
     settings: els.dpaneSettings
   };
   for (const [key, pane] of Object.entries(panes)) {
@@ -1200,6 +1304,9 @@ function setDrawerTab(tab) {
     void refreshOpenAiAccount();
   }
   renderDrawer();
+  if (tab === 'scheduler') {
+    void refreshScheduledTasks();
+  }
 }
 
 // ── Getters ──────────────────────────────────────────────────────
@@ -1518,6 +1625,79 @@ function renderStatusPage() {
   }
 }
 
+function renderSchedulerPage() {
+  const status = state.schedulerStatus;
+  const tasks = state.scheduledTasks;
+
+  if (state.schedulerError) {
+    setTextIfChanged(els.schedulerSummary, state.schedulerError);
+  } else if (!status || status.enabled === false) {
+    setTextIfChanged(els.schedulerSummary, 'Scheduler is disabled. Enable it to create and run tasks.');
+  } else {
+    const running = status.running ? 'running' : 'stopped';
+    setTextIfChanged(els.schedulerSummary, `${tasks.length} active task${tasks.length === 1 ? '' : 's'} · engine ${running}`);
+  }
+
+  const counts = status?.taskCounts || {};
+  setHtmlIfChanged(els.schedulerStatusGrid, [
+    metricCard('Engine', status?.running ? 'Running' : status?.enabled === false ? 'Disabled' : 'Stopped'),
+    metricCard('Active', String(tasks.length)),
+    metricCard('Running', String((counts.running || 0) + (counts.claimed || 0))),
+    metricCard('Next tick', formatCountdown(status?.nextTickAt))
+  ].join(''));
+
+  if (state.schedulerError) {
+    setHtmlIfChanged(els.scheduledTaskList, emptyState(state.schedulerError));
+    return;
+  }
+  if (!status || status.enabled === false) {
+    setHtmlIfChanged(els.scheduledTaskList, emptyState('Scheduled tasks are unavailable while the scheduler is disabled.'));
+    return;
+  }
+  if (!state.activeSessionId) {
+    setHtmlIfChanged(els.scheduledTaskList, emptyState('Select a session to view its scheduled tasks.'));
+    return;
+  }
+  if (tasks.length === 0) {
+    setHtmlIfChanged(els.scheduledTaskList, emptyState('No active reminders, wakes, or watches for this session.'));
+    return;
+  }
+
+  const html = tasks.map((task) => {
+    const kind = scheduledTaskKindLabel(task.kind);
+    const statusClassName = statusClass(task.status);
+    const interval = task.intervalSeconds ? ` · every ${formatElapsedMs(task.intervalSeconds * 1_000)}` : '';
+    return `
+      <article class="scheduled-task-card">
+        <div class="scheduled-task-head">
+          <div class="scheduled-task-title">
+            <span class="scheduled-task-kind">${escapeHtml(kind)}</span>
+            <strong>${escapeHtml(task.label)}</strong>
+          </div>
+          <span class="status-pill ${escapeHtml(statusClassName)}">${escapeHtml(statusLabel(task.status))}</span>
+        </div>
+        <div class="scheduled-task-detail">${escapeHtml(toShortText(scheduledTaskDetail(task), 240))}</div>
+        <div class="scheduled-task-meta">
+          <span class="scheduled-task-countdown" data-due-at="${escapeHtml(task.dueAt)}">${escapeHtml(formatCountdown(task.dueAt))}</span>
+          <span>cycle ${escapeHtml(String(task.cycleCount || 0))}/${escapeHtml(String(task.maxCycles || 0))}${escapeHtml(interval)}</span>
+          <span>${escapeHtml(formatDateTime(task.dueAt))}</span>
+        </div>
+        <div class="scheduled-task-actions">
+          <button class="ghost-btn danger-btn" data-cancel-scheduled-task="${escapeHtml(task.id)}">Cancel</button>
+        </div>
+      </article>
+    `;
+  }).join('');
+  setHtmlIfChanged(els.scheduledTaskList, html);
+}
+
+function refreshScheduledCountdowns() {
+  if (!els.scheduledTaskList) return;
+  for (const element of els.scheduledTaskList.querySelectorAll('[data-due-at]')) {
+    setTextIfChanged(element, formatCountdown(element.dataset.dueAt));
+  }
+}
+
 function renderSettingsPage() {
   const account = state.openAiAccount;
   const login = state.openAiLogin;
@@ -1565,6 +1745,7 @@ function renderDrawer() {
   if (tab === 'inspector') renderInspector();
   else if (tab === 'telemetry') { renderTelemetryRuns(); renderTelemetry(); }
   else if (tab === 'status') renderStatusPage();
+  else if (tab === 'scheduler') renderSchedulerPage();
   else if (tab === 'settings') renderSettingsPage();
 }
 
@@ -1637,6 +1818,11 @@ els.debugOpenBtn.addEventListener('click', () => {
 els.navDebug.addEventListener('click', () => {
   toggleDrawer(true);
   setDrawerTab('inspector');
+});
+
+els.navScheduledTasks.addEventListener('click', () => {
+  toggleDrawer(true);
+  setDrawerTab('scheduler');
 });
 
 els.navSettings.addEventListener('click', () => {
@@ -1790,6 +1976,26 @@ els.exportRun.addEventListener('click', () => {
   });
 });
 
+els.refreshScheduledTasks.addEventListener('click', () => {
+  void refreshScheduledTasks();
+});
+
+els.scheduledTaskList.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-cancel-scheduled-task]');
+  const taskId = button?.dataset.cancelScheduledTask;
+  if (!taskId || !state.activeSessionId) return;
+  button.disabled = true;
+  const sessionId = encodeURIComponent(state.activeSessionId);
+  const channelKey = encodeURIComponent(`web:${state.activeSessionId}`);
+  void api(`/v1/scheduled-tasks/${encodeURIComponent(taskId)}/cancel?sessionId=${sessionId}&channelKey=${channelKey}`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  }).then(() => refreshScheduledTasks()).catch((error) => {
+    state.schedulerError = error instanceof Error ? error.message : 'Unable to cancel scheduled task';
+    renderSchedulerPage();
+  });
+});
+
 // Telemetry controls
 els.telemetryFilter.addEventListener('input', () => {
   state.telemetryFilter = els.telemetryFilter.value;
@@ -1834,6 +2040,7 @@ els.telemetryExport.addEventListener('click', () => {
 
 async function init() {
   await Promise.all([refreshSessions(), refreshChannelSessions(), refreshProviderStatus(), refreshLlmStatus()]);
+  await refreshScheduledTasks();
   if (state.activeSessionId) {
     await refreshSessionRuns();
     if (state.activeRunId) {
@@ -1844,6 +2051,7 @@ async function init() {
     }
   }
   startProviderRefreshLoop();
+  startScheduledTaskRefreshLoop();
   renderAll();
 }
 
@@ -1854,6 +2062,14 @@ window.addEventListener('beforeunload', () => {
     state.providerTimer = null;
   }
   stopOpenAiLoginPolling();
+  if (state.schedulerTimer) {
+    clearInterval(state.schedulerTimer);
+    state.schedulerTimer = null;
+  }
+  if (state.schedulerCountdownTimer) {
+    clearInterval(state.schedulerCountdownTimer);
+    state.schedulerCountdownTimer = null;
+  }
 });
 
 initAuth();

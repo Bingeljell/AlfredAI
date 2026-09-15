@@ -26,6 +26,39 @@ Models & Accounts, opens browser authorization when available, polls login
 completion, and has a cancel button. Use device code when the browser is on a
 different machine from the Alfred host.
 
+## Active provider and account isolation
+
+`ALFRED_LLM_PROVIDER` is the sole active-provider selector. A connected
+ChatGPT account shown while another provider is selected is a standby account,
+not an automatic fallback. Alfred does not switch providers after an error.
+
+Unless configured otherwise, Alfred's App Server inherits the standard Codex
+credential home and can therefore reuse the Codex CLI login. This login is
+separate from an ordinary ChatGPT browser or desktop-app session, but the
+Codex CLI and other Codex clients using the same credential home share it.
+
+For a separate Alfred account, create a private directory that is outside
+version control, add this `config.toml` inside it, and use its absolute path:
+
+```toml
+cli_auth_credentials_store = "file"
+```
+
+```dotenv
+CODEX_HOME=/absolute/path/to/alfred-codex-home
+```
+
+Restart Alfred, then sign in through Settings → ChatGPT subscription. For the
+terminal administration command, pass the same profile explicitly:
+
+```bash
+CODEX_HOME=/absolute/path/to/alfred-codex-home pnpm alfred auth login openai
+```
+
+Using the file credential store is important for profile isolation because it
+keeps the credentials under that dedicated `CODEX_HOME`. Do not sign out from
+a shared profile if another Codex client still relies on that login.
+
 ## Session controls
 
 Telegram and the Web UI share the same `ChatService` controls:

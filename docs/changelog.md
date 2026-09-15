@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-09-15** > `webui/{index.html,app.js,styles.css}`, `.env.example`, `README.md`, `docs/operations/chatgpt_subscription.md`, `tests/unit/webUiProviderRouting.test.ts` > label the live LLM provider and connected ChatGPT account as active or standby, keep the connected identity visible when only quota lookup fails, state that provider failover is not automatic, and document isolated `CODEX_HOME` profiles for separate Alfred accounts.
+
 - **2026-09-15** > `docs/architecture/npm-distribution-and-privacy.md`, `docs/changelog.md` > define the npm product/source-development split, private `ALFRED_HOME` boundary, onboarding and service lifecycle, upgrade/release gates, README restructure, and a public-repository privacy audit with concrete pre-publication blockers.
 
 - **2026-09-15** > `src/tui/client.ts`, `tests/unit/tui.test.ts` > keep empty API test fixtures out of the terminal conversation picker while preserving API sessions with real activity; clean the existing empty local records separately.

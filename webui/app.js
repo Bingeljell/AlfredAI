@@ -32,6 +32,7 @@ const state = {
   openAiAccount: null,
   openAiLogin: null,
   openAiAccountError: '',
+  openAiUsageError: '',
   openAiLoginPollTimer: null,
   openAiCatalog: null,
   openAiUsage: null
@@ -44,6 +45,7 @@ const els = {
   navDebug: document.getElementById('nav-debug'),
   navScheduledTasks: document.getElementById('nav-scheduled-tasks'),
   navSettings: document.getElementById('nav-settings'),
+  settingsProviderCard: document.getElementById('settings-provider-card'),
   activeSessionName: document.getElementById('active-session-name'),
   channelBadge: document.getElementById('channel-badge'),
   runStatusPill: document.getElementById('run-status-pill'),
@@ -147,6 +149,19 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+function formatProviderName(provider) {
+  const names = {
+    openai: 'OpenAI API',
+    anthropic: 'Anthropic',
+    gemini: 'Google Gemini',
+    ollama: 'Ollama',
+    lmstudio: 'LM Studio',
+    openrouter: 'OpenRouter',
+    codex: 'ChatGPT / Codex'
+  };
+  return names[String(provider || '').toLowerCase()] || String(provider || 'Unknown');
 }
 
 function shortId(value) {
@@ -917,8 +932,9 @@ async function refreshScheduledTasks() {
 async function refreshLlmStatus() {
   try {
     state.llmStatus = await api('/v1/llm/status');
-    if (state.drawerOpen && state.drawerTab === 'status') {
-      renderStatusPage();
+    if (state.drawerOpen) {
+      if (state.drawerTab === 'status') renderStatusPage();
+      if (state.drawerTab === 'settings') renderSettingsPage();
     }
   } catch {
     // optional
@@ -956,8 +972,9 @@ async function refreshOpenAiSubscription() {
     ]);
     state.openAiCatalog = catalog;
     state.openAiUsage = usage;
+    state.openAiUsageError = '';
   } catch (error) {
-    state.openAiAccountError = error?.message || 'OpenAI model or usage status unavailable.';
+    state.openAiUsageError = error?.message || 'OpenAI model or usage status unavailable.';
   }
   if (state.drawerOpen && state.drawerTab === 'settings') {
     renderSettingsPage();
@@ -1303,6 +1320,9 @@ function setDrawerTab(tab) {
   if (tab === 'settings' && !state.openAiAccount && !state.openAiAccountError) {
     void refreshOpenAiAccount();
   }
+  if (tab === 'settings' && !state.llmStatus) {
+    void refreshLlmStatus();
+  }
   renderDrawer();
   if (tab === 'scheduler') {
     void refreshScheduledTasks();
@@ -1588,9 +1608,10 @@ function renderStatusPage() {
 
   setHtmlIfChanged(els.statusLlmCard, llm
     ? `
-        <p>Provider: ${escapeHtml(llm.provider)}</p>
+        <p>Active provider: ${escapeHtml(formatProviderName(llm.provider))}</p>
         <p>Fast model: ${escapeHtml(llm.modelFast)}</p>
         <p>Smart model: ${escapeHtml(llm.modelSmart)}</p>
+        <p>Automatic LLM fallback: not configured</p>
         <p>Session tokens: ${escapeHtml(formatTokenCount(sessionTokens))} (${escapeHtml(String(sessionTokens))} total)</p>
       `
     : '<p>Loading…</p>');
@@ -1701,9 +1722,28 @@ function refreshScheduledCountdowns() {
 function renderSettingsPage() {
   const account = state.openAiAccount;
   const login = state.openAiLogin;
+  const llm = state.llmStatus;
+  const codexIsActive = llm?.provider === 'codex';
+  const providerName = llm ? formatProviderName(llm.provider) : 'Loading…';
+  const modelSummary = llm
+    ? llm.modelFast === llm.modelSmart
+      ? llm.modelSmart
+      : `${llm.modelSmart} (smart) · ${llm.modelFast} (fast)`
+    : 'Loading…';
+
+  setHtmlIfChanged(els.settingsProviderCard, `
+    <div class="provider-routing-head">
+      <span class="provider-role active">Active</span>
+      <strong>${escapeHtml(providerName)}</strong>
+    </div>
+    <p>Model routing: ${escapeHtml(modelSummary)}</p>
+    <p>Automatic LLM fallback: not configured. Changing provider requires updating <code>ALFRED_LLM_PROVIDER</code> and restarting Alfred.</p>
+  `);
+
   const accountHtml = state.openAiAccountError
     ? `
         <p class="account-error">${escapeHtml(state.openAiAccountError)}</p>
+        <p>${codexIsActive ? 'ChatGPT/Codex is the active provider.' : `Alfred is still routing chats through ${escapeHtml(providerName)}.`}</p>
         <div class="account-actions"><button class="ghost-btn" data-openai-refresh>Retry status</button></div>
       `
     : login && login.status === 'started'
@@ -1716,16 +1756,25 @@ function renderSettingsPage() {
         `
       : account?.connected
         ? `
-            <p class="account-connected">Connected${account.email ? ` as ${escapeHtml(account.email)}` : ''}.</p>
+            <div class="provider-routing-head">
+              <span class="provider-role ${codexIsActive ? 'active' : 'standby'}">${codexIsActive ? 'Active' : 'Standby'}</span>
+              <span class="account-connected">Connected${account.email ? ` as ${escapeHtml(account.email)}` : ''}.</span>
+            </div>
+            <p>${codexIsActive ? 'Alfred is using this ChatGPT subscription for chats.' : `Alfred is using ${escapeHtml(providerName)}. This account is available if you explicitly switch to the Codex provider; it is not an automatic fallback.`}</p>
             <p>Plan: ${escapeHtml(account.planType || 'unknown')}</p>
             <p>Live models: ${escapeHtml(String(state.openAiCatalog?.models?.length || 'loading'))}</p>
             ${state.openAiUsage?.rateLimits?.primary ? `<p>Quota used: ${escapeHtml(String(state.openAiUsage.rateLimits.primary.usedPercent))}%${state.openAiUsage.rateLimits.primary.resetsAt ? ` · resets ${escapeHtml(formatDateTime(new Date(state.openAiUsage.rateLimits.primary.resetsAt * 1000).toISOString()))}` : ''}</p>` : ''}
             ${state.openAiUsage?.rateLimits?.reachedType ? `<p class="account-error">Limit: ${escapeHtml(state.openAiUsage.rateLimits.reachedType)}</p>` : ''}
+            ${state.openAiUsageError ? `<p class="account-warning">Usage details unavailable: ${escapeHtml(state.openAiUsageError)}</p>` : ''}
             <div class="account-actions"><button class="ghost-btn" data-openai-refresh-subscription>Refresh catalog &amp; usage</button>
               <button class="ghost-btn" data-openai-logout>Sign out</button></div>
           `
         : `
-            <p>ChatGPT subscription access is disconnected.</p>
+            <div class="provider-routing-head">
+              <span class="provider-role ${codexIsActive ? 'required' : 'standby'}">${codexIsActive ? 'Action required' : 'Optional'}</span>
+              <span>ChatGPT subscription access is disconnected.</span>
+            </div>
+            <p>${codexIsActive ? 'Sign in before Alfred can run chats with the active Codex provider.' : `${escapeHtml(providerName)} remains the active provider; ChatGPT is not an automatic fallback.`}</p>
             <div class="account-actions">
               <button class="primary-btn" data-openai-login="browser">Sign in with ChatGPT</button>
               <button class="ghost-btn" data-openai-login="device-code">Use device code</button>

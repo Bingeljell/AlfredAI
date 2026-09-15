@@ -66,3 +66,11 @@ test("Alfred CLI cancels the App Server login on Ctrl-C and closes the client", 
   assert.equal(cancelObserved, true);
   assert.equal(fake.wasClosed(), true);
 });
+
+test("Alfred CLI exposes package-safe help without constructing provider services", async () => {
+  const output: string[] = [];
+  const result = await runCli(["--help"], { write: (line) => output.push(line) });
+  assert.equal(result, 0);
+  assert.match(output.join("\n"), /alfred start/);
+  assert.match(output.join("\n"), /alfred migrate home/);
+});

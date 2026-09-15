@@ -7,7 +7,7 @@ import { migrateAlfredHome } from "../src/config/homeMigration.js";
 const DEFAULT_LOGIN_TIMEOUT_MS = 10 * 60_000;
 
 function usage(): never {
-  throw new Error("Usage: pnpm alfred tui [--session ID] [--url URL] | pnpm alfred migrate home [--to PATH] [--source-workspace PATH] [--apply] | pnpm alfred auth login openai [--device-code] [--timeout-ms <ms>] | pnpm alfred auth status openai | pnpm alfred auth logout openai");
+  throw new Error("Usage: alfred start | alfred tui [--session ID] [--url URL] | alfred migrate home [--to PATH] [--source-workspace PATH] [--apply] | alfred auth login openai [--device-code] [--timeout-ms <ms>] | alfred auth status openai | alfred auth logout openai");
 }
 
 type CliAccountService = Pick<CodexAccountService, "startLogin" | "waitForLogin" | "readAccount" | "logout" | "close">;
@@ -79,6 +79,14 @@ function printLoginResult(progress: OpenAiLoginProgress, write: (message: string
 }
 
 export async function runCli(args: string[], options: AlfredCliOptions = {}): Promise<number> {
+  if (args[0] === "--help" || args[0] === "-h" || args[0] === "help") {
+    (options.write ?? ((message: string) => console.log(message)))("Usage: alfred start | alfred tui | alfred migrate home | alfred auth <login|status|logout> openai");
+    return 0;
+  }
+  if (args[0] === "start") {
+    await import("../src/gateway/server.js");
+    return 0;
+  }
   if (args[0] === "tui") return (await import("../src/tui/index.js")).runTui(args.slice(1));
   if (args[0] === "migrate" && args[1] === "home") {
     return runHomeMigration(args.slice(2), options.write ?? ((message: string) => console.log(message)));

@@ -541,6 +541,7 @@ docs/               — architecture docs, spec, changelog, feature specs
 
 ```bash
 pnpm run build          # compile TypeScript
+pnpm pack:check         # build and verify the exact private npm tarball manifest
 pnpm start              # run compiled build
 pnpm run dev:gateway    # run with auto-rebuild
 pnpm setup:browsers     # install Playwright Chromium (interactive control and read-only fallback)

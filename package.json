@@ -3,12 +3,25 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "license": "UNLICENSED",
+  "bin": {
+    "alfred": "bin/alfred.js"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "webui/",
+    "SOUL.md"
+  ],
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "packageManager": "pnpm@10.30.3+sha512.c961d1e0a2d8e354ecaa5166b822516668b7f44cb5bd95122d590dd81922f606f5473b6d23ec4a5be05e7fcd18e8488d47d978bbe981872f1145d06e9a740017",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/build-package.mjs",
+    "typecheck": "tsc --noEmit",
     "dev:gateway": "tsx watch src/gateway/server.ts",
     "start": "tsx src/gateway/server.ts",
-    "postinstall": "node scripts/setup-playwright.js",
     "setup:browsers": "pnpm exec playwright install chromium --with-deps",
     "probe:model": "node --import tsx scripts/probe-local-model.ts",
     "codex:login": "tsx scripts/alfred-cli.ts auth login openai",
@@ -21,6 +34,7 @@
     "test:integration": "node --import tsx --import ./tests/setup/env.mjs --test tests/integration/**/*.test.ts",
     "test:smoke": "node --import tsx --import ./tests/setup/env.mjs --test tests/smoke/**/*.test.ts",
     "test:security": "node --import tsx --import ./tests/setup/env.mjs --test tests/security/**/*.test.ts",
+    "pack:check": "npm run build && node scripts/check-package.mjs",
     "lint:layers": "eslint src"
   },
   "dependencies": {

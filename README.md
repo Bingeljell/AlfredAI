@@ -511,6 +511,7 @@ tail -f logs/alfred-error.log
 
 ```
 src/runtime/        — agent loop, system prompt, specialists config
+src/runtime/operatingInstructions.ts — generic product-level operating contract
 src/agentEvents/    — agent event webhook (schema, auth, dispatcher, Telegram notifier, event store)
 src/tools/          — all tool definitions (drop a *.tool.ts here to add a tool)
 src/tools/browser/  — Pinchtab-first read-only routing plus persistent Playwright interaction

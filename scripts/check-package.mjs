@@ -21,7 +21,7 @@ const allowed = [
   /^bin\/alfred\.js$/,
   /^dist\//,
   /^webui\//,
-  /^SOUL\.md$/,
+  /^templates\//,
   /^README\.md$/,
   /^package\.json$/
 ];

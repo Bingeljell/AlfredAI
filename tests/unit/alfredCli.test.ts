@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { mkdtemp, readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { runCli, type AlfredCliOptions } from "../../scripts/alfred-cli.js";
 
 class FakeSignalSource extends EventEmitter {}
@@ -73,4 +76,15 @@ test("Alfred CLI exposes package-safe help without constructing provider service
   assert.equal(result, 0);
   assert.match(output.join("\n"), /alfred start/);
   assert.match(output.join("\n"), /alfred migrate home/);
+});
+
+test("Alfred CLI setup and doctor initialize an isolated Codex-backed home", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "alfred-cli-home-"));
+  const target = path.join(home, "instance");
+  const output: string[] = [];
+  assert.equal(await runCli(["setup", "--name", "Ada", "--provider", "codex", "--home", target], { write: (line) => output.push(line) }), 0);
+  assert.match(await readFile(path.join(target, "identity", "SOUL.md"), "utf8"), /Ada/);
+  assert.match(await readFile(path.join(target, "config", "config.env"), "utf8"), /ALFRED_LLM_PROVIDER=codex/);
+  assert.equal(await runCli(["doctor", "--home", target, "--json"], { write: (line) => output.push(line) }), 0);
+  assert.equal(output.join("\n").includes("accessToken"), false);
 });

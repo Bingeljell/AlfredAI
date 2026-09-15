@@ -49,6 +49,7 @@ export function resolveAlfredPaths(options: ResolveAlfredPathsOptions = {}): Alf
   const homeDir = path.resolve(options.homeDir ?? os.homedir());
   const packageRoot = path.resolve(options.packageRoot ?? installedPackageRoot());
   const homeOverride = nonEmpty(env.ALFRED_HOME);
+  const packageMode = env.ALFRED_PACKAGE_MODE === "true";
   const workspaceOverride = nonEmpty(env.ALFRED_WORKSPACE_DIR);
   const projectOverride = nonEmpty(env.ALFRED_PROJECT_ROOT);
   const alfredHome = homeOverride ? fromCwd(homeOverride, cwd) : path.join(homeDir, ".alfred");
@@ -60,7 +61,7 @@ export function resolveAlfredPaths(options: ResolveAlfredPathsOptions = {}): Alf
     identityDir: path.join(alfredHome, "identity"),
     workspaceDir: workspaceOverride
       ? fromCwd(workspaceOverride, cwd)
-      : homeOverride
+      : homeOverride || packageMode
         ? path.join(alfredHome, "workspace")
         : path.join(cwd, "workspace", "alfred"),
     logsDir: path.join(alfredHome, "logs"),
@@ -68,6 +69,6 @@ export function resolveAlfredPaths(options: ResolveAlfredPathsOptions = {}): Alf
     backupsDir: path.join(alfredHome, "backups"),
     extensionsDir: path.join(alfredHome, "extensions"),
     toolProjectRoot: projectOverride ? fromCwd(projectOverride, cwd) : cwd,
-    usesLegacyWorkspace: !homeOverride && !workspaceOverride
+    usesLegacyWorkspace: !packageMode && !homeOverride && !workspaceOverride
   };
 }

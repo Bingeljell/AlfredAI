@@ -1,10 +1,15 @@
 import { config as loadDotEnv } from "dotenv";
+import path from "node:path";
 import { z } from "zod";
 import type { PolicyMode } from "../types.js";
 import type { LlmReasoningConfig, LlmReasoningEffort } from "../provider/types.js";
 import { resolveAlfredPaths } from "./paths.js";
 
-loadDotEnv();
+const bootstrapPaths = resolveAlfredPaths();
+if (!bootstrapPaths.usesLegacyWorkspace) {
+  loadDotEnv({ path: path.join(bootstrapPaths.configDir, "config.env"), quiet: true });
+}
+loadDotEnv({ quiet: true });
 
 const ReasoningEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const OptionalReasoningEffortSchema = z.preprocess(
@@ -21,6 +26,7 @@ const EnvSchema = z.object({
   PORT: z.coerce.number().default(3000),
   ALFRED_HOME: z.string().optional(),
   ALFRED_PROJECT_ROOT: z.string().optional(),
+  ALFRED_PACKAGE_MODE: z.enum(["true", "false"]).optional(),
   // ─── LLM provider ─────────────────────────────────────────────────────────
   ALFRED_LLM_PROVIDER: z.enum(["openai", "anthropic", "gemini", "ollama", "lmstudio", "openrouter", "codex"]).default("openai"),
   ALFRED_MODEL_FAST: z.string().default("gpt-4o-mini"),   // cheap/fast: classification, session extractor
@@ -109,7 +115,8 @@ const paths = resolveAlfredPaths({
   env: {
     ALFRED_HOME: parsed.ALFRED_HOME,
     ALFRED_WORKSPACE_DIR: parsed.ALFRED_WORKSPACE_DIR,
-    ALFRED_PROJECT_ROOT: parsed.ALFRED_PROJECT_ROOT
+    ALFRED_PROJECT_ROOT: parsed.ALFRED_PROJECT_ROOT,
+    ALFRED_PACKAGE_MODE: parsed.ALFRED_PACKAGE_MODE
   }
 });
 

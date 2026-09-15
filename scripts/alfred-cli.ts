@@ -1,13 +1,17 @@
 import { pathToFileURL } from "node:url";
 import os from "node:os";
 import path from "node:path";
+import { createInterface } from "node:readline/promises";
 import { CodexAccountService, type OpenAiLoginMode, type OpenAiLoginProgress, type OpenAiLoginStart } from "../src/provider/codex/accountService.js";
 import { migrateAlfredHome } from "../src/config/homeMigration.js";
+import { diagnoseAlfred } from "../src/config/doctor.js";
+import { resolveAlfredPaths } from "../src/config/paths.js";
+import { initializeAlfredHome, SETUP_PROVIDERS, type SetupProvider } from "../src/config/setup.js";
 
 const DEFAULT_LOGIN_TIMEOUT_MS = 10 * 60_000;
 
 function usage(): never {
-  throw new Error("Usage: alfred start | alfred tui [--session ID] [--url URL] | alfred migrate home [--to PATH] [--source-workspace PATH] [--apply] | alfred auth login openai [--device-code] [--timeout-ms <ms>] | alfred auth status openai | alfred auth logout openai");
+  throw new Error("Usage: alfred setup [--name NAME] [--provider PROVIDER] [--model MODEL] [--home PATH] | alfred doctor [--home PATH] [--json] | alfred start | alfred tui [--session ID] [--url URL] | alfred migrate home [--to PATH] [--source-workspace PATH] [--apply] | alfred auth login openai [--device-code] [--timeout-ms <ms>] | alfred auth status openai | alfred auth logout openai");
 }
 
 type CliAccountService = Pick<CodexAccountService, "startLogin" | "waitForLogin" | "readAccount" | "logout" | "close">;
@@ -17,6 +21,67 @@ export interface AlfredCliOptions {
   write?: (message: string) => void;
   timeoutMs?: number;
   signalSource?: NodeJS.Process;
+  prompt?: (question: string) => Promise<string>;
+}
+
+async function runSetup(args: string[], options: AlfredCliOptions): Promise<number> {
+  const allowed = new Set(["--name", "--provider", "--model", "--home", "--port"]);
+  for (let index = 0; index < args.length; index += 2) {
+    if (!allowed.has(args[index]!)) throw new Error(`Unknown setup option: ${args[index]}`);
+  }
+  let closePrompt = (): void => undefined;
+  let prompt = options.prompt;
+  if (!prompt && (!optionValue(args, "--name") || !optionValue(args, "--provider"))) {
+    if (!process.stdin.isTTY) throw new Error("Non-interactive setup requires --name and --provider");
+    const terminal = createInterface({ input: process.stdin, output: process.stdout });
+    prompt = (question) => terminal.question(question);
+    closePrompt = () => terminal.close();
+  }
+  try {
+    const name = optionValue(args, "--name") ?? await prompt!("Your name: ");
+    const providerValue = (optionValue(args, "--provider") ?? await prompt!(`Provider (${SETUP_PROVIDERS.join("/")}): `)).trim().toLowerCase();
+    if (!SETUP_PROVIDERS.includes(providerValue as SetupProvider)) throw new Error(`Unsupported provider: ${providerValue}`);
+    const basePaths = resolveAlfredPaths();
+    const targetHome = path.resolve(optionValue(args, "--home") ?? basePaths.alfredHome);
+    const paths = resolveAlfredPaths({
+      env: { ALFRED_HOME: targetHome, ALFRED_PACKAGE_MODE: "true" },
+      packageRoot: basePaths.packageRoot
+    });
+    const result = await initializeAlfredHome({
+      paths,
+      name,
+      provider: providerValue as SetupProvider,
+      model: optionValue(args, "--model"),
+      port: optionValue(args, "--port") ? Number(optionValue(args, "--port")) : undefined
+    });
+    const write = options.write ?? ((message: string) => console.log(message));
+    write(`Alfred home: ${result.home}`);
+    write(`Created ${result.created.length} file(s); preserved ${result.preserved.length} existing file(s).`);
+    for (const step of result.nextSteps) write(step);
+    return 0;
+  } finally {
+    closePrompt();
+  }
+}
+
+async function runDoctor(args: string[], write: (message: string) => void): Promise<number> {
+  const allowed = new Set(["--home", "--json"]);
+  for (let index = 0; index < args.length; index += 1) {
+    if (!allowed.has(args[index]!)) throw new Error(`Unknown doctor option: ${args[index]}`);
+    if (args[index] === "--home") index += 1;
+  }
+  const home = optionValue(args, "--home");
+  const basePaths = resolveAlfredPaths();
+  const paths = home
+    ? resolveAlfredPaths({ env: { ALFRED_HOME: path.resolve(home), ALFRED_PACKAGE_MODE: "true" }, packageRoot: basePaths.packageRoot })
+    : basePaths;
+  const report = await diagnoseAlfred(paths);
+  if (args.includes("--json")) write(JSON.stringify(report, null, 2));
+  else {
+    for (const check of report.checks) write(`${check.status.toUpperCase().padEnd(4)} ${check.id}: ${check.message}`);
+    write(report.ok ? "Alfred is ready to start." : "Alfred needs attention before startup.");
+  }
+  return report.ok ? 0 : 1;
 }
 
 function parseTimeout(args: string[]): number {
@@ -80,9 +145,11 @@ function printLoginResult(progress: OpenAiLoginProgress, write: (message: string
 
 export async function runCli(args: string[], options: AlfredCliOptions = {}): Promise<number> {
   if (args[0] === "--help" || args[0] === "-h" || args[0] === "help") {
-    (options.write ?? ((message: string) => console.log(message)))("Usage: alfred start | alfred tui | alfred migrate home | alfred auth <login|status|logout> openai");
+    (options.write ?? ((message: string) => console.log(message)))("Usage: alfred setup | alfred doctor | alfred start | alfred tui | alfred migrate home | alfred auth <login|status|logout> openai");
     return 0;
   }
+  if (args[0] === "setup") return runSetup(args.slice(1), options);
+  if (args[0] === "doctor") return runDoctor(args.slice(1), options.write ?? ((message: string) => console.log(message)));
   if (args[0] === "start") {
     await import("../src/gateway/server.js");
     return 0;

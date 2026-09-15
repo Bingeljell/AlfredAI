@@ -6,10 +6,11 @@ There is no Batman without Alfred.
 
 Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reasons, acts, remembers, and can extend his own capabilities. Talk to him via Telegram, the web UI, or the terminal. Give him a task; he figures out how to do it.
 
-## Packaged onboarding preview
+## Choose your installation path
 
-The npm package is still private while release gates are being completed. The
-compiled CLI now supports the intended first-run foundation:
+The npm package is still private while its public name and license are being
+decided. Once published, people who want to use Alfred will install the npm
+package and keep all personal state under `~/.alfred`:
 
 ```bash
 alfred setup
@@ -23,6 +24,10 @@ extension directories under `~/.alfred`. Existing files are preserved on every
 rerun. API keys are never requested through visible terminal input; setup tells
 you which key to add to the mode-`0600` configuration file, or directs Codex
 users through `alfred auth login openai`.
+
+People who want to change Alfred itself should clone this repository and use
+pnpm. The two paths, provider setup, first conversation, background service,
+updates, and extensions are covered in the [getting-started guide](docs/getting-started.md).
 
 Npm-installed Alfred instances expand through digest-approved user-space
 extensions rather than editing the replaceable package. See the
@@ -42,15 +47,15 @@ LaunchAgent. Use `alfred service status`, `alfred service restart`, and
 - **Decoupled agent event webhook** — external agents/terminal wrappers push lifecycle events (`needs_approval`, `completed`, `failed`, `progress`) to Alfred, which routes them to Telegram
 - **Telegram + Web + TUI** — continue the same conversation from your phone, browser, or terminal; the gateway owns history and execution
 - **Tiered persistent memory** — context card, per-day session logs, group chat logs, and QMD semantic recall across sessions
-- **Self-extending** — Alfred can read his own codebase and write new tools mid-session
+- **Self-extending** — source checkouts can change core tools; packaged installs can create reviewable, digest-approved user-space extensions that survive updates
 - **Credential-safe by default** — tool output and run telemetry are scrubbed of API keys and high-entropy secrets before they enter LLM context or logs
 - **Grounded action reporting** — claims that Alfred searched, fetched, read, wrote, ran, tested, or browsed require a matching successful current-run tool receipt
 - **Tool ecosystem** — 30+ tools: search, web fetch, file ops, shell exec, process management, lead pipeline, writer, browser control, Herdr, memory (full catalog below)
 
-## Important notes as of 27th August 2026
+## Project status
 
 - **Personality** - Alfred's personality is meant to be a first principle's thinker, but not one who will overthink.
-- **Ownership** - There's no onboarding wizard yet, so source-install users should review the generic `SOUL.md` template before running Alfred.
+- **Ownership** - Packaged onboarding creates private identity and instructions; source-install users should review the generic `SOUL.md` template before running Alfred.
 - **Features** - Alfred is substantially built out (browser control, agent events, persistent memory, remote agent orchestration), but he's still evolving — new capabilities land regularly and behaviour may shift between releases.
 
 ### Recent reliability fixes
@@ -62,7 +67,8 @@ LaunchAgent. Use `alfred service status`, `alfred service restart`, and
 
 ## Terminal
 
-With the updated gateway running, launch `pnpm alfred tui`. Select an existing
+With the gateway running, launch `alfred tui` for a package install or
+`pnpm alfred tui` in a source checkout. Select an existing
 conversation—including a Telegram conversation—to continue with the same context.
 Use `pnpm alfred tui --session ID` to attach directly, or `--url https://HOST` for
 a remote gateway. Local authentication uses `ALFRED_API_KEY` or the workspace's
@@ -116,6 +122,7 @@ Alfred auto-discovers tools from `src/tools/definitions/` — each `*.tool.ts` f
 | **Ops & self-development** | |
 | `code_discover` | Pattern-aware code search of the repo |
 | `file_list` / `file_read` / `file_write` / `file_edit` | Workspace file operations (path-safe, project-rooted) |
+| `extension_write` | Create or update a disabled user-space extension for explicit human review and digest approval |
 | `shell_exec` | Shell commands (trusted mode only) |
 | `process_list` / `process_stop` | Process inspection and termination |
 | `doc_qa` | Answers questions from local docs/files with citations |
@@ -129,7 +136,10 @@ Alfred auto-discovers tools from `src/tools/definitions/` — each `*.tool.ts` f
 
 ## Configuration
 
-All configuration is via environment variables (see `.env.example`). Create your `.env` from the template:
+All configuration uses environment variables documented in `.env.example`.
+Package installs store them in the private
+`ALFRED_HOME/config/config.env`; source checkouts may create a repository-local
+`.env` from the template:
 
 ```bash
 cp .env.example .env
@@ -279,7 +289,11 @@ curl -X POST 'http://localhost:9001/v1/scheduled-tasks/<task-id>/cancel?sessionI
 | `ALFRED_FAST_SCRAPE_COUNT` | `10` | Fast-scrape page budget |
 | `TWITTER_BEARER_TOKEN` | — | Twitter API (for `fetch_tweet`) |
 
-## Quick Start
+## Source-development quick start
+
+For the product-install flow, start with the
+[getting-started guide](docs/getting-started.md). The steps below are for people
+working on Alfred's core repository.
 
 ### 1. Prerequisites
 
@@ -293,8 +307,8 @@ curl -X POST 'http://localhost:9001/v1/scheduled-tasks/<task-id>/cancel?sessionI
 ```bash
 git clone https://github.com/Bingeljell/AlfredAI.git
 cd AlfredAI
-pnpm install          # postinstall also prepares Playwright Chromium
-pnpm setup:browsers   # (optional) installs Chromium for browser control / web_fetch
+pnpm install
+pnpm setup:browsers   # optional: installs Chromium for browser control / web_fetch
 ```
 
 ### 3. Configure
@@ -350,16 +364,6 @@ For development (auto-rebuild on save):
 ```bash
 pnpm run dev:gateway
 ```
-
-### 5. Logs directory
-
-Alfred writes logs to `logs/`. Create it if it doesn't exist:
-
-```bash
-mkdir -p logs
-```
-
----
 
 ## Long-term memory (QMD)
 

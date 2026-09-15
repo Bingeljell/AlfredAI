@@ -1,9 +1,13 @@
 .DS_Store
+.claude/
+.codex/
+.agents/
 node_modules/
 .pnpm-store/
 dist/
 .env
 workspace/
+artifacts/
 debug/
 experiments/
 coverage/

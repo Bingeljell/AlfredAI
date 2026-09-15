@@ -1,14 +1,13 @@
 # Feature Spec: Herdr Control (`herdr_control`)
 
 **Date:** 2026-08-15  
-**Author:** Alfred & Nikhil Shahane  
 **Status:** In Progress / Implementing  
 
 ---
 
 ## 1. Overview & Objective
 
-Alfred serves as a personal AI execution partner and remote control centre for Nikhil. When Nikhil is remote (e.g. driving tasks via Telegram), Alfred needs the capability to monitor, inspect, coordinate, and dispatch tasks to AI coding agents (Claude, Codex, Pi, OpenCodeInterpreter, etc.) running on the host machine.
+Alfred serves as a personal AI execution partner and remote control centre for its user. When the user is remote (for example, driving tasks via Telegram), Alfred needs the capability to monitor, inspect, coordinate, and dispatch tasks to AI coding agents (Claude, Codex, Pi, OpenCodeInterpreter, etc.) running on the host machine.
 
 Instead of managing raw pseudo-terminals or brittle tmux string parsing, Alfred interfaces with **Herdr**—the local terminal workspace manager built for AI coding agents (`https://herdr.dev`). Herdr provides a structured JSON API over its local socket (`~/.config/herdr/herdr.sock`) and exposes native agent lifecycle states (`idle`, `working`, `blocked`, `done`).
 

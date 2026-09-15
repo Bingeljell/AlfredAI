@@ -93,7 +93,10 @@ paths must be resolved from `ALFRED_HOME` or an explicit override.
 ### Developer-only files
 
 `AGENTS.md` describes how contributors change this repository. It is not an
-end-user prompt and must never be injected into Alfred's packaged runtime.
+end-user prompt and must never be injected wholesale into Alfred's packaged
+runtime. Generic memory, efficiency, temporal, output, and self-development
+principles belong in a compiled product operating contract. User-specific
+preferences belong in private `ALFRED_HOME/identity/INSTRUCTIONS.md`.
 Repository-local IDE/agent files such as `.claude/`, `.codex/`, and `.agents/`
 are also development configuration and must remain outside the npm package.
 
@@ -175,11 +178,25 @@ sources at runtime.
 The built-in registry currently discovers `*.tool.ts` files from the source
 tree. It must discover compiled built-ins from `dist/tools/definitions/`.
 
-For the first npm release, custom core tools remain a source-checkout feature.
-Do not silently execute arbitrary JavaScript from a user directory. A future
-extension system should define a versioned manifest, capability declarations,
-compatibility bounds, and an explicit trust/install step before npm users can
-load third-party tools.
+Custom core tools remain a source-checkout feature. Npm users must still be
+able to let Alfred build upgrade-safe user-space tools without modifying the
+installed package. Add a versioned extension system under
+`ALFRED_HOME/extensions/` with:
+
+- a manifest declaring name, entry point, compatible Alfred versions, inputs,
+  outputs, and requested capabilities;
+- `alfred tools create`, `install`, `test`, `enable`, `disable`, and `list`
+  commands;
+- an explicit review and activation step before executable code is loaded;
+- isolated build/test output and bounded execution permissions;
+- registry errors that disable one extension without preventing Alfred from
+  starting;
+- upgrade compatibility checks and a user-controlled migration path.
+
+Do not silently execute arbitrary JavaScript merely because it exists in a
+user directory. Alfred may author and test an extension, but activation must
+remain an explicit trust decision. This preserves self-expansion for npm users
+while keeping core product changes in the source-development workflow.
 
 ## CLI and onboarding
 
@@ -197,6 +214,7 @@ alfred status                 service, provider, account, and endpoint status
 alfred tui                    terminal client
 alfred config                 reopen configuration safely
 alfred auth ...               provider authentication commands
+alfred tools ...              create and manage user-space extensions
 alfred service install        install OS background service
 alfred service uninstall      remove OS background service, retain user data
 alfred version                installed/runtime/config versions
@@ -485,10 +503,13 @@ two isolated `ALFRED_HOME` values can run without sharing state.
 - Compile runtime and CLI.
 - Add the executable command surface.
 - Make static assets and built-in tool discovery installation-root-safe.
+- Add the versioned user-space extension SDK, loader, capability review, and
+  `alfred tools` lifecycle commands.
 - Add `setup` and `doctor` with automated tests.
 
 **Gate:** the packed tarball installs and runs from an empty directory with no
-Git checkout, pnpm, or `tsx`.
+Git checkout, pnpm, or `tsx`; an npm-installed Alfred can author, test, and
+explicitly activate a simple extension that survives a package upgrade.
 
 ### Phase 3 — Service lifecycle
 
@@ -535,4 +556,3 @@ without editing a repository file.
       the exact tarball.
 - [ ] README clearly separates npm users from source contributors.
 - [ ] Secret/PII/history/package scans pass immediately before publication.
-

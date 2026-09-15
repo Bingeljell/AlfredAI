@@ -1108,6 +1108,37 @@ textarea {
   margin: 4px 0;
 }
 
+.account-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.account-connected {
+  color: var(--success);
+}
+
+.account-error {
+  color: var(--danger);
+}
+
+.account-link {
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
+}
+
+.device-code {
+  display: inline-block;
+  padding: 8px 10px;
+  color: var(--text);
+  background: rgba(187, 16, 230, 0.12);
+  border: 1px solid rgba(187, 16, 230, 0.28);
+  border-radius: 8px;
+  font-family: var(--mono);
+  letter-spacing: 0.08em;
+}
+
 /* ── Glass panel (modal) ─────────────────────────────────────── */
 
 .glass-panel {

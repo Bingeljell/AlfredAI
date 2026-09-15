@@ -4,17 +4,17 @@
 
 There is no Batman without Alfred.
 
-Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reasons, acts, remembers, and can extend his own capabilities. Talk to him via Telegram or the web UI. Give him a task; he figures out how to do it.
+Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reasons, acts, remembers, and can extend his own capabilities. Talk to him via Telegram, the web UI, or the terminal. Give him a task; he figures out how to do it.
 
 ## What Alfred Does Today
 
 - **General-purpose ReAct agent** — research, writing, lead generation, ops, file work, shell commands
-- **Multi-provider LLM** — Gemini, Anthropic, OpenAI, Ollama, LM Studio, OpenRouter, and Codex subscription auth; OpenRouter deployments can explicitly tune supported models' reasoning effort or token budget
+- **Multi-provider LLM** — Gemini, Anthropic, OpenAI, Ollama, LM Studio, OpenRouter, and Codex subscription auth through the supervised Codex App Server; OpenRouter deployments can explicitly tune supported models' reasoning effort or token budget
 - **Pinchtab-first read-only browsing** — `web_fetch` and lead extraction prefer healthy Pinchtab, with supervised startup and lazy Playwright fallback
 - **Interactive browser control** — Alfred can drive a persistent Playwright session: navigate, click, type, fill forms, and take screenshots
 - **Remote agent orchestration** — monitors and dispatches tasks to coding agents (Claude, Codex, Pi, …) running in Herdr workspaces
 - **Decoupled agent event webhook** — external agents/terminal wrappers push lifecycle events (`needs_approval`, `completed`, `failed`, `progress`) to Alfred, which routes them to Telegram
-- **Telegram + Web UI** — converse from your phone or browser; live, edit-in-place progress updates as he works
+- **Telegram + Web + TUI** — continue the same conversation from your phone, browser, or terminal; the gateway owns history and execution
 - **Tiered persistent memory** — context card, per-day session logs, group chat logs, and QMD semantic recall across sessions
 - **Self-extending** — Alfred can read his own codebase and write new tools mid-session
 - **Credential-safe by default** — tool output and run telemetry are scrubbed of API keys and high-entropy secrets before they enter LLM context or logs
@@ -33,6 +33,32 @@ Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reas
 - OpenRouter reasoning is configurable per deployment, reasoning-token usage is tracked, Alfred forwards a stable session ID, and bounded upstream routing metadata is recorded for diagnosis.
 - Pinchtab is now the preferred backend for read-only browsing. Playwright is created only as an enabled fallback; Pinchtab startup failures are visible and supervised.
 - Final replies are checked against the current run's successful tool ledger. An unsupported action claim is withheld and repaired once; a repeated claim becomes an explicit correction.
+
+## Terminal
+
+With the updated gateway running, launch `pnpm alfred tui`. Select an existing
+conversation—including a Telegram conversation—to continue with the same context.
+Use `pnpm alfred tui --session ID` to attach directly, or `--url https://HOST` for
+a remote gateway. Local authentication uses `ALFRED_API_KEY` or the workspace's
+`api-key` file; remote connections require `ALFRED_API_KEY`.
+
+Enter sends, Ctrl-J inserts a newline, Ctrl-P opens conversations, Ctrl-T expands
+tool receipts, PgUp/PgDn scroll, Ctrl-L loads older history, Ctrl-X cancels active work, and Ctrl-Q detaches
+without stopping Alfred. `/newsession [name]` creates a separate conversation;
+`/model`, `/reasoning`, `/usage`, and `/status` use shared session controls.
+
+Codex assistant text streams during the turn; other runtimes currently publish
+at completion. Reconnect uses a durable change cursor and resynchronizes from a
+snapshot when necessary. Queued turns acknowledge immediately, execute in order,
+and deduplicate retries. Alfred can retrieve older turns across all surfaces.
+
+`/attach-channel telegram:CHAT_ID` attaches a known Telegram chat to the selected
+conversation. `/link-telegram USER_ID` explicitly links an allowlisted account
+to the API owner for task access within shared conversations. Attachment alone
+does not link identities or redirect existing notifications.
+
+Restart the gateway after updating. See the [brief](docs/architecture/tui.md)
+for the continuity contract and remaining provider/restart limitations.
 
 ## Tool Catalog
 
@@ -87,7 +113,7 @@ cp .env.example .env
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ALFRED_LLM_PROVIDER` | `openai` | `openai` \| `anthropic` \| `gemini` \| `ollama` \| `lmstudio` \| `openrouter` \| `codex` |
+| `ALFRED_LLM_PROVIDER` | `openai` | `openai` \| `anthropic` \| `gemini` \| `ollama` \| `lmstudio` \| `openrouter` \| `codex` (Codex App Server) |
 | `OPENAI_API_KEY` | — | OpenAI |
 | `ANTHROPIC_API_KEY` | — | Anthropic |
 | `GEMINI_API_KEY` | — | Google Gemini (Google's naming convention) |
@@ -99,11 +125,44 @@ cp .env.example .env
 | `OPENROUTER_REASONING_EXCLUDE` | `false` | Request that reasoning content be excluded from the response |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama (OpenAI-compatible) |
 | `LMSTUDIO_BASE_URL` | `http://localhost:1234` | Local LM Studio (OpenAI-compatible) |
-| `ALFRED_CODEX_AUTH_FILE` | `~/.alfred/codex-auth.json` | Optional Alfred Codex credential path; use `pnpm codex:login`, not `OPENAI_API_KEY` |
-| `ALFRED_MODEL_SMART` | `gpt-4o` | Main agent loop |
-| `ALFRED_MODEL_FAST` | `gpt-4o-mini` | Cheap/fast calls (classification, session extraction) |
+| `ALFRED_MODEL_SMART` | `gpt-4o` | Main agent loop; Codex validates it against the live catalog and reports any fallback |
+| `ALFRED_MODEL_FAST` | `gpt-4o-mini` | Cheap/fast calls for API-key providers |
 
-For **OpenRouter**, use model slugs exactly as OpenRouter lists them (e.g. `anthropic/claude-sonnet-4-20250514`, `openai/gpt-4o`). If reasoning is configured, Alfred asks OpenRouter to route only to endpoints that accept the requested parameters; unsupported model/provider combinations therefore fail clearly instead of silently ignoring the setting. Effort and token budget cannot both be set. With Ollama/LM Studio use the model id the local server reports (e.g. `gemma-4-31b-it-qat`). For **Codex**, run `pnpm codex:login` (or `pnpm codex:login -- --device`) and set compatible model IDs in both `ALFRED_MODEL_SMART` and `ALFRED_MODEL_FAST`. `pnpm probe:model` helps discover locally served models.
+For **OpenRouter**, use model slugs exactly as OpenRouter lists them (e.g. `anthropic/claude-sonnet-4-20250514`, `openai/gpt-4o`). If reasoning is configured, Alfred asks OpenRouter to route only to endpoints that accept the requested parameters; unsupported model/provider combinations therefore fail clearly instead of silently ignoring the setting. Effort and token budget cannot both be set. With Ollama/LM Studio use the model id the local server reports (e.g. `gemma-4-31b-it-qat`). `pnpm probe:model` helps discover locally served models.
+
+### ChatGPT subscription (Codex App Server)
+
+Set `ALFRED_LLM_PROVIDER=codex` and install the Codex CLI so `codex app-server --stdio` is available. Sign in through the App Server-owned account flow:
+
+```bash
+pnpm alfred auth login openai
+pnpm alfred auth login openai --device-code  # remote/headless host
+pnpm alfred auth status openai
+pnpm alfred auth logout openai
+```
+
+`pnpm codex:login`, `pnpm codex:status`, and `pnpm codex:logout` remain compatibility aliases. Alfred does not read or persist ChatGPT tokens; Codex owns credentials and refresh. The web UI exposes the same status, login, model catalog, and account quota under Settings → Models & Accounts. Account quota/reset data is separate from per-run Alfred usage. Codex turns use ephemeral App Server threads, inject only Alfred's durable session context, and execute external effects only through Alfred's dynamic tool registry and policy envelope. Built-in Codex shell, filesystem, patch, browser, network, and MCP capabilities are disabled/rejected by the runtime boundary.
+
+Terminal login prints the browser authorization URL or device-code verification URL and one-time code, then keeps the App Server process open until `account/login/completed`. Use `--timeout-ms <ms>` to change the ten-minute timeout; Ctrl-C sends `account/login/cancel` before the client closes. The Web UI opens browser login automatically, polls completion, and provides cancellation; use device code there for a remote host. Neither path prints access or refresh tokens.
+
+### Chat model controls
+
+In both Telegram and the Web UI, these commands are handled by `ChatService` and are not sent to a model or written to conversation history:
+
+```text
+/model                         list six live picker-visible models
+/model page 2                  show the next deterministic page
+/model N                       choose the numbered model for this session
+/model NAME                    choose an exact id/display name or unambiguous alias
+/model default                 clear the session model override
+/reasoning                     list efforts supported by the effective model
+/reasoning N|NAME              choose an effort for this session
+/reasoning default             use that model's default effort
+/usage                        show App Server subscription quota and local Alfred tokens separately
+/status                       show session, effective model/reasoning, and local token totals
+```
+
+The live App Server `model/list` response is authoritative. Numbering is only a shortcut for the currently displayed list, and ambiguous aliases are rejected. Model and reasoning overrides are session-scoped, persist across a normal Alfred restart, and start from the configured global defaults in a new session. A vanished model or unsupported saved effort is reported and falls back to the live/default catalog. Changing `.env` provider or model settings requires restarting Alfred.
 
 ### Server, auth & channels
 
@@ -190,7 +249,7 @@ curl -X POST 'http://localhost:9001/v1/scheduled-tasks/<task-id>/cancel?sessionI
 - Node.js 22+
 - `pnpm`
 - SearXNG instance (for search — self-host or use a public instance), or Bright Data / Brave keys as fallback
-- At least one LLM API key (Anthropic, Google Gemini, OpenAI, or OpenRouter), or a Codex subscription login
+- At least one LLM API key (Anthropic, Google Gemini, OpenAI, or OpenRouter), or a Codex CLI/App Server subscription login
 
 ### 2. Install
 
@@ -452,7 +511,7 @@ src/agentEvents/    — agent event webhook (schema, auth, dispatcher, Telegram 
 src/tools/          — all tool definitions (drop a *.tool.ts here to add a tool)
 src/tools/browser/  — Pinchtab-first read-only routing plus persistent Playwright interaction
 src/tools/search/   — search providers (SearXNG, Bright Data, Brave)
-src/provider/       — LLM adapters (Anthropic, Gemini, OpenAI, Ollama, LM Studio, OpenRouter, Codex)
+src/provider/       — LLM adapters plus Codex App Server account/runtime integration
 src/channels/       — Telegram + channel adapter interface
 src/runner/         — ChatService, conversation window management
 src/gateway/        — HTTP server, Web UI API, agent event endpoint
@@ -474,6 +533,7 @@ pnpm start              # run compiled build
 pnpm run dev:gateway    # run with auto-rebuild
 pnpm setup:browsers     # install Playwright Chromium (interactive control and read-only fallback)
 pnpm probe:model        # probe a local LLM server for its model list
+pnpm codex:app-server-gate # verify the installed Codex App Server capability boundary
 pnpm run test           # unit + integration + security
 pnpm run test:unit
 pnpm run test:integration

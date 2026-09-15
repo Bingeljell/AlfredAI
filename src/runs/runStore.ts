@@ -1,9 +1,11 @@
+import path from "node:path";
+import { withFileLock } from "../utils/fs.js";
 import { randomUUID } from "node:crypto";
 import type { LlmUsage, RunEvent, RunRecord, RunStatus, ToolCallRecord } from "../types.js";
 import { redactValue } from "../utils/redact.js";
 import { RunEventChannel } from "./eventChannel.js";
 import { JsonFileRunStorage } from "./storage/jsonFileRunStorage.js";
-import type { RunStorage } from "./storage/types.js";
+import type { RunStorage, RunChanges } from "./storage/types.js";
 
 const LIFECYCLE_EVENT_TYPES = new Set(["TurnStarted", "TurnProgress", "TurnComplete", "TurnAborted"]);
 
@@ -55,32 +57,50 @@ export class RunStore {
     };
   }
 
-  async createRun(sessionId: string, message: string, status: RunStatus, scheduler?: RunRecord["scheduler"]): Promise<RunRecord> {
-    const now = new Date().toISOString();
-    const run: RunRecord = {
-      runId: randomUUID(),
-      sessionId,
-      message,
-      status,
-      createdAt: now,
-      updatedAt: now,
-      llmUsage: {
-        promptTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
-        callCount: 0
-      },
-      toolCalls: []
-    };
-    if (scheduler) run.scheduler = scheduler;
-    const safeRun = redactValue(run) as RunRecord;
-    if (scheduler) safeRun.scheduler = scheduler;
-    await this.storage.writeRun(safeRun.runId, safeRun);
-    return safeRun;
+  async createRun(sessionId: string, message: string, status: RunStatus, scheduler?: RunRecord["scheduler"], ingress?: RunRecord["ingress"]): Promise<RunRecord> {
+    return withFileLock(path.join(this.workspaceDir, "runs", sessionId, "admission.lock"), async () => {
+      const latest = (await this.listHistory(sessionId, { limit: 1 })).runs[0];
+      const previousTime = latest ? Date.parse(latest.createdAt) : 0;
+      // Stable ordering survives same-millisecond submissions and clock rollback.
+      const now = new Date(Math.max(Date.now(), Number.isFinite(previousTime) ? previousTime + 1 : 0)).toISOString();
+      const run: RunRecord = {
+        runId: randomUUID(),
+        sessionId,
+        message,
+        status,
+        createdAt: now,
+        updatedAt: now,
+        llmUsage: {
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          callCount: 0
+        },
+        toolCalls: []
+      };
+      if (scheduler) run.scheduler = scheduler;
+      const safeRun = redactValue(run) as RunRecord;
+      if (scheduler) safeRun.scheduler = scheduler;
+      if (ingress) safeRun.ingress = ingress;
+      await this.storage.writeRun(safeRun.runId, safeRun);
+      return safeRun;
+    });
   }
 
   async getRun(runId: string): Promise<RunRecord | undefined> {
     return this.storage.readRun(runId);
+  }
+
+  async changesSince(sessionId: string, cursor: number): Promise<RunChanges> {
+    return this.storage.readChanges?.(sessionId, cursor) ?? { cursor: 0, reset: true, changes: [] };
+  }
+
+  async findRequest(sessionId: string, principalId: string, requestId: string): Promise<RunRecord | undefined> {
+    for (const id of await this.storage.listRunIds()) {
+      const run = await this.storage.readRun(id);
+      if (run?.sessionId === sessionId && run.ingress?.principalId === principalId && run.ingress.requestId === requestId) return run;
+    }
+    return undefined;
   }
 
   async findRunBySchedulerCycle(taskId: string, cycleId: string): Promise<RunRecord | undefined> {
@@ -93,18 +113,21 @@ export class RunStore {
   }
 
   async updateRun(runId: string, patch: Partial<RunRecord>): Promise<RunRecord> {
-    const current = await this.getRun(runId);
-    if (!current) {
-      throw new Error(`Run not found: ${runId}`);
-    }
-    const updated = redactValue({
-      ...current,
-      ...redactValue(patch) as Partial<RunRecord>,
-      updatedAt: new Date().toISOString()
-    }) as RunRecord;
-    if (patch.scheduler) updated.scheduler = patch.scheduler;
-    await this.storage.writeRun(runId, updated);
-    return updated;
+    return withFileLock(path.join(this.workspaceDir, "runs/state", `${runId}.json`), async () => {
+      const current = await this.getRun(runId);
+      if (!current) {
+        throw new Error(`Run not found: ${runId}`);
+      }
+      const updated = redactValue({
+        ...current,
+        ...redactValue(patch) as Partial<RunRecord>,
+        updatedAt: new Date().toISOString()
+      }) as RunRecord;
+      if (patch.scheduler) updated.scheduler = patch.scheduler;
+      if (current.ingress) updated.ingress = current.ingress;
+      await this.storage.writeRun(runId, updated);
+      return updated;
+    });
   }
 
   async requestCancellation(runId: string): Promise<RunRecord> {
@@ -128,29 +151,35 @@ export class RunStore {
   }
 
   async addToolCall(runId: string, call: ToolCallRecord): Promise<void> {
-    const current = await this.getRun(runId);
-    if (!current) {
-      throw new Error(`Run not found: ${runId}`);
-    }
-    const updated = redactValue({
-      ...current,
-      toolCalls: [...current.toolCalls, redactValue(call) as ToolCallRecord],
-      updatedAt: new Date().toISOString()
-    }) as RunRecord;
-    await this.storage.writeRun(runId, updated);
+    return withFileLock(path.join(this.workspaceDir, "runs/state", `${runId}.json`), async () => {
+      const current = await this.getRun(runId);
+      if (!current) {
+        throw new Error(`Run not found: ${runId}`);
+      }
+      const updated = redactValue({
+        ...current,
+        toolCalls: [...current.toolCalls, redactValue(call) as ToolCallRecord],
+        updatedAt: new Date().toISOString()
+      }) as RunRecord;
+      if (current.ingress) updated.ingress = current.ingress;
+      await this.storage.writeRun(runId, updated);
+    });
   }
 
   async addLlmUsage(runId: string, usage: LlmUsage, callCountDelta = 1): Promise<void> {
-    const current = await this.getRun(runId);
-    if (!current) {
-      throw new Error(`Run not found: ${runId}`);
-    }
-    const updated = redactValue({
-      ...current,
-      llmUsage: this.mergeLlmUsage(current.llmUsage, usage, callCountDelta),
-      updatedAt: new Date().toISOString()
-    }) as RunRecord;
-    await this.storage.writeRun(runId, updated);
+    return withFileLock(path.join(this.workspaceDir, "runs/state", `${runId}.json`), async () => {
+      const current = await this.getRun(runId);
+      if (!current) {
+        throw new Error(`Run not found: ${runId}`);
+      }
+      const updated = redactValue({
+        ...current,
+        llmUsage: this.mergeLlmUsage(current.llmUsage, usage, callCountDelta),
+        updatedAt: new Date().toISOString()
+      }) as RunRecord;
+      if (current.ingress) updated.ingress = current.ingress;
+      await this.storage.writeRun(runId, updated);
+    });
   }
 
   private async appendEventDirect(event: RunEvent): Promise<void> {
@@ -201,10 +230,33 @@ export class RunStore {
     return runs.slice(0, Math.max(1, limit));
   }
 
+  /** Canonical conversation history; updates never reorder its pagination. */
+  async listHistory(sessionId: string, options: { before?: string; limit?: number; terminalOnly?: boolean } = {}): Promise<{ runs: RunRecord[]; nextCursor?: string }> {
+    const runs = (await this.listRuns(sessionId, Number.MAX_SAFE_INTEGER)).filter((run) => !options.terminalOnly || !run.scheduler && run.status !== "running" && run.status !== "queued");
+    runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.runId.localeCompare(a.runId));
+    const index = options.before ? runs.findIndex((run) => run.runId === options.before) : -1;
+    if (options.before && index < 0) throw new Error("invalid_history_cursor");
+    const limit = Math.max(1, Math.min(100, options.limit ?? 50));
+    const page = runs.slice(index + 1, index + 1 + limit);
+    return { runs: page, nextCursor: index + 1 + limit < runs.length ? page.at(-1)?.runId : undefined };
+  }
+
+  async sumSessionTokens(sessionId: string): Promise<number> {
+    let total = 0;
+    const runIds = await this.storage.listRunIds();
+    for (const runId of runIds) {
+      const run = await this.storage.readRun(runId);
+      if (run?.sessionId === sessionId) {
+        total += run.llmUsage?.totalTokens ?? 0;
+      }
+    }
+    return total;
+  }
+
   async listRunEvents(run: RunRecord): Promise<RunEvent[]> {
     await this.flushEvents();
-    const day = run.createdAt.slice(0, 10);
-    const events = await this.storage.readSessionDayEvents(run.sessionId, day);
+    const days = await this.storage.listSessionEventDays?.(run.sessionId) ?? [run.createdAt.slice(0, 10)];
+    const events = (await Promise.all(days.map((day) => this.storage.readSessionDayEvents(run.sessionId, day)))).flat();
     return events.filter((event) => event.runId === run.runId);
   }
 

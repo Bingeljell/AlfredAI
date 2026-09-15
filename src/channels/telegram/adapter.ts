@@ -5,7 +5,7 @@ import type { ChatService } from "../../runner/chatService.js";
 import type { SessionStore } from "../../memory/sessionStore.js";
 import type { RunStore } from "../../runs/runStore.js";
 import type { ChannelAdapter } from "../types.js";
-import { ChannelSessionStore } from "./channelSessionStore.js";
+import { ChannelSessionStore } from "../channelSessionStore.js";
 
 const POLL_INTERVAL_MS = 3_000;
 const POLL_TIMEOUT_MS = 600_000; // 10 min max
@@ -14,12 +14,21 @@ const HEARTBEAT_INTERVAL_MS = 15 * 60 * 1_000; // 15 min
 const INLINE_TEXT_MAX_CHARS = 3_800; // Telegram message limit is 4096
 const TELEGRAM_INGRESS_DEDUPE_TTL_MS = 10 * 60 * 1_000;
 const TELEGRAM_INGRESS_DEDUPE_MAX_ENTRIES = 1_000;
+const CHAT_SERVICE_CONTROL_COMMANDS = new Set(["/help", "/status", "/model", "/reasoning", "/usage"]);
+
+function isChatServiceControlCommand(text: string): boolean {
+  const command = text.trim().split(/\s+/, 1)[0]?.toLowerCase();
+  return command ? CHAT_SERVICE_CONTROL_COMMANDS.has(command) : false;
+}
 
 const HELP_TEXT = `
 Alfred commands:
 
 /help — show this message
-/status — current session ID, label, and start time
+/status — show this session and effective model settings
+/model — list or select a live ChatGPT model for this session
+/reasoning — list or select supported reasoning for this session
+/usage — show ChatGPT subscription quota separately from Alfred local tokens
 /label <text> — set a context hint for this chat (e.g. /label lead gen — MSPs USA)
 /label — clear the label
 /newsession — start a fresh session (clears Alfred's context for this chat)
@@ -135,18 +144,11 @@ export class TelegramAdapter implements ChannelAdapter {
 
   private async getOrCreateSessionId(chatId: number): Promise<string> {
     const key = this.channelKey(chatId);
-    const existing = await this.channelStore.get(key);
-    if (existing) {
-      return existing.sessionId;
-    }
-
-    const session = await this.sessionStore.createSession(`Telegram chat ${chatId}`);
-    await this.channelStore.set(key, {
-      sessionId: session.id,
-      label: null,
-      createdAt: new Date().toISOString()
+    const record = await this.channelStore.getOrCreate(key, async () => {
+      const session = await this.sessionStore.createSession(`Telegram chat ${chatId}`);
+      return { sessionId: session.id, label: null, createdAt: new Date().toISOString() };
     });
-    return session.id;
+    return record.sessionId;
   }
 
   // ─── message dispatch ──────────────────────────────────────────────────────
@@ -176,11 +178,6 @@ export class TelegramAdapter implements ChannelAdapter {
       return;
     }
 
-    if (text.startsWith("/help")) {
-      await this.send(chatId, HELP_TEXT);
-      return;
-    }
-
     if (text.startsWith("/newsession")) {
       await this.handleNewSessionCommand(chatId);
       return;
@@ -191,13 +188,8 @@ export class TelegramAdapter implements ChannelAdapter {
       return;
     }
 
-    if (text.startsWith("/status")) {
-      await this.handleStatusCommand(chatId);
-      return;
-    }
-
     // Normal message — run Alfred
-    await this.handleRun(chatId, text, String(userId));
+    await this.handleRun(chatId, text, String(userId), `telegram:${chatId}:${msg.message_id}`);
   }
 
   // ─── commands ─────────────────────────────────────────────────────────────
@@ -252,7 +244,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
   // ─── run execution ─────────────────────────────────────────────────────────
 
-  private async handleRun(chatId: number, text: string, principalId: string): Promise<void> {
+  private async handleRun(chatId: number, text: string, principalId: string, requestId?: string): Promise<void> {
     // Reserve the final-response slot before any await. This preserves ingress
     // order even when a later run completes/polls before an earlier one has
     // finished its Telegram API calls.
@@ -282,7 +274,7 @@ export class TelegramAdapter implements ChannelAdapter {
       const record = await this.channelStore.get(this.channelKey(chatId));
 
       // Prepend channel label context so Alfred knows which mode it's in
-      const message = record?.label
+      const message = record?.label && !isChatServiceControlCommand(text)
         ? `[Channel context: ${record.label}]\n\n${text}`
         : text;
 
@@ -294,8 +286,18 @@ export class TelegramAdapter implements ChannelAdapter {
         requestJob: true,
         channelKey: this.channelKey(chatId),
         principalId,
+        requestId,
         origin: "telegram"
       });
+
+      if (!result.runId) {
+        deliveryStarted = true;
+        await deliverOutbound(async () => {
+          cleanupProgress();
+          await this.sendResponse(chatId, result.assistantText ?? "Done.");
+        });
+        return;
+      }
 
       const runId = result.runId;
       const editProgress = async (statusText: string) => {

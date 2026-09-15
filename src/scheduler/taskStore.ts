@@ -47,6 +47,7 @@ export interface SchedulerTaskStoreOptions {
   nowMs?: () => number;
   instanceId?: string;
   transcriptStore?: TaskTranscriptStore;
+  principalAliases?: (principalId: string) => Promise<string[]>;
 }
 
 export class SchedulerTaskStore {
@@ -57,6 +58,7 @@ export class SchedulerTaskStore {
   readonly transcriptStore: TaskTranscriptStore;
   private readonly nowMs: () => number;
   private readonly instanceId: string;
+  private readonly principalAliases: (principalId: string) => Promise<string[]>;
   private mutationTail: Promise<void> = Promise.resolve();
 
   constructor(options: SchedulerTaskStoreOptions) {
@@ -67,6 +69,7 @@ export class SchedulerTaskStore {
     this.transcriptStore = options.transcriptStore ?? new TaskTranscriptStore(options.workspaceDir);
     this.nowMs = options.nowMs ?? (() => Date.now());
     this.instanceId = options.instanceId ?? randomUUID();
+    this.principalAliases = options.principalAliases ?? (async (id) => [id]);
   }
 
   async init(): Promise<void> {
@@ -90,8 +93,9 @@ export class SchedulerTaskStore {
 
   async listForOwner(owner: TaskOwner, options?: { includeTerminal?: boolean }): Promise<ScheduledTaskV1[]> {
     const snapshot = await this.readSnapshot();
+    const aliases = await this.principalAliases(owner.principalId);
     return snapshot.tasks
-      .filter((task) => task.owner.principalId === owner.principalId && task.owner.sessionId === owner.sessionId)
+      .filter((task) => aliases.includes(task.owner.principalId) && task.owner.sessionId === owner.sessionId)
       .filter((task) => options?.includeTerminal || !isTerminal(task.status))
       .map(clone);
   }
@@ -267,9 +271,10 @@ export class SchedulerTaskStore {
   }
 
   async cancel(id: string, owner: TaskOwner): Promise<ScheduledTaskV1> {
+    const aliases = await this.principalAliases(owner.principalId);
     const result = await this.mutate((snapshot) => {
       const task = requireTask(snapshot, id);
-      if (task.owner.principalId !== owner.principalId || task.owner.sessionId !== owner.sessionId) {
+      if (!aliases.includes(task.owner.principalId) || task.owner.sessionId !== owner.sessionId) {
         throw new SchedulerStoreError("task does not belong to the caller");
       }
       if (!isTerminal(task.status)) {

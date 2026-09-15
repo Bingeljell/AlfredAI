@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":"tool-call-1","result":{"success":true,"contentItems":[{"type":"inputText","text":"Alfred executed alfred_gate_probe: alfred-gate-ok"}]}}

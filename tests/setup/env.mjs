@@ -9,6 +9,10 @@
 // no key and runs open. Tests that need to exercise auth can set it explicitly.
 process.env.ALFRED_API_KEY = "";
 
+// Keep gateway integration tests deterministic even when a developer's .env
+// enables the opt-in scheduler. dotenv will not overwrite this explicit value.
+process.env.ALFRED_SCHEDULER_ENABLED = "false";
+
 // Same reasoning for the agent-event webhook: give tests a deterministic shared
 // secret so the /api/events/agent auth path is exercised (loopback-only mode is
 // covered by unit tests of src/agentEvents/auth.ts).

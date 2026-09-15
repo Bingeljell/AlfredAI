@@ -76,11 +76,15 @@ test("chat service injects session context on follow-up turns and supports /news
 
   await chatService.handleTurn({
     sessionId: session.id,
+    channelKey: "telegram:42",
+    origin: "telegram",
     message: "Find 3 leads"
   });
 
   const followUp = await chatService.handleTurn({
     sessionId: session.id,
+    channelKey: `tui:${session.id}`,
+    origin: "tui",
     message: "Paste them"
   });
 
@@ -121,7 +125,9 @@ test("chat service injects session context on follow-up turns and supports /news
   assert.equal(reset.status, "completed");
 
   const afterReset = await sessionStore.getSession(session.id);
-  assert.equal(afterReset?.workingMemory, undefined);
+  assert.ok(afterReset?.workingMemory?.conversationWindow?.length);
+  assert.notEqual(reset.sessionId, session.id);
+  assert.equal((await sessionStore.getSession(reset.sessionId!))?.workingMemory, undefined);
 });
 
 test("chat service serializes concurrent turns for the same session", async () => {
@@ -157,8 +163,8 @@ test("chat service serializes concurrent turns for the same session", async () =
     }
   });
 
-  const first = chatService.handleTurn({ sessionId: session.id, message: "first" });
-  const second = chatService.handleTurn({ sessionId: session.id, message: "second" });
+  const first = chatService.handleTurn({ sessionId: session.id, message: "first", channelKey: "telegram:42", origin: "telegram" });
+  const second = chatService.handleTurn({ sessionId: session.id, message: "second", channelKey: `tui:${session.id}`, origin: "tui" });
   const results = await Promise.all([first, second]);
 
   assert.equal(maxActive, 1);

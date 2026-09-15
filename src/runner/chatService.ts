@@ -2,14 +2,19 @@ import type {
   ConversationWindowEntry,
   RunOutcome,
   RunStatus,
+  RunRecord,
   SessionOutputRecord,
   SessionPromptContext,
+  EffectiveModelSelection,
   SessionRecord,
   SessionTurnSnippet,
   SessionWorkingMemory
 } from "../types.js";
+import { redactValue } from "../utils/redact.js";
+import { conversationWindow } from "../memory/conversationHistory.js";
 import type { GroupChatStore } from "../memory/groupChatStore.js";
-import { runReActLoop } from "../runtime/runReActLoop.js";
+import type { runReActLoop } from "../runtime/runReActLoop.js";
+import { AlfredAgentRuntime, type AgentRuntime } from "../runtime/agentRuntime.js";
 import { TurnRuntime } from "../runtime/turnRuntime.js";
 import { ThreadRuntimeManager } from "../runtime/threadRuntime.js";
 import { deriveSessionOutputRecordFromRun } from "../memory/sessionOutputs.js";
@@ -17,14 +22,25 @@ import type { SessionStore } from "../memory/sessionStore.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
 import type { InMemoryQueue } from "../workers/inMemoryQueue.js";
-import { getPolicyMode } from "../config/env.js";
 import type { SchedulerTaskApi } from "../scheduler/api.js";
 import type { SchedulerProvenance, SchedulerOrigin } from "../scheduler/notifier.js";
 import type { SchedulerTurnControl } from "../scheduler/api.js";
 import type { WatchSnapshot } from "../scheduler/probes/types.js";
 import type { TaskTranscriptEntry, TaskTranscriptStore } from "../scheduler/taskTranscript.js";
-import { createSchedulerTurnControl, SCHEDULER_SYSTEM_PROMPT } from "../scheduler/execution.js";
+import { createSchedulerTurnControl } from "../scheduler/execution.js";
 import { SCHEDULER_EXECUTION_PROFILE, type TurnExecutionProfile } from "../runtime/executionProfile.js";
+import type { CodexModel } from "../provider/codex/subscriptionService.js";
+import {
+  findEffortMatches,
+  findModelMatches,
+  formatModelCommand,
+  formatReasoningCommand,
+  formatUsageCommand,
+  parseControlCommand,
+  resolveModelSelection,
+  reachedRateLimit,
+  type SubscriptionChatService
+} from "./chatControls.js";
 
 interface ChatTurnInput {
   sessionId: string;
@@ -33,6 +49,7 @@ interface ChatTurnInput {
   channelKey?: string;
   principalId?: string;
   origin?: SchedulerOrigin;
+  requestId?: string;
 }
 
 interface ChatServiceOptions {
@@ -52,10 +69,13 @@ interface ChatServiceOptions {
   agentMaxToolCalls: number;
   agentMaxParallelTools: number;
   runLoopRunner?: typeof runReActLoop;
+  agentRuntime?: AgentRuntime;
   groupChatStore?: GroupChatStore;
   scheduler?: SchedulerTaskApi;
   sessionMutex?: SessionMutex;
   taskTranscriptStore?: TaskTranscriptStore;
+  subscriptionService?: SubscriptionChatService;
+  globalModel?: string;
 }
 
 const CONVERSATION_WINDOW_MAX = 20; // 10 turns × 2 entries each
@@ -116,13 +136,32 @@ export class SessionMutex {
 }
 
 export class ChatService {
+  private readonly admissionMutex = new SessionMutex();
   private readonly threadRuntimeManager: ThreadRuntimeManager;
   private readonly subscribedThreadSessions = new Set<string>();
   private readonly scheduledTurnPromises = new Map<string, Promise<RunOutcome>>();
   private readonly sessionMutex: SessionMutex;
+  private readonly agentRuntime: AgentRuntime;
 
   constructor(private readonly options: ChatServiceOptions) {
     this.sessionMutex = this.options.sessionMutex ?? new SessionMutex();
+    this.agentRuntime = this.options.agentRuntime ?? new AlfredAgentRuntime({
+      runStore: this.options.runStore,
+      searchManager: this.options.searchManager,
+      workspaceDir: this.options.workspaceDir,
+      searchMaxResults: this.options.searchMaxResults,
+      fastScrapeCount: this.options.fastScrapeCount,
+      enablePlaywright: this.options.enablePlaywright,
+      maxSteps: this.options.maxSteps,
+      openAiApiKey: this.options.openAiApiKey,
+      browseConcurrency: this.options.browseConcurrency,
+      pinchtabBaseUrl: this.options.pinchtabBaseUrl,
+      agentMaxDurationMs: this.options.agentMaxDurationMs,
+      agentMaxToolCalls: this.options.agentMaxToolCalls,
+      agentMaxParallelTools: this.options.agentMaxParallelTools,
+      runLoopRunner: this.options.runLoopRunner,
+      scheduler: this.options.scheduler
+    });
     this.threadRuntimeManager = new ThreadRuntimeManager({
       queue: this.options.queue,
       createTurnRuntime: (_sessionId) =>
@@ -230,14 +269,16 @@ export class ChatService {
     return parts.join(" | ").slice(0, 700);
   }
 
-  private async buildSessionContext(session: SessionRecord): Promise<SessionPromptContext | undefined> {
+  private async buildSessionContext(session: SessionRecord, modelSelection?: EffectiveModelSelection): Promise<SessionPromptContext | undefined> {
     const memory = session.workingMemory;
-    if (!memory) {
+    const history = await this.options.runStore.listHistory(session.id, { limit: 100, terminalOnly: true });
+    const canonicalWindow = conversationWindow(history.runs);
+    if (!memory && !modelSelection && !canonicalWindow.length) {
       return undefined;
     }
 
     let lastCompletedRun: SessionPromptContext["lastCompletedRun"];
-    if (memory.lastCompletedRunId) {
+    if (memory?.lastCompletedRunId) {
       const run = await this.options.runStore.getRun(memory.lastCompletedRunId);
       if (run) {
         lastCompletedRun = {
@@ -251,18 +292,19 @@ export class ChatService {
     }
 
     const context: SessionPromptContext = {
-      activeObjective: memory.activeObjective,
-      lastRunId: memory.lastRunId,
-      lastSpecialist: memory.lastSpecialist,
+      activeObjective: memory?.activeObjective,
+      lastRunId: memory?.lastRunId,
+      lastSpecialist: memory?.lastSpecialist,
       lastCompletedRun,
-      lastArtifacts: memory.lastArtifacts?.slice(0, 5),
-      lastOutcomeSummary: memory.lastOutcomeSummary,
-      activeThreadSummary: memory.activeThreadSummary,
-      sessionSummary: memory.sessionSummary,
-      recentTurns: memory.recentTurns?.slice(-6),
-      recentOutputs: memory.recentOutputs?.slice(-4),
-      unresolvedItems: memory.unresolvedItems?.slice(-6),
-      conversationWindow: memory.conversationWindow
+      lastArtifacts: memory?.lastArtifacts?.slice(0, 5),
+      lastOutcomeSummary: memory?.lastOutcomeSummary,
+      activeThreadSummary: memory?.activeThreadSummary,
+      sessionSummary: memory?.sessionSummary,
+      recentTurns: memory?.recentTurns?.slice(-6),
+      recentOutputs: memory?.recentOutputs?.slice(-4),
+      unresolvedItems: memory?.unresolvedItems?.slice(-6),
+      conversationWindow: canonicalWindow.length ? canonicalWindow : memory?.conversationWindow,
+      modelSelection
     };
 
     return Object.values(context).some((value) => {
@@ -352,62 +394,131 @@ export class ChatService {
     await this.options.sessionStore.updateWorkingMemory(sessionId, memoryPatch);
   }
 
-  private async handleNewSessionCommand(sessionId: string): Promise<{
-    runId: string;
-    status: RunStatus;
-    assistantText?: string;
-  }> {
-    await this.options.sessionStore.resetWorkingMemory(sessionId);
-    const run = await this.options.runStore.createRun(sessionId, "/newsession", "completed");
-    const assistantText = "Started a fresh session context. Prior run history is still stored, but Alfred will treat the next turn as a new conversation.";
-    await this.options.runStore.appendEvent({
-      runId: run.runId,
-      sessionId,
-      phase: "route",
-      eventType: "session_reset",
-      payload: {},
-      timestamp: new Date().toISOString()
-    });
-    await this.options.runStore.updateRun(run.runId, {
-      status: "completed",
-      assistantText
-    });
+  private async handleNewSessionCommand(sessionId: string): Promise<RunOutcome & { runId: string; sessionId: string }> {
+    const previous = await this.options.sessionStore.getSession(sessionId);
+    const session = await this.options.sessionStore.createSession(previous?.name);
     return {
-      runId: run.runId,
-      status: "completed",
-      assistantText
+      runId: "", sessionId: session.id, status: "completed",
+      assistantText: "Started a new conversation. The previous conversation and its context remain available on every surface."
     };
   }
 
-  private async executeQueuedTurn(
-    runId: string,
-    sessionId: string,
-    message: string,
-    sessionContext: SessionPromptContext | undefined,
-    provenance: SchedulerProvenance,
-    channelKey?: string
-  ): Promise<void> {
-    try {
-      const outcome = await this.executeRun(runId, sessionId, message, sessionContext, provenance);
-      await this.persistRunOutcome(sessionId, runId, message, outcome);
-      if (channelKey && this.options.groupChatStore) {
-        await this.options.groupChatStore.appendTurn(
-          channelKey, runId, sessionId,
-          message, outcome.assistantText ?? "",
-          outcome.artifactPaths ?? []
-        );
-      }
-    } catch (error) {
-      const failureOutcome: RunOutcome = {
-        status: "failed",
-        assistantText: error instanceof Error ? error.message : "Queued run failed"
-      };
-      await this.options.runStore.updateRun(runId, {
-        status: "failed",
-        assistantText: failureOutcome.assistantText
-      });
-      await this.persistRunOutcome(sessionId, runId, message, failureOutcome);
+  private async liveModels(): Promise<CodexModel[]> {
+    if (!this.options.subscriptionService) throw new Error("Live ChatGPT model controls are unavailable for the configured provider.");
+    const models = await this.options.subscriptionService.listModels();
+    return models.filter((model) => !model.hidden);
+  }
+
+  private async resolveLiveSelection(session: SessionRecord): Promise<{ selection: EffectiveModelSelection; model: CodexModel }> {
+    const models = await this.liveModels();
+    const resolution = resolveModelSelection(models, {
+      preferences: session.preferences,
+      globalModel: this.options.globalModel ?? ""
+    });
+    if (JSON.stringify(resolution.nextPreferences ?? {}) !== JSON.stringify(session.preferences ?? {})) {
+      await this.options.sessionStore.setPreferences(session.id, resolution.nextPreferences);
     }
+    return { selection: resolution.selection, model: resolution.model };
+  }
+
+  private localSessionTokens(sessionId: string): Promise<number> {
+    return this.options.runStore.sumSessionTokens(sessionId);
+  }
+
+  private async controlResponse(session: SessionRecord, message: string): Promise<string | undefined> {
+    const parsed = parseControlCommand(message);
+    if (!parsed) return undefined;
+
+    if (parsed.command === "/help") {
+      return [
+        "Alfred commands:",
+        "/help — show this message",
+        "/status — show this session and effective model settings",
+        "/model — list live picker-visible models",
+        "/model N|NAME — select a model for this session",
+        "/model default — clear the session model override",
+        "/reasoning — list efforts supported by the effective model",
+        "/reasoning N|NAME — select reasoning for this session",
+        "/reasoning default — use the model default effort",
+        "/usage — show subscription quota separately from Alfred local tokens",
+        "/newsession — start a fresh session context"
+      ].join("\n");
+    }
+
+    if (parsed.command === "/status") {
+      const tokens = await this.localSessionTokens(session.id);
+      if (!this.options.subscriptionService) {
+        return [`Session: ${session.id}`, `Local Alfred tokens: ${tokens}`, "Model controls: unavailable for the configured provider."].join("\n");
+      }
+      const resolved = await this.resolveLiveSelection(session);
+      return [
+        `Session: ${session.id}`,
+        `Model: ${resolved.model.displayName} (${resolved.model.id})${session.preferences?.modelId ? " [session override]" : " [global/default]"}`,
+        `Reasoning: ${resolved.selection.reasoningEffort ?? "model default"}${session.preferences?.reasoningEffort ? " [session override]" : " [model default]"}`,
+        `Local Alfred tokens: ${tokens}`
+      ].join("\n");
+    }
+
+    if (parsed.command === "/usage") {
+      if (!this.options.subscriptionService) {
+        return `Subscription usage is unavailable for the configured provider. Alfred local session token usage: ${await this.localSessionTokens(session.id)} tokens.`;
+      }
+      const [usage, tokens] = await Promise.all([
+        this.options.subscriptionService.readUsage(true),
+        this.localSessionTokens(session.id)
+      ]);
+      return formatUsageCommand(usage, tokens);
+    }
+
+    if (parsed.command !== "/model" && parsed.command !== "/reasoning") return undefined;
+    if (!this.options.subscriptionService) return "Live ChatGPT model and reasoning controls are unavailable for the configured provider.";
+
+    const models = await this.liveModels();
+    const context = { preferences: session.preferences, globalModel: this.options.globalModel ?? "" };
+    if (parsed.command === "/model") {
+      if (parsed.args.length === 0 || parsed.args[0]?.toLowerCase() === "page" || parsed.args[0]?.toLowerCase() === "more") {
+        return formatModelCommand(models, context, parsed.args);
+      }
+      if (parsed.args.length === 1 && parsed.args[0]?.toLowerCase() === "default") {
+        const resolution = resolveModelSelection(models, { preferences: { ...session.preferences, modelId: undefined }, globalModel: context.globalModel });
+        await this.options.sessionStore.setPreferences(session.id, resolution.nextPreferences);
+        return `Model reset to ${resolution.model.displayName} (${resolution.model.id}) using the global/default catalog selection.${resolution.selection.notice ? ` ${resolution.selection.notice}` : ""}`;
+      }
+      const numeric = parsed.args.length === 1 ? Number(parsed.args[0]) : NaN;
+      const matches = Number.isInteger(numeric) && numeric > 0
+        ? (models[numeric - 1] ? [models[numeric - 1]] : [])
+        : findModelMatches(models, parsed.args.join(" "));
+      if (matches.length === 0) return "No live picker-visible model matched that selection. Use /model to see the numbered list.";
+      if (matches.length > 1) return ["That model alias is ambiguous; choose one:", ...matches.map((model) => `- ${model.displayName} (${model.id})`)].join("\n");
+      const resolution = resolveModelSelection(models, { preferences: { ...session.preferences, modelId: matches[0]!.id }, globalModel: context.globalModel });
+      await this.options.sessionStore.setPreferences(session.id, resolution.nextPreferences);
+      return `Model set to ${resolution.model.displayName} (${resolution.model.id}) for this session.${resolution.selection.notice ? ` ${resolution.selection.notice}` : ""}`;
+    }
+
+    const resolved = resolveModelSelection(models, context);
+    if (parsed.args.length === 0) return formatReasoningCommand(resolved.model, session.preferences);
+    if (parsed.args.length === 1 && parsed.args[0]?.toLowerCase() === "default") {
+      await this.options.sessionStore.setPreferences(session.id, { ...resolved.nextPreferences, reasoningEffort: undefined });
+      return `Reasoning reset to ${resolved.model.defaultReasoningEffort || "the model default"} for ${resolved.model.displayName}.`;
+    }
+    const numeric = parsed.args.length === 1 ? Number(parsed.args[0]) : NaN;
+    const effort = Number.isInteger(numeric) && numeric > 0
+      ? resolved.model.supportedReasoningEfforts[numeric - 1]
+      : findEffortMatches(resolved.model, parsed.args.join(" "))[0];
+    if (!effort) return `That reasoning effort is not supported by ${resolved.model.displayName}. Use /reasoning to see the live list.`;
+    await this.options.sessionStore.setPreferences(session.id, { ...resolved.nextPreferences, reasoningEffort: effort.reasoningEffort });
+    return `Reasoning set to ${effort.reasoningEffort} for ${resolved.model.displayName} for this session.`;
+  }
+
+  private async prepareCodexTurn(session: SessionRecord): Promise<{ selection?: EffectiveModelSelection; blocked?: string }> {
+    if (!this.options.subscriptionService) return {};
+    const resolved = await this.resolveLiveSelection(session);
+    const reached = reachedRateLimit(await this.options.subscriptionService.readRateLimits());
+    if (reached) {
+      const reset = reached.resetAt ? ` Reset: ${new Date(reached.resetAt * 1_000).toISOString()}.` : "";
+      return { selection: resolved.selection, blocked: `ChatGPT subscription limit reached for ${reached.bucket} (${reached.reachedType}).${reset} Use /usage for the current quota.` };
+    }
+    return { selection: resolved.selection };
   }
 
   private async executeRun(
@@ -488,29 +599,19 @@ export class ChatService {
     heartbeatTimer.unref?.();
 
     try {
-      const outcome = await (this.options.runLoopRunner ?? runReActLoop)(sessionId, message, runId, {
-        runStore: this.options.runStore,
-        searchManager: this.options.searchManager,
-        workspaceDir: this.options.workspaceDir,
-        policyMode: getPolicyMode(),
-        searchMaxResults: this.options.searchMaxResults,
-        fastScrapeCount: this.options.fastScrapeCount,
-        enablePlaywright: this.options.enablePlaywright,
-        maxSteps: this.options.maxSteps,
-        openAiApiKey: this.options.openAiApiKey,
-        browseConcurrency: this.options.browseConcurrency,
-        pinchtabBaseUrl: this.options.pinchtabBaseUrl,
-        agentMaxDurationMs: this.options.agentMaxDurationMs,
-        agentMaxToolCalls: this.options.agentMaxToolCalls,
-        agentMaxParallelTools: this.options.agentMaxParallelTools,
+      const rawOutcome = await this.agentRuntime.runTurn({
+        runId,
+        sessionId,
+        message,
         sessionContext,
-        isCancellationRequested: () => this.options.runStore.isCancellationRequested(runId),
-        scheduler: this.options.scheduler,
+        modelSelection: sessionContext?.modelSelection,
         provenance,
         executionProfile,
-        schedulerControl,
-        systemPrompt: executionProfile?.origin === "scheduler" ? SCHEDULER_SYSTEM_PROMPT : undefined
+        schedulerControl
       });
+      const outcome = sessionContext?.modelSelection?.notice && rawOutcome.assistantText
+        ? { ...rawOutcome, assistantText: `${sessionContext.modelSelection.notice}\n\n${rawOutcome.assistantText}` }
+        : rawOutcome;
 
       await this.options.runStore.updateRun(runId, {
         status: outcome.status,
@@ -546,90 +647,75 @@ export class ChatService {
     }
   }
 
-  async handleTurn(input: ChatTurnInput): Promise<{
-    runId: string;
-    status: RunStatus;
-    assistantText?: string;
-    artifactPaths?: string[];
-    approvalToken?: string;
-  }> {
-    const release = await this.sessionMutex.acquire(input.sessionId);
-    let releaseAfterReturn = true;
-
-    try {
-      const session = await this.options.sessionStore.getSession(input.sessionId);
-      if (!session) {
-        throw new Error(`Session ${input.sessionId} does not exist`);
+  async handleTurn(input: ChatTurnInput): Promise<RunOutcome & { runId: string; sessionId?: string }> {
+    if ((!input.requestJob && !input.requestId) || parseControlCommand(input.message)) {
+      return this.sessionMutex.run(input.sessionId, () => this.executeTurn(input));
+    }
+    // Admission is short and separate from execution. Persist before acknowledging.
+    return this.admissionMutex.run(input.sessionId, async () => {
+      if (!await this.options.sessionStore.getSession(input.sessionId)) throw new Error(`Session ${input.sessionId} does not exist`);
+      const ingress = this.provenance(input);
+      if (input.requestId) {
+        const existing = await this.options.runStore.findRequest(input.sessionId, ingress.principalId, input.requestId);
+        if (existing) {
+          if (existing.message !== redactValue(input.message)) throw new Error("request_id_conflict");
+          return { runId: existing.runId, status: existing.status, assistantText: existing.assistantText };
+        }
       }
-
-      if (input.message.trim() === "/newsession") {
-        return await this.handleNewSessionCommand(input.sessionId);
-      }
-
-      await this.options.sessionStore.touchSession(input.sessionId);
-      const provenance: SchedulerProvenance = {
-        principalId: input.principalId ?? input.sessionId,
-        channelKey: input.channelKey,
-        origin: input.origin ?? (input.channelKey?.startsWith("telegram:") ? "telegram" : "web")
-      };
-      const run = await this.options.runStore.createRun(input.sessionId, input.message, input.requestJob ? "queued" : "running");
-
-      await this.options.runStore.appendEvent({
-        runId: run.runId,
-        sessionId: input.sessionId,
-        phase: "route",
-        eventType: input.requestJob ? "queued" : "inline",
-        payload: { requestJob: Boolean(input.requestJob) },
-        timestamp: new Date().toISOString()
+      const run = await this.options.runStore.createRun(input.sessionId, input.message, "queued", undefined, { ...ingress, requestId: input.requestId });
+      // acquire() registers its place synchronously, preserving ingress order.
+      void this.sessionMutex.run(input.sessionId, () => this.executeTurn(input, run)).catch((error: unknown) => {
+        console.error(`[chat] admitted run ${run.runId} failed to persist:`, error);
       });
+      return { runId: run.runId, status: "queued" };
+    });
+  }
 
-      if (input.requestJob) {
-        // Build inference context from completed turns only. The current turn
-        // is passed to the agent separately and must not be duplicated in its
-        // summaries or recent-turn snippets.
-        const queuedSessionContext = await this.buildSessionContext(session);
-        await this.persistQueuedRunStart(input.sessionId, run.runId, input.message);
-        releaseAfterReturn = false;
-        void this.executeQueuedTurn(
-          run.runId,
-          input.sessionId,
-          input.message,
-          queuedSessionContext,
-          provenance,
-          input.channelKey
-        ).then(release, release);
+  private provenance(input: ChatTurnInput): SchedulerProvenance {
+    return {
+      principalId: input.principalId ?? input.sessionId,
+      channelKey: input.channelKey,
+      origin: input.origin ?? (input.channelKey?.startsWith("telegram:") ? "telegram" : input.channelKey?.startsWith("tui:") ? "tui" : "web")
+    };
+  }
 
-        return {
-          runId: run.runId,
-          status: "queued"
-        };
-      }
-
-      // Snapshot completed history before recording the in-flight user turn.
-      // This keeps the current request out of its own context block.
-      const sessionContext = await this.buildSessionContext(session);
-      await this.persistQueuedRunStart(input.sessionId, run.runId, input.message);
-      const outcome = await this.executeRun(run.runId, input.sessionId, input.message, sessionContext, provenance);
+  /** Called only while holding the execution mutex; context sees completed predecessors. */
+  private async executeTurn(input: ChatTurnInput, admitted?: RunRecord): Promise<RunOutcome & { runId: string; sessionId?: string }> {
+    let run = admitted;
+    const persist = async (outcome: RunOutcome): Promise<RunOutcome & { runId: string; sessionId?: string }> => {
+      if (!run) return { ...outcome, runId: "" };
+      await this.options.runStore.updateRun(run.runId, {
+        status: outcome.status, assistantText: outcome.assistantText, artifactPaths: outcome.artifactPaths,
+        approvalToken: outcome.approvalToken
+      });
       await this.persistRunOutcome(input.sessionId, run.runId, input.message, outcome);
       if (input.channelKey && this.options.groupChatStore) {
-        await this.options.groupChatStore.appendTurn(
-          input.channelKey, run.runId, input.sessionId,
-          input.message, outcome.assistantText ?? "",
-          outcome.artifactPaths ?? []
-        );
+        await this.options.groupChatStore.appendTurn(input.channelKey, run.runId, input.sessionId, input.message, outcome.assistantText ?? "", outcome.artifactPaths ?? []);
       }
-
-      return {
-        runId: run.runId,
-        status: outcome.status,
-        assistantText: outcome.assistantText,
-        artifactPaths: outcome.artifactPaths,
-        approvalToken: outcome.approvalToken
-      };
-    } finally {
-      if (releaseAfterReturn) {
-        release();
-      }
+      return { ...outcome, runId: run.runId };
+    };
+    try {
+      const session = await this.options.sessionStore.getSession(input.sessionId);
+      if (!session) throw new Error(`Session ${input.sessionId} does not exist`);
+      if (input.message.trim() === "/newsession") return this.handleNewSessionCommand(input.sessionId);
+      const control = await this.controlResponse(session, input.message);
+      if (control !== undefined) return { runId: "", status: "completed", assistantText: control };
+      const prepared = await this.prepareCodexTurn(session);
+      if (prepared.blocked) return persist({ status: "failed", assistantText: prepared.blocked });
+      await this.options.sessionStore.touchSession(input.sessionId);
+      const provenance = this.provenance(input);
+      run ??= await this.options.runStore.createRun(input.sessionId, input.message, "running", undefined, provenance);
+      await this.options.runStore.appendEvent({
+        runId: run.runId, sessionId: input.sessionId, phase: "route", eventType: admitted ? "queued" : "inline",
+        payload: { requestJob: Boolean(admitted) }, timestamp: new Date().toISOString()
+      });
+      const sessionContext = await this.buildSessionContext(session, prepared.selection);
+      await this.persistQueuedRunStart(input.sessionId, run.runId, input.message);
+      const outcome = await this.executeRun(run.runId, input.sessionId, input.message, sessionContext, provenance);
+      return await persist(outcome);
+    } catch (error) {
+      if (!run && !parseControlCommand(input.message)) throw error;
+      return persist({ status: "failed", assistantText: `Alfred could not complete this turn: ${error instanceof Error ? error.message : "provider unavailable"}` });
     }
   }
 
@@ -703,15 +789,21 @@ export class ChatService {
     };
     let outcome: RunOutcome;
     try {
-      outcome = await this.executeRun(
-        run.runId,
-        input.sessionId,
-        message,
-        undefined,
-        { ...input.owner, origin: "scheduler" },
-        profile,
-        control
-      );
+      const session = await this.options.sessionStore.getSession(input.sessionId);
+      const prepared = session ? await this.prepareCodexTurn(session) : {};
+      if (prepared.blocked) {
+        outcome = { status: "failed", assistantText: prepared.blocked };
+      } else {
+        outcome = await this.executeRun(
+          run.runId,
+          input.sessionId,
+          message,
+          prepared.selection ? { modelSelection: prepared.selection } : undefined,
+          { ...input.owner, origin: "scheduler" },
+          profile,
+          control
+        );
+      }
       await this.appendTaskTranscript({
         version: 1,
         taskId: input.taskId,

@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import { conversationStream } from "./conversationStream.js";
+import type { Context } from "hono";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
@@ -12,7 +14,8 @@ import { SearchManager } from "../tools/search/searchManager.js";
 import { PinchtabPool } from "../tools/browser/pinchtabPool.js";
 import { InMemoryQueue } from "../workers/inMemoryQueue.js";
 import { ChatService, SessionMutex } from "../runner/chatService.js";
-import { ChannelSessionStore } from "../channels/telegram/channelSessionStore.js";
+import { ChannelSessionStore } from "../channels/channelSessionStore.js";
+import { IdentityStore } from "../channels/identityStore.js";
 import { GroupChatStore } from "../memory/groupChatStore.js";
 import { AgentEventSchema } from "../agentEvents/schema.js";
 import { authorizeAgentEvent } from "../agentEvents/auth.js";
@@ -42,6 +45,9 @@ import {
   TelegramOutboundNotifier,
   WebOutboundNotifier
 } from "../scheduler/notifier.js";
+import { CodexAccountService } from "../provider/codex/accountService.js";
+import { CodexSubscriptionService } from "../provider/codex/subscriptionService.js";
+import { CodexAppServerRuntime } from "../runtime/codexAppServerRuntime.js";
 
 const SessionPostSchema = z.object({
   action: z.enum(["create", "list"]).default("list"),
@@ -53,6 +59,8 @@ const SessionPostSchema = z.object({
 const ChatTurnSchema = z.object({
   sessionId: z.string().min(1),
   message: z.string().min(1),
+  surface: z.enum(["web", "tui"]).default("web"),
+  requestId: z.string().uuid().optional(),
   requestJob: z.boolean().optional()
 });
 
@@ -154,6 +162,16 @@ const searchManager = new SearchManager({
 
 const groupChatStore = new GroupChatStore(appConfig.workspaceDir);
 const sessionMutex = new SessionMutex();
+let codexAccountService = new CodexAccountService();
+let codexSubscriptionService = new CodexSubscriptionService(codexAccountService.appServerClient, () => codexAccountService.initialize());
+
+type AccountResponseStatus = 200 | 404 | 503;
+
+function accountJson(c: Context, body: unknown, status: AccountResponseStatus = 200) {
+  c.header("Cache-Control", "no-store");
+  c.header("Pragma", "no-cache");
+  return c.json(body, status);
+}
 
 // ── Agent event webhook (docs/architecture/agent_event_webhook_spec.md) ──────
 // Push notifications go to Telegram when both a bot token and an alert chat id
@@ -169,10 +187,12 @@ const agentEventDispatcher = new AgentEventDispatcher({
   store: agentEventStore
 });
 
-const schedulerTaskStore = new SchedulerTaskStore({ workspaceDir: appConfig.workspaceDir });
+const identities = new IdentityStore(appConfig.workspaceDir);
+const schedulerTaskStore = new SchedulerTaskStore({ workspaceDir: appConfig.workspaceDir, principalAliases: (id) => identities.aliases(id) });
 const schedulerDeliveryStore = new SchedulerDeliveryStore({ workspaceDir: appConfig.workspaceDir });
+const webActivity = new FileWebActivitySink(appConfig.workspaceDir);
 const schedulerNotifier = new RoutingOutboundNotifier(
-  new WebOutboundNotifier(new FileWebActivitySink(appConfig.workspaceDir)),
+  new WebOutboundNotifier(webActivity),
   appConfig.telegramBotToken
     ? new TelegramOutboundNotifier(appConfig.telegramBotToken, {
         async isAllowed(destination) {
@@ -234,6 +254,18 @@ const schedulerEngine = new SchedulerEngine({
 });
 agentEventDispatcher.setSchedulerHook(schedulerEngine);
 
+const agentRuntime = appConfig.llmProvider === "codex"
+  ? new CodexAppServerRuntime({
+      runStore, searchManager, workspaceDir: appConfig.workspaceDir, searchMaxResults: appConfig.searchMaxResults,
+      fastScrapeCount: appConfig.fastScrapeCount, enablePlaywright: appConfig.enablePlaywright, maxSteps: appConfig.runMaxSteps,
+      openAiApiKey: appConfig.openAiApiKey, browseConcurrency: appConfig.browseConcurrency,
+      pinchtabBaseUrl: appConfig.enablePinchtab ? appConfig.pinchtabBaseUrl : undefined,
+      agentMaxDurationMs: appConfig.agentMaxDurationMs, agentMaxToolCalls: appConfig.agentMaxToolCalls,
+      agentMaxParallelTools: appConfig.agentMaxParallelTools, scheduler: appConfig.schedulerEnabled ? schedulerEngine : undefined,
+      subscriptionService: codexSubscriptionService, defaultModel: appConfig.modelSmart
+    })
+  : undefined;
+
 const chatService = new ChatService({
   sessionMutex,
   sessionStore,
@@ -253,7 +285,10 @@ const chatService = new ChatService({
   agentMaxParallelTools: appConfig.agentMaxParallelTools,
   groupChatStore,
   taskTranscriptStore: schedulerTaskStore.transcriptStore,
-  scheduler: appConfig.schedulerEnabled ? schedulerEngine : undefined
+  scheduler: appConfig.schedulerEnabled ? schedulerEngine : undefined,
+  agentRuntime,
+  subscriptionService: appConfig.llmProvider === "codex" ? codexSubscriptionService : undefined,
+  globalModel: appConfig.modelSmart
 });
 
 scheduledWakeExecutor = async (task, cycleId, snapshot, observationDigest) => {
@@ -310,6 +345,69 @@ app.get("/v1/llm/status", (c) => {
   });
 });
 
+app.get("/v1/accounts/openai", async (c) => {
+  try {
+    return accountJson(c, { account: await codexAccountService.readAccount() });
+  } catch {
+    return accountJson(c, { error: "openai_account_unavailable" }, 503);
+  }
+});
+
+app.post("/v1/accounts/openai/login", async (c) => {
+  const payload = z.object({ mode: z.enum(["browser", "device-code"]).default("browser") }).parse(await c.req.json().catch(() => ({})));
+  try {
+    return accountJson(c, await codexAccountService.startLogin(payload.mode));
+  } catch {
+    return accountJson(c, { error: "openai_login_unavailable" }, 503);
+  }
+});
+
+app.post("/v1/accounts/openai/login/device", async (c) => {
+  try {
+    return accountJson(c, await codexAccountService.startLogin("device-code"));
+  } catch {
+    return accountJson(c, { error: "openai_login_unavailable" }, 503);
+  }
+});
+
+app.get("/v1/accounts/openai/login/:loginId", (c) => {
+  const login = codexAccountService.getLogin(c.req.param("loginId"));
+  return login ? accountJson(c, login) : accountJson(c, { error: "openai_login_not_found" }, 404);
+});
+
+app.delete("/v1/accounts/openai/login/:loginId", async (c) => {
+  try {
+    return accountJson(c, await codexAccountService.cancelLogin(c.req.param("loginId")));
+  } catch {
+    return accountJson(c, { error: "openai_login_cancel_failed" }, 503);
+  }
+});
+
+app.post("/v1/accounts/openai/logout", async (c) => {
+  try {
+    await codexAccountService.logout();
+    return accountJson(c, { ok: true });
+  } catch {
+    return accountJson(c, { error: "openai_logout_failed" }, 503);
+  }
+});
+
+app.get("/v1/accounts/openai/models", async (c) => {
+  try {
+    return accountJson(c, await codexSubscriptionService.readCatalog());
+  } catch {
+    return accountJson(c, { error: "openai_model_catalog_unavailable" }, 503);
+  }
+});
+
+app.get("/v1/accounts/openai/usage", async (c) => {
+  try {
+    return accountJson(c, await codexSubscriptionService.readUsage());
+  } catch {
+    return accountJson(c, { error: "openai_usage_unavailable" }, 503);
+  }
+});
+
 app.post("/v1/sessions", async (c) => {
   const json = await c.req.json();
   const payload = SessionPostSchema.parse(json);
@@ -336,10 +434,19 @@ app.post("/v1/chat/turn", async (c) => {
   const response = await chatService.handleTurn({
     ...payload,
     principalId: "api",
-    origin: "web",
-    channelKey: `web:${payload.sessionId}`
+    origin: payload.surface,
+    channelKey: `${payload.surface}:${payload.sessionId}`
   });
   return c.json(response);
+});
+
+app.get("/v1/sessions/:sessionId/stream", (c) => conversationStream(c, sessionStore, runStore, webActivity));
+
+app.get("/v1/sessions/:sessionId/history", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  if (!await sessionStore.getSession(sessionId)) return c.json({ error: "Session not found" }, 404);
+  const limit = z.coerce.number().int().min(1).max(100).parse(c.req.query("limit") ?? 50);
+  return c.json(await runStore.listHistory(sessionId, { limit, before: c.req.query("before") }));
 });
 
 app.get("/v1/scheduled-tasks", async (c) => {
@@ -414,6 +521,29 @@ app.get("/v1/channels", async (c) => {
   return c.json({ channelSessions });
 });
 
+app.post("/v1/channels/attach", async (c) => {
+  const payload = z.object({ channelKey: z.string().regex(/^(telegram:-?\d+|(?:web|tui):[a-zA-Z0-9_-]+)$/), sessionId: z.string().uuid() }).strict().parse(await c.req.json());
+  if (!await sessionStore.getSession(payload.sessionId)) return c.json({ error: "Session not found" }, 404);
+  const store = new ChannelSessionStore(appConfig.workspaceDir);
+  const existing = await store.get(payload.channelKey);
+  // Telegram bindings must have been observed by the authorized adapter first.
+  if (payload.channelKey.startsWith("telegram:") && !existing) return c.json({ error: "Unknown Telegram channel" }, 404);
+  await store.set(payload.channelKey, { sessionId: payload.sessionId, label: existing?.label ?? null, createdAt: new Date().toISOString() });
+  return c.json({ channelKey: payload.channelKey, sessionId: payload.sessionId });
+});
+
+app.post("/v1/identities/link-telegram", async (c) => {
+  const { userId } = z.object({ userId: z.string().regex(/^\d+$/) }).strict().parse(await c.req.json());
+  if (!appConfig.telegramAllowedUserIds.includes(Number(userId))) return c.json({ error: "Telegram user is not allowlisted" }, 403);
+  await identities.linkTelegram(userId);
+  return c.json({ linked: true, principalIds: await identities.aliases("api") });
+});
+
+app.delete("/v1/identities/telegram/:userId", async (c) => {
+  await identities.unlinkTelegram(z.string().regex(/^\d+$/).parse(c.req.param("userId")));
+  return c.json({ unlinked: true });
+});
+
 // ── Agent event webhook ─ POST /api/events/agent ─────────────────────────────
 // Decoupled ingress for external agents / terminal wrappers (Herdr, tmux/Zellij
 // hooks, standalone agent hooks). Auth: shared X-Agent-Event-Token secret, or
@@ -456,6 +586,7 @@ app.get("/ui", serveStatic({ path: "./webui/index.html" }));
 app.get("/", (c) => c.redirect("/ui"));
 
 app.onError((error, c) => {
+  if (error.message === "request_id_conflict") return c.json({ error: "request_id_conflict" }, 409);
   if (error instanceof z.ZodError) {
     return c.json(
       { error: "Invalid request", details: error.issues.map((issue) => ({ path: issue.path, message: issue.message })) },
@@ -466,4 +597,11 @@ app.onError((error, c) => {
   return c.json({ error: "Internal server error" }, 500);
 });
 
-export { app, sessionStore, runStore, chatService, searchManager, agentEventDispatcher, agentEventStore, schedulerEngine };
+export function setCodexAccountServiceForTests(service: CodexAccountService): void {
+  codexAccountService = service;
+  if (codexAccountService.appServerClient) {
+    codexSubscriptionService = new CodexSubscriptionService(codexAccountService.appServerClient, () => codexAccountService.initialize());
+  }
+}
+
+export { app, sessionStore, runStore, chatService, searchManager, agentEventDispatcher, agentEventStore, schedulerEngine, codexAccountService, codexSubscriptionService };

@@ -70,6 +70,16 @@ export interface ConversationWindowEntry {
   timestamp: string;
 }
 
+/** Explicit per-session controls; never fold these into summaries or metadata. */
+export interface SessionModelSelection {
+  modelId?: string;
+  reasoningEffort?: string;
+}
+
+export interface EffectiveModelSelection extends SessionModelSelection {
+  notice?: string;
+}
+
 export interface SessionWorkingMemory {
   activeObjective?: string;
   lastRunId?: string;
@@ -83,7 +93,7 @@ export interface SessionWorkingMemory {
   recentOutputs?: SessionOutputRecord[];
   unresolvedItems?: string[];
   lastSpecialist?: string;
-  /** Sliding window of last 15 turns (30 entries) for in-session continuity */
+  /** Compatibility cache; inference reconstructs a bounded window from canonical run history. */
   conversationWindow?: ConversationWindowEntry[];
 }
 
@@ -113,6 +123,7 @@ export interface SessionPromptContext {
   recentOutputs?: SessionOutputRecord[];
   unresolvedItems?: string[];
   conversationWindow?: ConversationWindowEntry[];
+  modelSelection?: EffectiveModelSelection;
 }
 
 export interface SessionRecord {
@@ -122,6 +133,7 @@ export interface SessionRecord {
   updatedAt: string;
   status: "active";
   metadata?: Record<string, unknown>;
+  preferences?: SessionModelSelection;
   workingMemory?: SessionWorkingMemory;
 }
 
@@ -175,6 +187,13 @@ export interface RunEvent {
   timestamp: string;
 }
 
+export interface ConversationSnapshot {
+  cursor?: number;
+  session: SessionRecord;
+  runs: RunRecord[];
+  notifications: Array<{ deliveryId: string; text: string; timestamp: string }>;
+}
+
 export interface RunRecord {
   runId: string;
   sessionId: string;
@@ -185,10 +204,18 @@ export interface RunRecord {
   cancelRequestedAt?: string;
   cancelledAt?: string;
   assistantText?: string;
+  /** Redacted cumulative draft; final assistantText remains authoritative. */
+  assistantPreview?: string;
   artifactPaths?: string[];
   approvalToken?: string;
   llmUsage?: LlmUsageTotals;
   toolCalls: ToolCallRecord[];
+  ingress?: {
+    requestId?: string;
+    principalId: string;
+    channelKey?: string;
+    origin: "web" | "tui" | "telegram" | "scheduler";
+  };
   scheduler?: {
     taskId: string;
     cycleId: string;

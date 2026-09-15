@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":"tool-call-1","method":"item/tool/call","params":{"callId":"call-1","namespace":null,"threadId":"thread-1","tool":"alfred_gate_probe","arguments":{"value":"alfred-gate-ok"},"turnId":"turn-1"}}

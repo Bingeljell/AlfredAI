@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { resolveAlfredPaths } from "../../src/config/paths.js";
+import { installedPackageRoot, resolveAlfredPaths } from "../../src/config/paths.js";
+
+test("package root resolves from both source and compiled module locations", () => {
+  assert.equal(installedPackageRoot("file:///tmp/alfred/src/config/paths.ts"), "/tmp/alfred");
+  assert.equal(installedPackageRoot("file:///tmp/alfred/dist/src/config/paths.js"), "/tmp/alfred");
+});
 
 const cwd = path.resolve("/tmp/alfred-project");
 const homeDir = path.resolve("/tmp/alfred-user");

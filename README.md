@@ -143,6 +143,10 @@ pnpm alfred auth logout openai
 
 `pnpm codex:login`, `pnpm codex:status`, and `pnpm codex:logout` remain compatibility aliases. Alfred does not read or persist ChatGPT tokens; Codex owns credentials and refresh. The web UI exposes the same status, login, model catalog, and account quota under Settings → Models & Accounts. Account quota/reset data is separate from per-run Alfred usage. Codex turns use ephemeral App Server threads, inject only Alfred's durable session context, and execute external effects only through Alfred's dynamic tool registry and policy envelope. Built-in Codex shell, filesystem, patch, browser, network, and MCP capabilities are disabled/rejected by the runtime boundary.
 
+The Settings panel labels the configured provider as **Active** and a connected ChatGPT subscription as **Standby** when another provider is selected. Standby means an explicitly selectable alternative, not automatic failover: Alfred never changes LLM providers on its own.
+
+By default, the App Server uses the same Codex credential home as the Codex CLI. To keep Alfred on a separate ChatGPT account, give its process a dedicated absolute `CODEX_HOME`, add `cli_auth_credentials_store = "file"` to that directory's `config.toml`, restart Alfred, and sign in from Alfred's Web UI. See `docs/operations/chatgpt_subscription.md` for the isolated-profile setup.
+
 Terminal login prints the browser authorization URL or device-code verification URL and one-time code, then keeps the App Server process open until `account/login/completed`. Use `--timeout-ms <ms>` to change the ten-minute timeout; Ctrl-C sends `account/login/cancel` before the client closes. The Web UI opens browser login automatically, polls completion, and provides cancellation; use device code there for a remote host. Neither path prints access or refresh tokens.
 
 ### Chat model controls

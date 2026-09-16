@@ -7,6 +7,7 @@ import { RunStore } from "../../src/runs/runStore.js";
 import { SessionStore } from "../../src/memory/sessionStore.js";
 import type { CodexModel, CodexRateLimitSnapshot, CodexSubscriptionUsage } from "../../src/provider/codex/subscriptionService.js";
 import { createTempWorkspace } from "../helpers/tmpWorkspace.js";
+import { toolApprovalActionKey, toolApprovalStore } from "../../src/runtime/toolApprovalStore.js";
 
 const models: CodexModel[] = [
   { id: "gpt-5.6-sol", model: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", description: "", hidden: false, isDefault: true, defaultReasoningEffort: "low", supportedReasoningEfforts: [{ reasoningEffort: "low", description: "quick" }, { reasoningEffort: "medium", description: "balanced" }], inputModalities: ["text"] },
@@ -113,6 +114,24 @@ test("ChatService controls have identical channel-facing behavior and live numbe
   const webReasoning = await setup.chat.handleTurn({ sessionId: webSession.id, message: "/reasoning" });
   const telegramReasoning = await setup.chat.handleTurn({ sessionId: telegramSession.id, message: "/reasoning" });
   assert.equal(webReasoning.assistantText, telegramReasoning.assistantText);
+});
+
+test("ChatService approvals are one-use, session-bound controls outside conversation history", async () => {
+  toolApprovalStore.clear();
+  const workspace = await createTempWorkspace("chat-controls-approval");
+  const setup = makeService(workspace);
+  const session = await setup.sessionStore.createSession("Approval");
+  const other = await setup.sessionStore.createSession("Other");
+  const actionKey = toolApprovalActionKey("shell_exec", { command: "pwd" });
+  const pending = toolApprovalStore.request(session.id, actionKey, "shell_exec: pwd");
+
+  const wrongSession = await setup.chat.handleTurn({ sessionId: other.id, message: `/approve ${pending.token}` });
+  assert.match(wrongSession.assistantText ?? "", /not found/);
+  const approved = await setup.chat.handleTurn({ sessionId: session.id, message: `/approve ${pending.token}` });
+  assert.match(approved.assistantText ?? "", /Approved once/);
+  assert.equal(toolApprovalStore.consume(session.id, actionKey), true);
+  assert.equal(toolApprovalStore.consume(session.id, actionKey), false);
+  assert.equal((await setup.runStore.listRuns(session.id)).length, 0);
 });
 
 test("ChatService reports disappeared models and invalid saved effort explicitly", async () => {

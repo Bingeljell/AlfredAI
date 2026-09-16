@@ -6,6 +6,7 @@ import type { RunStore } from "../runs/runStore.js";
 import { redactValue } from "../utils/redact.js";
 import { appConfig } from "../config/env.js";
 import { ExtensionManager } from "../extensions/manager.js";
+import { toolApprovalActionKey, toolApprovalStore } from "../runtime/toolApprovalStore.js";
 
 interface ToolModule {
   toolDefinition?: ToolDefinition;
@@ -632,22 +633,27 @@ export async function executeToolWithEnvelope(args: ExecuteToolWithEnvelopeArgs)
   }
 
   if (requiresApproval) {
-    await emitToolTraceEvent(args, "tool_action_rejected", {
-      toolName: args.toolName,
-      reason: "approval_required_not_supported",
-      input: rawInput
-    });
-    return {
-      tool: args.toolName,
-      status: "error",
-      durationMs: Date.now() - started,
-      requiresApproval: true,
-      inputRepairApplied: parsedInputJson.repaired,
-      inputRepairStrategy: parsedInputJson.strategy,
-      input: rawInput,
-      result: null,
-      error: "approval_required_not_supported"
-    };
+    const actionKey = toolApprovalActionKey(args.toolName, parsedInput.data);
+    if (!toolApprovalStore.consume(args.context.sessionId, actionKey)) {
+      const approval = toolApprovalStore.request(args.context.sessionId, actionKey, `${args.toolName} ${JSON.stringify(redactValue(rawInput)).slice(0, 400)}`);
+      await emitToolTraceEvent(args, "tool_action_rejected", {
+        toolName: args.toolName,
+        reason: "approval_required",
+        approvalToken: approval.token,
+        input: rawInput
+      });
+      return {
+        tool: args.toolName,
+        status: "error",
+        durationMs: Date.now() - started,
+        requiresApproval: true,
+        inputRepairApplied: parsedInputJson.repaired,
+        inputRepairStrategy: parsedInputJson.strategy,
+        input: rawInput,
+        result: null,
+        error: `approval_required:${approval.token}`
+      };
+    }
   }
 
   try {
@@ -685,7 +691,7 @@ export async function executeToolWithEnvelope(args: ExecuteToolWithEnvelopeArgs)
       tool: args.toolName,
       status: "ok",
       durationMs,
-      requiresApproval: false,
+      requiresApproval,
       inputRepairApplied: parsedInputJson.repaired,
       inputRepairStrategy: parsedInputJson.strategy,
       input: rawInput,

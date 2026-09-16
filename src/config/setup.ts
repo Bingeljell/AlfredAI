@@ -4,11 +4,16 @@ import type { AlfredPaths } from "./paths.js";
 
 export const SETUP_PROVIDERS = ["openai", "anthropic", "gemini", "ollama", "lmstudio", "openrouter", "codex"] as const;
 export type SetupProvider = typeof SETUP_PROVIDERS[number];
+export const SETUP_ACCESS_MODES = ["limited", "approval", "trusted"] as const;
+export type SetupAccessMode = typeof SETUP_ACCESS_MODES[number];
 
 export interface SetupOptions {
   paths: AlfredPaths;
   name: string;
+  about?: string;
+  interactionStyle?: string;
   provider: SetupProvider;
+  accessMode?: SetupAccessMode;
   model?: string;
   port?: number;
 }
@@ -69,6 +74,8 @@ export async function initializeAlfredHome(options: SetupOptions): Promise<Setup
   const name = options.name.trim();
   if (!name) throw new Error("A non-empty user name is required");
   if (!SETUP_PROVIDERS.includes(options.provider)) throw new Error(`Unsupported provider: ${options.provider}`);
+  const accessMode = options.accessMode ?? "approval";
+  if (!SETUP_ACCESS_MODES.includes(accessMode)) throw new Error(`Unsupported access mode: ${accessMode}`);
   const port = options.port ?? 9001;
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Port must be between 1 and 65535");
 
@@ -91,6 +98,7 @@ export async function initializeAlfredHome(options: SetupOptions): Promise<Setup
   const model = options.model?.trim() || defaultModel(options.provider);
   const config = [
     "ALFRED_ENV=prod",
+    `ALFRED_ACCESS_MODE=${accessMode}`,
     `PORT=${port}`,
     `ALFRED_HOME=${quoteEnv(options.paths.alfredHome)}`,
     `ALFRED_LLM_PROVIDER=${options.provider}`,
@@ -111,9 +119,13 @@ export async function initializeAlfredHome(options: SetupOptions): Promise<Setup
   const soulTemplate = await readFile(path.join(options.paths.packageRoot, "templates", "SOUL.md"), "utf8");
   await writeOnce(path.join(options.paths.identityDir, "SOUL.md"), soulTemplate.replaceAll("[your name]", name), 0o600, result);
   const instructionsTemplate = await readFile(path.join(options.paths.packageRoot, "templates", "INSTRUCTIONS.md"), "utf8");
-  await writeOnce(path.join(options.paths.identityDir, "INSTRUCTIONS.md"), instructionsTemplate, 0o600, result);
+  const instructions = instructionsTemplate
+    .replaceAll("[about you and your work]", options.about?.trim() || "No additional background supplied yet.")
+    .replaceAll("[how you want Alfred to work with you]", options.interactionStyle?.trim() || "Be concise, candid, proactive, and ask only when a decision is genuinely required.");
+  await writeOnce(path.join(options.paths.identityDir, "INSTRUCTIONS.md"), instructions, 0o600, result);
 
   result.nextSteps.push(providerNextStep(options.provider, configPath));
+  result.nextSteps.push(`Access mode: ${accessMode}. Change ALFRED_ACCESS_MODE in ${configPath} and restart Alfred to switch modes.`);
   result.nextSteps.push("Run: alfred doctor");
   result.nextSteps.push("Run: alfred start");
   return result;

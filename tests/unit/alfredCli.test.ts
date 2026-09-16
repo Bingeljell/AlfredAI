@@ -82,9 +82,10 @@ test("Alfred CLI setup and doctor initialize an isolated Codex-backed home", asy
   const home = await mkdtemp(path.join(os.tmpdir(), "alfred-cli-home-"));
   const target = path.join(home, "instance");
   const output: string[] = [];
-  assert.equal(await runCli(["setup", "--name", "Ada", "--provider", "codex", "--home", target], { write: (line) => output.push(line) }), 0);
+  assert.equal(await runCli(["setup", "--name", "Ada", "--provider", "codex", "--access", "limited", "--home", target], { write: (line) => output.push(line) }), 0);
   assert.match(await readFile(path.join(target, "identity", "SOUL.md"), "utf8"), /Ada/);
   assert.match(await readFile(path.join(target, "config", "config.env"), "utf8"), /ALFRED_LLM_PROVIDER=codex/);
+  assert.match(await readFile(path.join(target, "config", "config.env"), "utf8"), /ALFRED_ACCESS_MODE=limited/);
   assert.equal(await runCli(["doctor", "--home", target, "--json"], { write: (line) => output.push(line) }), 0);
   assert.equal(output.join("\n").includes("accessToken"), false);
 });

@@ -1,6 +1,6 @@
 # Changelog
 
-- **2026-09-16** > `.github/workflows/ci.yml`, `scripts/{smoke-package,check-package}.mjs`, `package.json`, `src/config/paths.ts`, `tests/unit/{packageManifest,paths}.test.ts`, `docs/changelog.md` > add pull-request release gates, package-content privacy checks, and an exact-tarball clean-install smoke test that runs outside the checkout, exercises setup and extension activation, verifies private state stays outside the installed package, and corrects compiled resource-root resolution without publishing to npm.
+- **2026-09-16** > `.github/workflows/ci.yml`, `scripts/{smoke-package,check-package}.mjs`, `package.json`, `src/{config/paths.ts,provider/codex/accountService.ts}`, `tests/unit/{packageManifest,paths}.test.ts`, `docs/changelog.md` > add pull-request release gates, package-content privacy checks, and an exact-tarball clean-install smoke test; correct compiled resource-root resolution and keep awaited ChatGPT login timeouts alive on Node 22 without publishing to npm.
 
 - **2026-09-16** > `src/config/service.ts`, `scripts/alfred-cli.ts`, `tests/unit/service.test.ts`, `docs/{operations/extensions.md,changelog.md}`, `README.md` > add tested macOS `service install/status/restart/uninstall` commands that generate a neutral per-user LaunchAgent, use modern user-domain launchctl operations, keep logs in the private Alfred home, and preserve all user data on uninstall.
 

@@ -237,7 +237,6 @@ export class CodexAccountService {
       timer = setTimeout(() => {
         void cancel("Login timed out; the pending App Server login was cancelled");
       }, timeoutMs);
-      timer.unref?.();
       if (options.signal) {
         if (options.signal.aborted) onAbort();
         else options.signal.addEventListener("abort", onAbort, { once: true });

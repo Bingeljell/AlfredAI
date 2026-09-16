@@ -1,5 +1,9 @@
 # Changelog
 
+- **2026-09-16** > `src/{config,extensions,runtime,runner,tools}/`, `scripts/{alfred-cli.ts,check-package.mjs}`, `templates/INSTRUCTIONS.md`, `.env.example`, `tests/unit/`, `README.md`, `docs/{getting-started.md,operations/extensions.md,roadmap.md,changelog.md}` > add personalized onboarding with limited, exact-action approval, and trusted host-access modes; make approvals expiring, session-bound, and one-use across channels; let Alfred write disabled extensions while retaining human digest activation; reject emails and credential-shaped values from the installer; and record the game-development-first direction.
+
+- **2026-09-16** > `README.md`, `docs/{roadmap.md,changelog.md}` > record Alfred's game-development-first direction, planned Game Development and Game Testing modes, and the need for mode-specific permissions plus adaptive budgets for long-running production work.
+
 - **2026-09-16** > `docs/{getting-started.md,operations/npm-release.md,changelog.md}`, `README.md`, `package.json`, `scripts/check-package.mjs`, `tests/unit/packageManifest.test.ts` > separate product installation from source development, ship an explicit allowlist of user-facing guides, document provider onboarding and the first conversation, clarify the packaged self-extension trust model, and add a no-publish release runbook with explicit package-name, license, privacy, provenance, and prerelease gates.
 
 - **2026-09-16** > `.github/workflows/ci.yml`, `scripts/{smoke-package,check-package}.mjs`, `package.json`, `src/{config/paths.ts,provider/codex/accountService.ts}`, `tests/unit/{packageManifest,paths}.test.ts`, `docs/changelog.md` > add pull-request release gates, package-content privacy checks, and an exact-tarball clean-install smoke test; correct compiled resource-root resolution and keep awaited ChatGPT login timeouts alive on Node 22 without publishing to npm.

@@ -6,14 +6,14 @@ import { CodexAccountService, type OpenAiLoginMode, type OpenAiLoginProgress, ty
 import { migrateAlfredHome } from "../src/config/homeMigration.js";
 import { diagnoseAlfred } from "../src/config/doctor.js";
 import { resolveAlfredPaths } from "../src/config/paths.js";
-import { initializeAlfredHome, SETUP_PROVIDERS, type SetupProvider } from "../src/config/setup.js";
+import { initializeAlfredHome, SETUP_ACCESS_MODES, SETUP_PROVIDERS, type SetupAccessMode, type SetupProvider } from "../src/config/setup.js";
 import { MacServiceManager } from "../src/config/service.js";
 import { ExtensionManager } from "../src/extensions/manager.js";
 
 const DEFAULT_LOGIN_TIMEOUT_MS = 10 * 60_000;
 
 function usage(): never {
-  throw new Error("Usage: alfred setup [--name NAME] [--provider PROVIDER] [--model MODEL] [--home PATH] | alfred doctor [--home PATH] [--json] | alfred service <install|status|restart|uninstall> | alfred tools <list|create|test|enable|disable> | alfred start | alfred tui [--session ID] [--url URL] | alfred migrate home [--to PATH] [--source-workspace PATH] [--apply] | alfred auth login openai [--device-code] [--timeout-ms <ms>] | alfred auth status openai | alfred auth logout openai");
+  throw new Error("Usage: alfred setup [--name NAME] [--about TEXT] [--style TEXT] [--provider PROVIDER] [--access limited|approval|trusted] [--model MODEL] [--home PATH] | alfred doctor [--home PATH] [--json] | alfred service <install|status|restart|uninstall> | alfred tools <list|create|test|enable|disable> | alfred start | alfred tui [--session ID] [--url URL] | alfred migrate home [--to PATH] [--source-workspace PATH] [--apply] | alfred auth login openai [--device-code] [--timeout-ms <ms>] | alfred auth status openai | alfred auth logout openai");
 }
 
 type CliAccountService = Pick<CodexAccountService, "startLogin" | "waitForLogin" | "readAccount" | "logout" | "close">;
@@ -28,13 +28,14 @@ export interface AlfredCliOptions {
 }
 
 async function runSetup(args: string[], options: AlfredCliOptions): Promise<number> {
-  const allowed = new Set(["--name", "--provider", "--model", "--home", "--port"]);
+  const allowed = new Set(["--name", "--about", "--style", "--provider", "--access", "--model", "--home", "--port"]);
   for (let index = 0; index < args.length; index += 2) {
     if (!allowed.has(args[index]!)) throw new Error(`Unknown setup option: ${args[index]}`);
   }
   let closePrompt = (): void => undefined;
   let prompt = options.prompt;
-  if (!prompt && (!optionValue(args, "--name") || !optionValue(args, "--provider"))) {
+  const interactiveSetup = !optionValue(args, "--name") || !optionValue(args, "--provider");
+  if (!prompt && interactiveSetup) {
     if (!process.stdin.isTTY) throw new Error("Non-interactive setup requires --name and --provider");
     const terminal = createInterface({ input: process.stdin, output: process.stdout });
     prompt = (question) => terminal.question(question);
@@ -44,6 +45,10 @@ async function runSetup(args: string[], options: AlfredCliOptions): Promise<numb
     const name = optionValue(args, "--name") ?? await prompt!("Your name: ");
     const providerValue = (optionValue(args, "--provider") ?? await prompt!(`Provider (${SETUP_PROVIDERS.join("/")}): `)).trim().toLowerCase();
     if (!SETUP_PROVIDERS.includes(providerValue as SetupProvider)) throw new Error(`Unsupported provider: ${providerValue}`);
+    const accessValue = (optionValue(args, "--access") ?? (interactiveSetup ? await prompt!(`Access (${SETUP_ACCESS_MODES.join("/")}) [approval]: `) : "approval")).trim().toLowerCase() || "approval";
+    if (!SETUP_ACCESS_MODES.includes(accessValue as SetupAccessMode)) throw new Error(`Unsupported access mode: ${accessValue}`);
+    const about = optionValue(args, "--about") ?? (interactiveSetup ? await prompt!("A little about you and your work (optional): ") : undefined);
+    const interactionStyle = optionValue(args, "--style") ?? (interactiveSetup ? await prompt!("How should Alfred work with you? (optional): ") : undefined);
     const basePaths = resolveAlfredPaths();
     const targetHome = path.resolve(optionValue(args, "--home") ?? basePaths.alfredHome);
     const paths = resolveAlfredPaths({
@@ -53,7 +58,10 @@ async function runSetup(args: string[], options: AlfredCliOptions): Promise<numb
     const result = await initializeAlfredHome({
       paths,
       name,
+      about,
+      interactionStyle,
       provider: providerValue as SetupProvider,
+      accessMode: accessValue as SetupAccessMode,
       model: optionValue(args, "--model"),
       port: optionValue(args, "--port") ? Number(optionValue(args, "--port")) : undefined
     });

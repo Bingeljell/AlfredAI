@@ -1,7 +1,6 @@
 import type { PolicyMode, RunOutcome, SessionPromptContext } from "../types.js";
 import type { RunStore } from "../runs/runStore.js";
 import type { SearchManager } from "../tools/search/searchManager.js";
-import { evaluateApprovalNeed } from "./approvalPolicy.js";
 import { ALFRED_AGENT } from "./specialists.js";
 import { runAgentLoop } from "./agentLoop.js";
 import type { SchedulerTaskApi } from "../scheduler/api.js";
@@ -73,26 +72,6 @@ export async function runReActLoop(
       },
       timestamp: nowIso()
     });
-  }
-
-  const approval = options.executionProfile?.origin === "scheduler"
-    ? { needed: false as const }
-    : evaluateApprovalNeed(message, options.policyMode);
-  if (approval.needed) {
-    await runStore.appendEvent({
-      runId,
-      sessionId,
-      phase: "approval",
-      eventType: "approval_required",
-      payload: { reason: approval.reason, token: approval.token },
-      timestamp: nowIso()
-    });
-
-    return {
-      status: "needs_approval",
-      approvalToken: approval.token,
-      assistantText: `Approval required (${approval.token}) before executing this request.`
-    };
   }
 
   await runStore.appendEvent({

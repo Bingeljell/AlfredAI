@@ -1,4 +1,4 @@
-export type PolicyMode = "trusted" | "balanced";
+export type PolicyMode = "trusted" | "balanced" | "limited";
 
 export type RunStatus = "queued" | "running" | "completed" | "cancelled" | "failed" | "needs_approval";
 

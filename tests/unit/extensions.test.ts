@@ -19,6 +19,9 @@ test("extension scaffolds are disabled until an exact digest is approved", async
   const enabled = await manager.list();
   assert.equal(enabled[0]?.state, "enabled");
   assert.equal(enabled[0]?.digest, inspection.digest);
+  const definition = (await manager.discoverEnabled()).get("example_tool");
+  assert.ok(definition);
+  assert.equal(definition.requiresApproval, undefined);
 });
 
 test("syntax validation does not execute unapproved extension code", async () => {

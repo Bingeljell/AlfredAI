@@ -6,6 +6,10 @@ There is no Batman without Alfred.
 
 Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reasons, acts, remembers, and can extend his own capabilities. Talk to him via Telegram, the web UI, or the terminal. Give him a task; he figures out how to do it.
 
+Alfred remains general-purpose, while the product roadmap is
+**game-development first**, with dedicated Game Development and Game Testing
+modes planned over the same core runtime. See the [roadmap](docs/roadmap.md).
+
 ## Choose your installation path
 
 The npm package is still private while its public name and license are being
@@ -20,10 +24,12 @@ alfred tui
 ```
 
 `alfred setup` creates private configuration, identity, workspace, logs, and
-extension directories under `~/.alfred`. Existing files are preserved on every
-rerun. API keys are never requested through visible terminal input; setup tells
-you which key to add to the mode-`0600` configuration file, or directs Codex
-users through `alfred auth login openai`.
+extension directories under `~/.alfred`. It asks how Alfred should work with
+you and whether host access should be limited, approval-based, or trusted.
+Existing files are preserved on every rerun. API keys are never requested
+through visible terminal input; setup tells you which key to add to the
+mode-`0600` configuration file, or directs Codex users through
+`alfred auth login openai`.
 
 People who want to change Alfred itself should clone this repository and use
 pnpm. The two paths, provider setup, first conversation, background service,
@@ -123,7 +129,7 @@ Alfred auto-discovers tools from `src/tools/definitions/` — each `*.tool.ts` f
 | `code_discover` | Pattern-aware code search of the repo |
 | `file_list` / `file_read` / `file_write` / `file_edit` | Workspace file operations (path-safe, project-rooted) |
 | `extension_write` | Create or update a disabled user-space extension for explicit human review and digest approval |
-| `shell_exec` | Shell commands (trusted mode only) |
+| `shell_exec` | Project-rooted shell commands (disabled, exact-action approval, or direct according to access mode) |
 | `process_list` / `process_stop` | Process inspection and termination |
 | `doc_qa` | Answers questions from local docs/files with citations |
 | `lead_extractor` / `lead_generation` | Lead pipeline (extract, score, persist) |
@@ -205,6 +211,8 @@ In both Telegram and the Web UI, these commands are handled by `ChatService` and
 /reasoning default             use that model's default effort
 /usage                        show App Server subscription quota and local Alfred tokens separately
 /status                       show session, effective model/reasoning, and local token totals
+/approve TOKEN                approve one exact pending tool action for one retry
+/reject TOKEN                 reject one exact pending tool action
 ```
 
 The live App Server `model/list` response is authoritative. Numbering is only a shortcut for the currently displayed list, and ambiguous aliases are rejected. Model and reasoning overrides are session-scoped, persist across a normal Alfred restart, and start from the configured global defaults in a new session. A vanished model or unsupported saved effort is reported and falls back to the live/default catalog. Changing `.env` provider or model settings requires restarting Alfred.
@@ -214,7 +222,8 @@ The live App Server `model/list` response is authoritative. Numbering is only a 
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `3000` | HTTP gateway port |
-| `ALFRED_ENV` | `dev` | `dev` = trusted policy (shell/process tools enabled); `prod` = balanced |
+| `ALFRED_ACCESS_MODE` | derived from `ALFRED_ENV` | `limited` disables shell/process termination; `approval` requires `/approve TOKEN` for each exact action; `trusted` grants direct access with Alfred's OS permissions |
+| `ALFRED_ENV` | `dev` | Compatibility default only: `dev` maps to trusted and `prod` to approval when `ALFRED_ACCESS_MODE` is unset |
 | `ALFRED_API_KEY` | auto-generated | Protects the web UI and all `/v1/*` routes; auto-generated on first start if unset |
 | `ALFRED_AGENT_EVENT_TOKEN` | — | Shared secret for `POST /api/events/agent`; when unset the endpoint accepts loopback callers only |
 | `TELEGRAM_BOT_TOKEN` | — | Enables the Telegram channel |

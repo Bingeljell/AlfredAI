@@ -15,7 +15,6 @@ export const toolDefinition: ToolDefinition<typeof InputSchema> = {
   description: "Create or update a disabled user-space Alfred extension. The exact code must still be reviewed and enabled by the user through the CLI.",
   inputSchema: InputSchema,
   inputHint: '{"name":"example_tool","manifest":{"schemaVersion":1,"name":"example_tool","version":"0.1.0","description":"Describe the tool","entry":"index.js","inputHint":"{}","alfredVersion":"0.1.x","capabilities":[]},"entrySource":"export async function execute(input) { return { ok: true }; }"}',
-  requiresApproval: true,
   async execute(input) {
     const inspection = await new ExtensionManager(appConfig.extensionsDir).write(input.name, input.manifest, input.entrySource);
     return {

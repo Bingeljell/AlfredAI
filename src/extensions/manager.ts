@@ -185,7 +185,6 @@ export class ExtensionManager {
           description: inspection.manifest.description,
           inputSchema,
           inputHint: inspection.manifest.inputHint,
-          requiresApproval: true,
           execute: async (input, context) => loaded.execute!(input, context)
         };
         tools.set(inspection.manifest.name, definition);

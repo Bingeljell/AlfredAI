@@ -15,7 +15,7 @@ SHA-256 digest. Activation requires an explicit acknowledgement:
 
 ```bash
 alfred tools enable example_tool --yes
-alfred restart
+alfred service restart
 ```
 
 Alfred can also write an extension through the approval-gated

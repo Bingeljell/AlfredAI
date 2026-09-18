@@ -88,3 +88,23 @@ test("Alfred CLI setup and doctor initialize an isolated Codex-backed home", asy
   assert.equal(await runCli(["doctor", "--home", target, "--json"], { write: (line) => output.push(line) }), 0);
   assert.equal(output.join("\n").includes("accessToken"), false);
 });
+
+test("Alfred CLI delegates service operations without touching launchctl", async () => {
+  const output: string[] = [];
+  const actions: string[] = [];
+  const result = await runCli(["service", "restart"], {
+    write: (line) => output.push(line),
+    serviceManager: {
+      async install() { throw new Error("unexpected"); },
+      async status() { throw new Error("unexpected"); },
+      async uninstall() { throw new Error("unexpected"); },
+      async restart() {
+        actions.push("restart");
+        return { action: "restart", label: "com.alfred.agent", plistPath: "/tmp/test.plist", installed: true, running: true, message: "restarted" };
+      }
+    }
+  });
+  assert.equal(result, 0);
+  assert.deepEqual(actions, ["restart"]);
+  assert.match(output.join("\n"), /com\.alfred\.agent/);
+});

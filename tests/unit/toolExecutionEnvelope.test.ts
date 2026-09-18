@@ -78,7 +78,7 @@ test("executeToolWithEnvelope returns standardized success envelope and persists
   assert.ok(events.some((event) => event.eventType === "tool_action_completed"));
 });
 
-test("executeToolWithEnvelope blocks approval-gated tools with standardized error envelope", async () => {
+test("executeToolWithEnvelope issues a token for approval-gated tools", async () => {
   const workspace = await createTempWorkspace("tool-envelope-approval");
   const runStore = new RunStore(workspace);
   const run = await runStore.createRun("session-1", "test", "running");
@@ -110,7 +110,7 @@ test("executeToolWithEnvelope blocks approval-gated tools with standardized erro
   assert.equal(result.requiresApproval, true);
   assert.equal(result.inputRepairApplied, false);
   assert.equal(result.inputRepairStrategy, null);
-  assert.equal(result.error, "approval_required_not_supported");
+  assert.match(result.error ?? "", /^approval_required:[a-f0-9]{12}$/);
 
   const updatedRun = await runStore.getRun(run.runId);
   assert.equal(updatedRun?.toolCalls.length, 0);

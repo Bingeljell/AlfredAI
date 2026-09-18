@@ -14,16 +14,18 @@ async function setupFixture() {
   const paths = resolveAlfredPaths({ env: { ALFRED_HOME: home }, packageRoot, cwd: root, homeDir: root });
   await mkdir(path.join(packageRoot, "templates"), { recursive: true });
   await writeFile(path.join(packageRoot, "templates", "SOUL.md"), "Alfred works with [your name].\n");
-  await writeFile(path.join(packageRoot, "templates", "INSTRUCTIONS.md"), "# Instructions\n");
+  await writeFile(path.join(packageRoot, "templates", "INSTRUCTIONS.md"), "# Instructions\n[about you and your work]\n[how you want Alfred to work with you]\n");
   return { paths };
 }
 
 test("setup creates private templates once and preserves user edits on rerun", async () => {
   const { paths } = await setupFixture();
-  const first = await initializeAlfredHome({ paths, name: "Ada", provider: "openrouter", model: "test/model" });
+  const first = await initializeAlfredHome({ paths, name: "Ada", about: "Builds games", interactionStyle: "Use short answers", provider: "openrouter", model: "test/model", accessMode: "trusted" });
   assert.equal(first.created.length, 3);
   assert.match(await readFile(path.join(paths.identityDir, "SOUL.md"), "utf8"), /Ada/);
+  assert.match(await readFile(path.join(paths.identityDir, "INSTRUCTIONS.md"), "utf8"), /Builds games/);
   assert.match(await readFile(path.join(paths.configDir, "config.env"), "utf8"), /ALFRED_LLM_PROVIDER=openrouter/);
+  assert.match(await readFile(path.join(paths.configDir, "config.env"), "utf8"), /ALFRED_ACCESS_MODE=trusted/);
   assert.equal((await stat(path.join(paths.configDir, "config.env"))).mode & 0o777, 0o600);
 
   await writeFile(path.join(paths.identityDir, "SOUL.md"), "custom identity\n");
@@ -42,6 +44,7 @@ test("doctor reports configured credentials without exposing their value", async
   assert.equal(report.ok, true);
   assert.equal(serialized.includes(secret), false);
   assert.equal(report.checks.some((check) => check.id === "provider" && check.status === "pass"), true);
+  assert.equal(report.checks.some((check) => check.id === "access_mode" && check.status === "pass"), true);
 });
 
 test("doctor fails clearly when the selected provider credential is absent", async () => {

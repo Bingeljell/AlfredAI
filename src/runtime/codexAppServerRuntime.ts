@@ -4,7 +4,6 @@ import type { PolicyMode, RunOutcome, SessionPromptContext } from "../types.js";
 import type { ToolContext, ToolState } from "../tools/types.js";
 import { applyToolAllowlist, discoverTools, executeToolWithEnvelope, type ToolExecutionEnvelope } from "../tools/registry.js";
 import { scrubToolOutput } from "../tools/outputScrubber.js";
-import { evaluateApprovalNeed } from "./approvalPolicy.js";
 import { ALFRED_AGENT } from "./specialists.js";
 import type { AgentRuntime, AgentRuntimeServices, AgentTurnRequest } from "./agentRuntime.js";
 import { appConfig, getPolicyMode } from "../config/env.js";
@@ -76,12 +75,6 @@ export class CodexAppServerRuntime implements AgentRuntime {
     const maxDurationMs = profile?.maxDurationMs ?? this.options.agentMaxDurationMs;
     const maxToolCalls = profile?.maxToolCalls ?? this.options.agentMaxToolCalls;
     await runStore.appendEvent({ runId: request.runId, sessionId: request.sessionId, phase: "session", eventType: "loop_started", payload: { runtime: "codex_app_server", maxDurationMs, maxToolCalls }, timestamp: nowIso() });
-
-    const approval = schedulerTurn ? { needed: false as const } : evaluateApprovalNeed(request.message, policyMode);
-    if (approval.needed) {
-      await runStore.appendEvent({ runId: request.runId, sessionId: request.sessionId, phase: "approval", eventType: "approval_required", payload: { reason: approval.reason, token: approval.token }, timestamp: nowIso() });
-      return { status: "needs_approval", approvalToken: approval.token, assistantText: `Approval required (${approval.token}) before executing this request.` };
-    }
 
     try {
       const reached = reachedRateLimit(await this.options.subscriptionService.readRateLimits());

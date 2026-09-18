@@ -16,7 +16,8 @@ alfred doctor
 alfred start
 ```
 
-`alfred setup` asks for your name and LLM provider, then creates private state
+`alfred setup` asks for your name, LLM provider, access mode, a little about
+your work, and how you want Alfred to collaborate, then creates private state
 under `~/.alfred`. It does not ask you to paste API keys into a visible prompt.
 For an API-key provider, add the requested key to
 `~/.alfred/config/config.env`, which is created with mode `0600`.
@@ -27,6 +28,7 @@ For a non-interactive OpenRouter setup:
 alfred setup \
   --name "Your Name" \
   --provider openrouter \
+  --access approval \
   --model openai/gpt-4o-mini
 ```
 
@@ -34,6 +36,16 @@ Then add `OPENROUTER_API_KEY` to the private configuration file and run
 `alfred doctor` again. The active provider is exactly the configured
 `ALFRED_LLM_PROVIDER`; a connected ChatGPT account is an explicitly selectable
 alternative, never an automatic fallback.
+
+Access modes are explicit host-permission choices:
+
+- `limited` disables shell execution and process termination.
+- `approval` pauses each exact shell/process action until you send the shown
+  `/approve TOKEN`; approval is session-bound, expires, and is consumed once.
+- `trusted` grants direct shell/process access with the operating-system
+  permissions of the Alfred process. Choose it only when that is intentional.
+
+Change `ALFRED_ACCESS_MODE` in the private config and restart Alfred to switch.
 
 For a ChatGPT subscription:
 
@@ -76,10 +88,11 @@ After public releases begin, update the replaceable application code with npm.
 The exact command and release channel will be documented with the first
 prerelease. Everything under `ALFRED_HOME` remains user-owned.
 
-Packaged Alfred can create tools under `ALFRED_HOME/extensions`. These tools
-survive package upgrades, but they are disabled until you review and approve
-their exact digest. Enabled extensions are trusted local JavaScript with the
-same operating-system permissions as Alfred. See the
+Packaged Alfred can write tools under `ALFRED_HOME/extensions`. Written code
+survives package upgrades but remains disabled until you review and approve its
+exact digest. Enabled extensions then behave like Alfred's other typed tools
+and are trusted local JavaScript with the same operating-system permissions as
+Alfred. See the
 [extension trust model](operations/extensions.md).
 
 ## Source development

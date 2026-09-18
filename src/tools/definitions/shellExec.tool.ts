@@ -3,19 +3,9 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import type { ToolDefinition } from "../types.js";
 import { resolvePathInProject, toProjectRelative } from "../helpers/pathSafety.js";
+import { toolApprovalActionKey, toolApprovalStore } from "../../runtime/toolApprovalStore.js";
 
 const exec = promisify(execCallback);
-
-const BLOCKED_COMMAND_PATTERNS = [
-  /\brm\s+-rf\b/i,
-  /\bgit\s+reset\s+--hard\b/i,
-  /\bmkfs\b/i,
-  /\bshutdown\b/i,
-  /\breboot\b/i,
-  /\bkillall\b/i,
-  // Prevent reading .env files via shell utilities (secrets stay out of LLM context)
-  /\b(cat|less|more|head|tail|grep|awk|sed)\b[^|]*\.env\b/i
-];
 
 export const ShellExecToolInputSchema = z.object({
   command: z.string().min(1).max(600),
@@ -32,21 +22,29 @@ function clipOutput(value: string, max = 6000): string {
 
 export const toolDefinition: ToolDefinition<typeof ShellExecToolInputSchema> = {
   name: "shell_exec",
-  description: "Execute a shell command in the project workspace (trusted mode only).",
+  description: "Execute a shell command in the project workspace, subject to the configured access mode.",
   inputSchema: ShellExecToolInputSchema,
   inputHint: "Use for diagnostics and local workflow commands. Avoid destructive operations.",
   async execute(input, context) {
-    if (context.policyMode !== "trusted") {
+    if (context.policyMode === "limited") {
       return {
         blocked: true,
-        reason: "shell_exec_blocked_in_balanced_mode"
+        reason: "shell_exec_disabled_in_limited_mode"
       };
     }
-    if (BLOCKED_COMMAND_PATTERNS.some((pattern) => pattern.test(input.command))) {
-      return {
-        blocked: true,
-        reason: "blocked_by_safety_pattern"
-      };
+    if (context.policyMode === "balanced") {
+      const actionKey = toolApprovalActionKey("shell_exec", { command: input.command, cwd: input.cwd ?? ".", timeoutMs: input.timeoutMs ?? 12_000 });
+      if (!toolApprovalStore.consume(context.sessionId, actionKey)) {
+        const approval = toolApprovalStore.request(context.sessionId, actionKey, `shell_exec: ${input.command}`);
+        return {
+          blocked: true,
+          reason: "approval_required",
+          approvalToken: approval.token,
+          command: input.command,
+          expiresAt: approval.expiresAt,
+          nextStep: `Send /approve ${approval.token}, then ask Alfred to retry the same command.`
+        };
+      }
     }
 
     const cwdAbsolute = resolvePathInProject(context.projectRoot, input.cwd ?? ".");

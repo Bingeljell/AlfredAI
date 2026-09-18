@@ -23,6 +23,7 @@ const OptionalPositiveIntegerSchema = z.preprocess(
 
 const EnvSchema = z.object({
   ALFRED_ENV: z.enum(["dev", "prod"]).default("dev"),
+  ALFRED_ACCESS_MODE: z.enum(["limited", "approval", "trusted"]).optional(),
   PORT: z.coerce.number().default(3000),
   ALFRED_HOME: z.string().optional(),
   ALFRED_PROJECT_ROOT: z.string().optional(),
@@ -147,6 +148,7 @@ export const appConfig = {
   enableExtensions: parsed.ALFRED_ENABLE_EXTENSIONS === "true",
   toolProjectRoot: paths.toolProjectRoot,
   env: parsed.ALFRED_ENV,
+  accessMode: parsed.ALFRED_ACCESS_MODE ?? (parsed.ALFRED_ENV === "dev" ? "trusted" : "approval"),
   port: parsed.PORT,
   llmProvider: parsed.ALFRED_LLM_PROVIDER,
   modelFast: parsed.ALFRED_MODEL_FAST,
@@ -207,5 +209,6 @@ export const appConfig = {
 };
 
 export function getPolicyMode(): PolicyMode {
-  return appConfig.env === "dev" ? "trusted" : "balanced";
+  if (appConfig.accessMode === "limited") return "limited";
+  return appConfig.accessMode === "trusted" ? "trusted" : "balanced";
 }

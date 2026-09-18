@@ -54,6 +54,8 @@ export async function diagnoseAlfred(paths: AlfredPaths, env: NodeJS.ProcessEnv 
   }
   checks.push({ id: "identity", status: await access(identityPath).then(() => "pass" as const, () => "fail" as const), message: `Identity ${await access(identityPath).then(() => "found", () => "missing")} at ${identityPath}` });
   checks.push({ id: "workspace", status: await access(paths.workspaceDir).then(() => "pass" as const, () => "fail" as const), message: `Workspace ${await access(paths.workspaceDir).then(() => "found", () => "missing")} at ${paths.workspaceDir}` });
+  const accessMode = parseConfig(configText).ALFRED_ACCESS_MODE ?? "legacy default";
+  checks.push({ id: "access_mode", status: accessMode === "legacy default" ? "warn" : "pass", message: `Agent access mode: ${accessMode}` });
   checks.push(providerCredentialCheck({ ...parseConfig(configText), ...env } as Record<string, string>));
 
   return { ok: checks.every((check) => check.status !== "fail"), paths, checks };

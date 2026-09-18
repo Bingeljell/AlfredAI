@@ -26,6 +26,7 @@ import type { SchedulerTaskApi } from "../scheduler/api.js";
 import type { SchedulerProvenance, SchedulerOrigin } from "../scheduler/notifier.js";
 import type { SchedulerTurnControl } from "../scheduler/api.js";
 import type { WatchSnapshot } from "../scheduler/probes/types.js";
+import { toolApprovalStore } from "../runtime/toolApprovalStore.js";
 import type { TaskTranscriptEntry, TaskTranscriptStore } from "../scheduler/taskTranscript.js";
 import { createSchedulerTurnControl } from "../scheduler/execution.js";
 import { SCHEDULER_EXECUTION_PROFILE, type TurnExecutionProfile } from "../runtime/executionProfile.js";
@@ -441,8 +442,22 @@ export class ChatService {
         "/reasoning N|NAME — select reasoning for this session",
         "/reasoning default — use the model default effort",
         "/usage — show subscription quota separately from Alfred local tokens",
+        "/approve TOKEN — approve one exact pending tool action",
+        "/reject TOKEN — reject one exact pending tool action",
         "/newsession — start a fresh session context"
       ].join("\n");
+    }
+
+    if (parsed.command === "/approve" || parsed.command === "/reject") {
+      if (parsed.args.length !== 1) return `Usage: ${parsed.command} TOKEN`;
+      if (!/^[a-f0-9]{12}$/i.test(parsed.args[0]!)) return undefined;
+      const result = parsed.command === "/approve"
+        ? toolApprovalStore.approve(session.id, parsed.args[0]!)
+        : toolApprovalStore.reject(session.id, parsed.args[0]!);
+      if (!result.ok) return "That approval token was not found for this conversation or has expired.";
+      return parsed.command === "/approve"
+        ? `Approved once: ${result.description}. Ask Alfred to retry the same action; changed input requires a new approval.`
+        : `Rejected: ${result.description}.`;
     }
 
     if (parsed.command === "/status") {

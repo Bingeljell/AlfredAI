@@ -18,17 +18,18 @@ alfred tools enable example_tool --yes
 alfred service restart
 ```
 
-Alfred can also write an extension through the approval-gated
-`extension_write` built-in tool. Writing or changing extension code always
-removes its activation. Previously approved code whose digest changes is marked
-`stale` and is not loaded.
+Alfred can also write an extension with the `extension_write` built-in tool.
+That operation only writes source: it cannot activate or execute the code.
+Writing or changing extension code always removes its activation. Previously
+approved code whose digest changes is marked `stale` and is not loaded.
 
 ## Trust boundary
 
 This initial extension format is trusted local JavaScript. Enabling it grants
 the code the same operating-system permissions as the Alfred process. Every
-extension invocation remains approval-gated. Declared capabilities are review
-metadata; they are not an operating-system sandbox.
+activation is bound to the exact reviewed digest; after activation, calls do
+not prompt again unless the tool itself implements an approval step. Declared
+capabilities are review metadata; they are not an operating-system sandbox.
 
 Only enable code you have reviewed. `alfred tools test` performs syntax and
 contract checks without importing or executing the extension. Alfred imports

@@ -1,8 +1,8 @@
 import { config as loadDotEnv } from "dotenv";
-import path from "node:path";
 import { z } from "zod";
 import type { PolicyMode } from "../types.js";
 import type { LlmReasoningConfig, LlmReasoningEffort } from "../provider/types.js";
+import { resolveAlfredPaths } from "./paths.js";
 
 loadDotEnv();
 
@@ -19,6 +19,8 @@ const OptionalPositiveIntegerSchema = z.preprocess(
 const EnvSchema = z.object({
   ALFRED_ENV: z.enum(["dev", "prod"]).default("dev"),
   PORT: z.coerce.number().default(3000),
+  ALFRED_HOME: z.string().optional(),
+  ALFRED_PROJECT_ROOT: z.string().optional(),
   // ─── LLM provider ─────────────────────────────────────────────────────────
   ALFRED_LLM_PROVIDER: z.enum(["openai", "anthropic", "gemini", "ollama", "lmstudio", "openrouter", "codex"]).default("openai"),
   ALFRED_MODEL_FAST: z.string().default("gpt-4o-mini"),   // cheap/fast: classification, session extractor
@@ -103,6 +105,13 @@ const EnvSchema = z.object({
 });
 
 const parsed = EnvSchema.parse(process.env);
+const paths = resolveAlfredPaths({
+  env: {
+    ALFRED_HOME: parsed.ALFRED_HOME,
+    ALFRED_WORKSPACE_DIR: parsed.ALFRED_WORKSPACE_DIR,
+    ALFRED_PROJECT_ROOT: parsed.ALFRED_PROJECT_ROOT
+  }
+});
 
 function resolveOpenRouterReasoning(): LlmReasoningConfig | undefined {
   const enabled = parsed.OPENROUTER_REASONING_ENABLED === "auto"
@@ -118,6 +127,16 @@ function resolveOpenRouterReasoning(): LlmReasoningConfig | undefined {
 }
 
 export const appConfig = {
+  paths,
+  packageRoot: paths.packageRoot,
+  alfredHome: paths.alfredHome,
+  configDir: paths.configDir,
+  identityDir: paths.identityDir,
+  logsDir: paths.logsDir,
+  runDir: paths.runDir,
+  backupsDir: paths.backupsDir,
+  extensionsDir: paths.extensionsDir,
+  toolProjectRoot: paths.toolProjectRoot,
   env: parsed.ALFRED_ENV,
   port: parsed.PORT,
   llmProvider: parsed.ALFRED_LLM_PROVIDER,
@@ -155,7 +174,7 @@ export const appConfig = {
   pinchtabBaseUrl: parsed.PINCHTAB_BASE_URL,
   pinchtabStartCommand: parsed.PINCHTAB_START_CMD,
   runMaxSteps: parsed.ALFRED_RUN_MAX_STEPS,
-  workspaceDir: path.resolve(parsed.ALFRED_WORKSPACE_DIR),
+  workspaceDir: paths.workspaceDir,
   concurrency: parsed.ALFRED_CONCURRENCY,
   browseConcurrency: parsed.ALFRED_BROWSE_CONCURRENCY,
   agentMaxDurationMs: parsed.ALFRED_AGENT_MAX_DURATION_MS,

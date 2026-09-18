@@ -1,10 +1,13 @@
 import { pathToFileURL } from "node:url";
+import os from "node:os";
+import path from "node:path";
 import { CodexAccountService, type OpenAiLoginMode, type OpenAiLoginProgress, type OpenAiLoginStart } from "../src/provider/codex/accountService.js";
+import { migrateAlfredHome } from "../src/config/homeMigration.js";
 
 const DEFAULT_LOGIN_TIMEOUT_MS = 10 * 60_000;
 
 function usage(): never {
-  throw new Error("Usage: pnpm alfred tui [--session ID] [--url URL] | pnpm alfred auth login openai [--device-code] [--timeout-ms <ms>] | pnpm alfred auth status openai | pnpm alfred auth logout openai");
+  throw new Error("Usage: pnpm alfred tui [--session ID] [--url URL] | pnpm alfred migrate home [--to PATH] [--source-workspace PATH] [--apply] | pnpm alfred auth login openai [--device-code] [--timeout-ms <ms>] | pnpm alfred auth status openai | pnpm alfred auth logout openai");
 }
 
 type CliAccountService = Pick<CodexAccountService, "startLogin" | "waitForLogin" | "readAccount" | "logout" | "close">;
@@ -22,6 +25,35 @@ function parseTimeout(args: string[]): number {
   const value = Number(args[index + 1]);
   if (!Number.isFinite(value) || value < 1_000) throw new Error("--timeout-ms must be at least 1000 milliseconds");
   return value;
+}
+
+function optionValue(args: string[], flag: string): string | undefined {
+  const index = args.indexOf(flag);
+  if (index < 0) return undefined;
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`);
+  return value;
+}
+
+async function runHomeMigration(args: string[], write: (message: string) => void): Promise<number> {
+  const allowed = new Set(["--to", "--source-workspace", "--apply"]);
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!;
+    if (!allowed.has(argument)) throw new Error(`Unknown migration option: ${argument}`);
+    if (argument !== "--apply") index += 1;
+  }
+  const targetHome = path.resolve(optionValue(args, "--to") ?? process.env.ALFRED_HOME ?? path.join(os.homedir(), ".alfred"));
+  const sourceWorkspace = optionValue(args, "--source-workspace");
+  const plan = await migrateAlfredHome({
+    sourceRoot: process.cwd(),
+    targetHome,
+    sourceWorkspace: sourceWorkspace ? path.resolve(sourceWorkspace) : undefined,
+    apply: args.includes("--apply")
+  });
+  write(JSON.stringify(plan, null, 2));
+  if (plan.dryRun) write("Dry run only. Re-run with --apply to copy data; the source checkout will remain unchanged.");
+  else write(`Migration copied private state to ${plan.targetHome}. Set ALFRED_HOME to this path before restarting Alfred.`);
+  return 0;
 }
 
 function printLoginInstructions(login: OpenAiLoginStart, write: (message: string) => void): void {
@@ -48,6 +80,9 @@ function printLoginResult(progress: OpenAiLoginProgress, write: (message: string
 
 export async function runCli(args: string[], options: AlfredCliOptions = {}): Promise<number> {
   if (args[0] === "tui") return (await import("../src/tui/index.js")).runTui(args.slice(1));
+  if (args[0] === "migrate" && args[1] === "home") {
+    return runHomeMigration(args.slice(2), options.write ?? ((message: string) => console.log(message)));
+  }
   if (args[0] !== "auth" || !["login", "status", "logout"].includes(args[1] ?? "") || args[2] !== "openai") usage();
 
   const service = options.service ?? new CodexAccountService();

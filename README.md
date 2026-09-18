@@ -109,6 +109,11 @@ All configuration is via environment variables (see `.env.example`). Create your
 cp .env.example .env
 ```
 
+Existing source installs can preview a non-destructive move into private
+`ALFRED_HOME` storage with `pnpm alfred migrate home`. See the
+[migration guide](docs/operations/alfred-home-migration.md); do not add
+`--apply` until the reported paths are correct.
+
 ### LLM providers (set at least one)
 
 | Variable | Default | Purpose |

@@ -3,6 +3,7 @@ import { conversationStream } from "./conversationStream.js";
 import type { Context } from "hono";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { timingSafeEqual } from "node:crypto";
+import path from "node:path";
 import { z } from "zod";
 import { appConfig } from "../config/env.js";
 import { SessionStore } from "../memory/sessionStore.js";
@@ -578,11 +579,11 @@ app.post("/api/events/agent", async (c) => {
 app.use(
   "/ui/*",
   serveStatic({
-    root: "./webui",
+    root: path.join(appConfig.packageRoot, "webui"),
     rewriteRequestPath: (requestPath: string) => requestPath.replace(/^\/ui\//, "")
   })
 );
-app.get("/ui", serveStatic({ path: "./webui/index.html" }));
+app.get("/ui", serveStatic({ path: path.join(appConfig.packageRoot, "webui", "index.html") }));
 app.get("/", (c) => c.redirect("/ui"));
 
 app.onError((error, c) => {

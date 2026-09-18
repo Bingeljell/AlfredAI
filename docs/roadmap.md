@@ -1,5 +1,26 @@
 # Alfred Roadmap
 
+## Direction
+
+Alfred will remain a general-purpose, open-source ReAct agent, but product
+development will be **game-development first**. The goal is an agent that can
+help take assets and builds through real production workflows—not to reproduce
+the feature breadth of larger agent platforms.
+
+Two first-class modes are planned over the same core runtime:
+
+- **Game Development** — image-to-3D, mesh and material work, rigging,
+  animation, Blender automation, engine export, provenance, and production-job
+  supervision.
+- **Game Testing** — operate builds, execute test plans, inspect visuals and
+  logs, reproduce defects, collect evidence, and verify fixes.
+
+Both modes will select their own tools, instructions, permissions, memory, and
+budgets. Complex production and testing work must use resumable jobs and
+adaptive time, turn, and token budgets rather than today's chat-sized limits.
+Strong remote reasoning models are expected; local execution and private data
+ownership do not imply local-model inference.
+
 ## Done
 
 | Track | What shipped |

@@ -14,10 +14,14 @@ const HEARTBEAT_INTERVAL_MS = 15 * 60 * 1_000; // 15 min
 const INLINE_TEXT_MAX_CHARS = 3_800; // Telegram message limit is 4096
 const TELEGRAM_INGRESS_DEDUPE_TTL_MS = 10 * 60 * 1_000;
 const TELEGRAM_INGRESS_DEDUPE_MAX_ENTRIES = 1_000;
-const CHAT_SERVICE_CONTROL_COMMANDS = new Set(["/help", "/status", "/model", "/reasoning", "/usage"]);
+const CHAT_SERVICE_CONTROL_COMMANDS = new Set(["/help", "/status", "/model", "/reasoning", "/usage", "/approve", "/reject"]);
 
-function isChatServiceControlCommand(text: string): boolean {
-  const command = text.trim().split(/\s+/, 1)[0]?.toLowerCase();
+export function isChatServiceControlCommand(text: string): boolean {
+  const parts = text.trim().split(/\s+/);
+  const command = parts[0]?.toLowerCase();
+  if (command === "/approve" || command === "/reject") {
+    return parts.length === 2 && /^[a-f0-9]{12}$/i.test(parts[1]!);
+  }
   return command ? CHAT_SERVICE_CONTROL_COMMANDS.has(command) : false;
 }
 
@@ -29,6 +33,8 @@ Alfred commands:
 /model — list or select a live ChatGPT model for this session
 /reasoning — list or select supported reasoning for this session
 /usage — show ChatGPT subscription quota separately from Alfred local tokens
+/approve <token> — approve one exact pending tool action
+/reject <token> — reject one exact pending tool action
 /label <text> — set a context hint for this chat (e.g. /label lead gen — MSPs USA)
 /label — clear the label
 /newsession — start a fresh session (clears Alfred's context for this chat)

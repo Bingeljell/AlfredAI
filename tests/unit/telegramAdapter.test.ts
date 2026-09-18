@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type TelegramBot from "node-telegram-bot-api";
-import { TelegramAdapter, TelegramIngressDeduper, telegramIngressKey } from "../../src/channels/telegram/adapter.js";
+import { isChatServiceControlCommand, TelegramAdapter, TelegramIngressDeduper, telegramIngressKey } from "../../src/channels/telegram/adapter.js";
 import type { ChatService } from "../../src/runner/chatService.js";
 import { SessionStore } from "../../src/memory/sessionStore.js";
 import type { RunStore } from "../../src/runs/runStore.js";
@@ -37,6 +37,12 @@ class FakeTelegramBot {
     return true;
   }
 }
+
+test("Telegram reserves only Alfred tool-approval tokens for ChatService", () => {
+  assert.equal(isChatServiceControlCommand("/approve a1b2c3d4e5f6"), true);
+  assert.equal(isChatServiceControlCommand("/reject A1B2C3D4E5F6"), true);
+  assert.equal(isChatServiceControlCommand("/approve w9:p2"), false);
+});
 
 test("Telegram ingress deduper drops a re-polled message ID within its TTL", () => {
   let now = 1_000;

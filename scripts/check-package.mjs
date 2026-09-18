@@ -39,12 +39,22 @@ for (const required of ["bin/alfred.js", "dist/scripts/alfred-cli.js", "dist/src
 }
 const privateMarkers = [/21naistack/iu, /com\.nikhil/iu, /\/Users\/nikhil/iu];
 const contentViolations = [];
+const credentialPatterns = [
+  /\bsk-[A-Za-z0-9_-]{20,}\b/u,
+  /\bAIza[0-9A-Za-z_-]{20,}\b/u,
+  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/u,
+  /\b(?:OPENAI|ANTHROPIC|GEMINI|OPENROUTER)_API_KEY\s*=\s*[A-Za-z0-9_-]{16,}/u
+];
 for (const file of files) {
   const absolute = path.join(repoRoot, file);
   const content = readFileSync(absolute);
   if (content.includes(0)) continue;
   const text = content.toString("utf8");
-  if (privateMarkers.some((pattern) => pattern.test(text))) contentViolations.push(file);
+  const emails = text.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gu) ?? [];
+  const nonExampleEmails = emails.filter((email) => !email.toLowerCase().endsWith("@example.com"));
+  if (privateMarkers.some((pattern) => pattern.test(text)) || credentialPatterns.some((pattern) => pattern.test(text)) || nonExampleEmails.length > 0) {
+    contentViolations.push(file);
+  }
 }
 if (contentViolations.length > 0) {
   throw new Error(`Private owner markers found in npm package:\n${contentViolations.join("\n")}`);

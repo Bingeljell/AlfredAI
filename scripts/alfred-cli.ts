@@ -7,11 +7,12 @@ import { migrateAlfredHome } from "../src/config/homeMigration.js";
 import { diagnoseAlfred } from "../src/config/doctor.js";
 import { resolveAlfredPaths } from "../src/config/paths.js";
 import { initializeAlfredHome, SETUP_PROVIDERS, type SetupProvider } from "../src/config/setup.js";
+import { ExtensionManager } from "../src/extensions/manager.js";
 
 const DEFAULT_LOGIN_TIMEOUT_MS = 10 * 60_000;
 
 function usage(): never {
-  throw new Error("Usage: alfred setup [--name NAME] [--provider PROVIDER] [--model MODEL] [--home PATH] | alfred doctor [--home PATH] [--json] | alfred start | alfred tui [--session ID] [--url URL] | alfred migrate home [--to PATH] [--source-workspace PATH] [--apply] | alfred auth login openai [--device-code] [--timeout-ms <ms>] | alfred auth status openai | alfred auth logout openai");
+  throw new Error("Usage: alfred setup [--name NAME] [--provider PROVIDER] [--model MODEL] [--home PATH] | alfred doctor [--home PATH] [--json] | alfred tools <list|create|test|enable|disable> | alfred start | alfred tui [--session ID] [--url URL] | alfred migrate home [--to PATH] [--source-workspace PATH] [--apply] | alfred auth login openai [--device-code] [--timeout-ms <ms>] | alfred auth status openai | alfred auth logout openai");
 }
 
 type CliAccountService = Pick<CodexAccountService, "startLogin" | "waitForLogin" | "readAccount" | "logout" | "close">;
@@ -84,6 +85,49 @@ async function runDoctor(args: string[], write: (message: string) => void): Prom
   return report.ok ? 0 : 1;
 }
 
+async function runTools(args: string[], write: (message: string) => void): Promise<number> {
+  const action = args[0];
+  const paths = resolveAlfredPaths();
+  const manager = new ExtensionManager(paths.extensionsDir);
+  if (action === "list") {
+    write(JSON.stringify(await manager.list(), null, 2));
+    return 0;
+  }
+  const name = args[1];
+  if (!name) throw new Error(`alfred tools ${action ?? "<action>"} requires an extension name`);
+  if (action === "create") {
+    const options = args.slice(2);
+    if (options.length > 0 && (options.length !== 2 || options[0] !== "--description")) {
+      throw new Error(`Unknown tools create option: ${options[0]}`);
+    }
+    const directory = await manager.scaffold(name, optionValue(options, "--description") ?? "");
+    write(`Created disabled extension scaffold at ${directory}`);
+    write(`Review it, run: alfred tools test ${name}, then: alfred tools enable ${name} --yes`);
+    return 0;
+  }
+  if (action === "test") {
+    const inspection = await manager.validateSyntax(name);
+    write(JSON.stringify({ valid: true, name, digest: inspection.digest, capabilities: inspection.manifest.capabilities }, null, 2));
+    return 0;
+  }
+  if (action === "enable") {
+    if (!args.includes("--yes")) {
+      const inspection = await manager.inspect(name);
+      write(JSON.stringify({ enabled: false, name, digest: inspection.digest, capabilities: inspection.manifest.capabilities }, null, 2));
+      throw new Error("Review this exact digest and capability list, then repeat with --yes");
+    }
+    const inspection = await manager.enable(name, true);
+    write(JSON.stringify({ enabled: true, name, digest: inspection.digest, capabilities: inspection.manifest.capabilities, restartRequired: true }, null, 2));
+    return 0;
+  }
+  if (action === "disable") {
+    await manager.disable(name);
+    write(JSON.stringify({ enabled: false, name, restartRequired: true }, null, 2));
+    return 0;
+  }
+  throw new Error(`Unknown tools action: ${action}`);
+}
+
 function parseTimeout(args: string[]): number {
   const index = args.indexOf("--timeout-ms");
   if (index < 0) return DEFAULT_LOGIN_TIMEOUT_MS;
@@ -145,11 +189,12 @@ function printLoginResult(progress: OpenAiLoginProgress, write: (message: string
 
 export async function runCli(args: string[], options: AlfredCliOptions = {}): Promise<number> {
   if (args[0] === "--help" || args[0] === "-h" || args[0] === "help") {
-    (options.write ?? ((message: string) => console.log(message)))("Usage: alfred setup | alfred doctor | alfred start | alfred tui | alfred migrate home | alfred auth <login|status|logout> openai");
+    (options.write ?? ((message: string) => console.log(message)))("Usage: alfred setup | alfred doctor | alfred tools <list|create|test|enable|disable> | alfred start | alfred tui | alfred migrate home | alfred auth <login|status|logout> openai");
     return 0;
   }
   if (args[0] === "setup") return runSetup(args.slice(1), options);
   if (args[0] === "doctor") return runDoctor(args.slice(1), options.write ?? ((message: string) => console.log(message)));
+  if (args[0] === "tools") return runTools(args.slice(1), options.write ?? ((message: string) => console.log(message)));
   if (args[0] === "start") {
     await import("../src/gateway/server.js");
     return 0;

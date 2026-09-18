@@ -138,6 +138,7 @@ GENERAL RULES (all tasks)
     "file_read",
     "file_write",
     "file_edit",
+    "extension_write",
     "shell_exec",
     "process_list",
     "process_stop",

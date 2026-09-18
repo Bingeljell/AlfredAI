@@ -4,6 +4,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ToolContext, ToolDefinition } from "./types.js";
 import type { RunStore } from "../runs/runStore.js";
 import { redactValue } from "../utils/redact.js";
+import { appConfig } from "../config/env.js";
+import { ExtensionManager } from "../extensions/manager.js";
 
 interface ToolModule {
   toolDefinition?: ToolDefinition;
@@ -533,6 +535,13 @@ export async function discoverTools(): Promise<Map<string, ToolDefinition>> {
         name: "article_writer",
         description: definition.description.replace("writer_agent", "article_writer")
       });
+    }
+  }
+
+  if (appConfig.enableExtensions) {
+    const extensions = await new ExtensionManager(appConfig.extensionsDir).discoverEnabled();
+    for (const [name, definition] of extensions) {
+      if (!toolMap.has(name)) toolMap.set(name, definition);
     }
   }
 

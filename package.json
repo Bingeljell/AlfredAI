@@ -11,7 +11,12 @@
     "bin/",
     "dist/",
     "webui/",
-    "templates/"
+    "templates/",
+    "docs/getting-started.md",
+    "docs/architecture/tui.md",
+    "docs/operations/alfred-home-migration.md",
+    "docs/operations/chatgpt_subscription.md",
+    "docs/operations/extensions.md"
   ],
   "engines": {
     "node": ">=22.18.0"

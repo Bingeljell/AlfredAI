@@ -24,6 +24,9 @@ const allowed = [
   /^dist\//,
   /^webui\//,
   /^templates\//,
+  /^docs\/getting-started\.md$/,
+  /^docs\/architecture\/tui\.md$/,
+  /^docs\/operations\/(?:alfred-home-migration|chatgpt_subscription|extensions)\.md$/,
   /^README\.md$/,
   /^package\.json$/
 ];

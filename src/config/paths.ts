@@ -33,7 +33,8 @@ function fromCwd(value: string, cwd: string): string {
 }
 
 export function installedPackageRoot(moduleUrl = import.meta.url): string {
-  return path.resolve(path.dirname(fileURLToPath(moduleUrl)), "../..");
+  const candidate = path.resolve(path.dirname(fileURLToPath(moduleUrl)), "../..");
+  return path.basename(candidate) === "dist" ? path.dirname(candidate) : candidate;
 }
 
 /**

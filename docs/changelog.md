@@ -1,5 +1,7 @@
 # Changelog
 
+- **2026-09-16** > `.github/workflows/ci.yml`, `scripts/{smoke-package,check-package}.mjs`, `package.json`, `src/{config/paths.ts,provider/codex/accountService.ts}`, `tests/unit/{packageManifest,paths}.test.ts`, `docs/changelog.md` > add pull-request release gates, package-content privacy checks, and an exact-tarball clean-install smoke test; correct compiled resource-root resolution and keep awaited ChatGPT login timeouts alive on Node 22 without publishing to npm.
+
 - **2026-09-16** > `src/config/service.ts`, `scripts/alfred-cli.ts`, `tests/unit/service.test.ts`, `docs/{operations/extensions.md,changelog.md}`, `README.md` > add tested macOS `service install/status/restart/uninstall` commands that generate a neutral per-user LaunchAgent, use modern user-domain launchctl operations, keep logs in the private Alfred home, and preserve all user data on uninstall.
 
 - **2026-09-16** > `src/extensions/{schema,manager}.ts`, `src/tools/{registry.ts,definitions/extensionWrite.tool.ts}`, `src/{config/env.ts,config/setup.ts,runtime/specialists.ts}`, `scripts/alfred-cli.ts`, `.env.example`, `tests/unit/extensions.test.ts`, `docs/{operations/extensions.md,architecture/npm-distribution-and-privacy.md,changelog.md}`, `README.md` > add disabled-by-default, approval-gated user-space JavaScript extensions with manifest validation, non-executing syntax checks, explicit digest-bound activation, automatic stale-code revocation, upgrade-safe storage, and an honest host-permission trust boundary for npm-installed Alfred instances.

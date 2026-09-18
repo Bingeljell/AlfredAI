@@ -35,6 +35,7 @@
     "test:smoke": "node --import tsx --import ./tests/setup/env.mjs --test tests/smoke/**/*.test.ts",
     "test:security": "node --import tsx --import ./tests/setup/env.mjs --test tests/security/**/*.test.ts",
     "pack:check": "npm run build && node scripts/check-package.mjs",
+    "smoke:package": "npm run build && node scripts/smoke-package.mjs",
     "lint:layers": "eslint src"
   },
   "dependencies": {

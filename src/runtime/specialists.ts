@@ -11,7 +11,14 @@ function readOptionalFile(filePath: string): string {
   }
 }
 
-const soulContent = readOptionalFile(path.join(appConfig.packageRoot, "SOUL.md"));
+const defaultSoulPath = path.join(appConfig.packageRoot, "templates", "SOUL.md");
+const soulPath = appConfig.paths.usesLegacyWorkspace
+  ? path.join(appConfig.packageRoot, "SOUL.md")
+  : path.join(appConfig.identityDir, "SOUL.md");
+const soulContent = readOptionalFile(soulPath) || readOptionalFile(defaultSoulPath);
+const userInstructions = appConfig.paths.usesLegacyWorkspace
+  ? ""
+  : readOptionalFile(path.join(appConfig.identityDir, "INSTRUCTIONS.md"));
 const contextCard = readOptionalFile(path.join(appConfig.workspaceDir, "knowledge", "context-card.md"));
 
 export interface SpecialistConfig {
@@ -30,7 +37,7 @@ You are Alfred. Read your soul first, then the operating instructions below.
 
 Current date: ${new Date().toISOString().slice(0, 10)}
 
-${soulContent ? `════════════════════════════════════════\nSOUL\n════════════════════════════════════════\n${soulContent}\n` : ""}${contextCard ? `\n════════════════════════════════════════\nCONTEXT\n════════════════════════════════════════\n${contextCard}\n` : ""}
+${soulContent ? `════════════════════════════════════════\nSOUL\n════════════════════════════════════════\n${soulContent}\n` : ""}${userInstructions ? `\n════════════════════════════════════════\nUSER INSTRUCTIONS\n════════════════════════════════════════\n${userInstructions}\n` : ""}${contextCard ? `\n════════════════════════════════════════\nCONTEXT\n════════════════════════════════════════\n${contextCard}\n` : ""}
 Read the user's request, identify what they need, and follow the matching pipeline below. You have full access to all tools — use them as needed.
 
 ════════════════════════════════════════

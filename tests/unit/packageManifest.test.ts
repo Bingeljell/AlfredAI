@@ -13,7 +13,7 @@ test("npm manifest uses an explicit private package boundary", async () => {
 
   assert.equal(manifest.private, true);
   assert.equal(manifest.bin?.alfred, "bin/alfred.js");
-  assert.deepEqual(manifest.files, ["bin/", "dist/", "webui/", "SOUL.md"]);
+  assert.deepEqual(manifest.files, ["bin/", "dist/", "webui/", "templates/"]);
   assert.equal("postinstall" in (manifest.scripts ?? {}), false);
   assert.match(manifest.engines?.node ?? "", /^>=22/);
 });

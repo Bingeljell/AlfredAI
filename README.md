@@ -6,6 +6,24 @@ There is no Batman without Alfred.
 
 Alfred is a general-purpose AI agent — a co-conspirator, not a butler. He reasons, acts, remembers, and can extend his own capabilities. Talk to him via Telegram, the web UI, or the terminal. Give him a task; he figures out how to do it.
 
+## Packaged onboarding preview
+
+The npm package is still private while release gates are being completed. The
+compiled CLI now supports the intended first-run foundation:
+
+```bash
+alfred setup
+alfred doctor
+alfred start
+alfred tui
+```
+
+`alfred setup` creates private configuration, identity, workspace, logs, and
+extension directories under `~/.alfred`. Existing files are preserved on every
+rerun. API keys are never requested through visible terminal input; setup tells
+you which key to add to the mode-`0600` configuration file, or directs Codex
+users through `alfred auth login openai`.
+
 ## What Alfred Does Today
 
 - **General-purpose ReAct agent** — research, writing, lead generation, ops, file work, shell commands

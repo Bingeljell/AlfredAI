@@ -11,7 +11,7 @@
     "bin/",
     "dist/",
     "webui/",
-    "SOUL.md"
+    "templates/"
   ],
   "engines": {
     "node": ">=22.18.0"

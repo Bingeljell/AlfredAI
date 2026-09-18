@@ -62,3 +62,15 @@ test("two ALFRED_HOME values do not share mutable paths", () => {
     assert.notEqual(first[key], second[key], key);
   }
 });
+
+test("the installed package defaults mutable state to the private home", () => {
+  const paths = resolveAlfredPaths({
+    env: { ALFRED_PACKAGE_MODE: "true" },
+    cwd,
+    homeDir,
+    packageRoot
+  });
+
+  assert.equal(paths.workspaceDir, path.join(homeDir, ".alfred", "workspace"));
+  assert.equal(paths.usesLegacyWorkspace, false);
+});
